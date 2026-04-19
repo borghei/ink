@@ -3,10 +3,10 @@ pub mod preset;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use crate::config::KeybindingsConfig;
-use crate::input::keymap::{build_keymap, KeyBinding};
+use crate::input::keymap::{build_keymap, KeyBinding, ResolvedKeymap};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
@@ -40,7 +40,12 @@ pub enum Action {
 }
 
 /// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
-static KEYMAP: OnceLock<HashMap<KeyBinding, Action>> = OnceLock::new();
+static KEYMAP: OnceLock<ResolvedKeymap> = OnceLock::new();
+
+/// Pending chord prefix — set when a key matches a chord prefix, cleared on the next key.
+/// Mutex<Option> over thread_local because the input loop is on the main thread; this also
+/// keeps the API simple for `current_pending_chord()` if we ever want to display it.
+static PENDING_CHORD: Mutex<Option<KeyBinding>> = Mutex::new(None);
 
 /// Initialize the global keymap from config. Must be called before `poll_action`.
 /// Prints any keybinding warnings to stderr.
@@ -60,7 +65,21 @@ pub fn init_keymap(cfg: Option<&KeybindingsConfig>) {
 
 /// Read-only access to the resolved keymap, for `ink keybindings` subcommand and tests.
 pub fn current_keymap() -> Option<&'static HashMap<KeyBinding, Action>> {
-    KEYMAP.get()
+    KEYMAP.get().map(|r| &r.singles)
+}
+
+/// Iterate over chord bindings as flat (prefix, second_key, action) tuples — for `ink keybindings`.
+pub fn current_chords() -> Vec<(KeyBinding, KeyBinding, Action)> {
+    let Some(km) = KEYMAP.get() else {
+        return Vec::new();
+    };
+    km.chord_prefixes
+        .iter()
+        .flat_map(|(prefix, sub)| {
+            sub.iter()
+                .map(move |(second, action)| (*prefix, *second, action.clone()))
+        })
+        .collect()
 }
 
 pub fn poll_action(timeout: std::time::Duration, search_active: bool) -> Option<Action> {
@@ -105,12 +124,36 @@ fn map_search_key(key: KeyEvent) -> Action {
 fn map_key(key: KeyEvent) -> Action {
     // Normalize to (KeyCode, KeyModifiers) — strip SHIFT on already-uppercase letters
     // so `shift-g` (parsed to ('G', empty)) matches a real `Shift-G` press.
-    let (code, mods) = normalize_event(key);
-    if let Some(map) = KEYMAP.get() {
-        if let Some(action) = map.get(&(code, mods)) {
-            return action.clone();
+    let kb = normalize_event(key);
+    let Some(km) = KEYMAP.get() else {
+        return Action::None;
+    };
+
+    // Chord state: if a prefix is pending, try to complete it with this key.
+    // On match → fire the chord action; on miss → drop the pending prefix and
+    // dispatch this key normally (so the user isn't stuck if they pressed C-x by accident).
+    let pending = PENDING_CHORD.lock().ok().and_then(|mut g| g.take());
+    if let Some(prefix) = pending {
+        if let Some(sub) = km.chord_prefixes.get(&prefix) {
+            if let Some(action) = sub.get(&kb) {
+                return action.clone();
+            }
         }
+        // Fall through: re-dispatch `kb` as a fresh keypress.
     }
+
+    // No pending prefix. If this key starts a chord, stash and wait for the next key.
+    // Single bindings take precedence — this matches Emacs (single key bound = wins).
+    if let Some(action) = km.singles.get(&kb) {
+        return action.clone();
+    }
+    if km.chord_prefixes.contains_key(&kb) {
+        if let Ok(mut g) = PENDING_CHORD.lock() {
+            *g = Some(kb);
+        }
+        return Action::None;
+    }
+
     Action::None
 }
 

@@ -97,6 +97,7 @@ pub fn render_bottom_bar(
     reading_time: usize,
     multi_tab: bool,
     tab_info: Option<(usize, usize)>,
+    file_missing: bool,
 ) {
     let t = theme::resolve_theme(theme_name);
     let bg = theme::hex_to_color(&t.colors.status_bar_bg);
@@ -144,8 +145,10 @@ pub fn render_bottom_bar(
 
     let right_name = format!("{short_name}{tab_part}");
     let right_stats = format!("  {word_count} words · ~{reading_time} min  ");
+    let missing_label = if file_missing { " [file missing] " } else { "" };
     let right_total_len = unicode_width::UnicodeWidthStr::width(right_name.as_str())
-        + unicode_width::UnicodeWidthStr::width(right_stats.as_str());
+        + unicode_width::UnicodeWidthStr::width(right_stats.as_str())
+        + unicode_width::UnicodeWidthStr::width(missing_label);
 
     let left_len: usize = spans
         .iter()
@@ -156,6 +159,16 @@ pub fn render_bottom_bar(
     let bar_style = Style::default().fg(fg).bg(bg);
 
     spans.push(Span::styled(" ".repeat(padding_len), bar_style));
+    if file_missing {
+        let warn_fg = theme::hex_to_color(&t.colors.heading2);
+        spans.push(Span::styled(
+            missing_label,
+            Style::default()
+                .fg(warn_fg)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
     spans.push(Span::styled(
         right_name,
         bar_style.add_modifier(Modifier::BOLD),

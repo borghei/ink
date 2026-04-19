@@ -30,10 +30,21 @@ pub struct KeybindingsConfig {
     pub bindings: Option<HashMap<String, Vec<String>>>,
 }
 
+/// Resolved path of the active config file, if the platform has a config dir.
+pub fn config_path() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("ink").join("config.toml"))
+}
+
+/// Human-readable string for `ink config path`.
+pub fn config_path_display() -> String {
+    config_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "<no config dir on this platform>".to_string())
+}
+
 /// Load config from ~/.config/ink/config.toml
 pub fn load_config() -> Option<Config> {
-    let config_dir = dirs::config_dir()?;
-    let config_path = config_dir.join("ink").join("config.toml");
-    let content = std::fs::read_to_string(config_path).ok()?;
+    let path = config_path()?;
+    let content = std::fs::read_to_string(path).ok()?;
     toml::from_str(&content).ok()
 }

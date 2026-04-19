@@ -1,5 +1,5 @@
 {
-    "version": "0.2.0",
+    "version": "0.2.1",
     "description": "A terminal markdown reader that actually looks good",
     "homepage": "https://github.com/borghei/ink",
     "license": {
@@ -8,7 +8,7 @@
     },
     "architecture": {
         "64bit": {
-            "url": "https://github.com/borghei/ink/releases/download/v0.2.0/ink-windows-amd64.exe",
+            "url": "https://github.com/borghei/ink/releases/download/v0.2.1/ink-windows-amd64.exe",
             "hash": "PLACEHOLDER"
         }
     },

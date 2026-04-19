@@ -96,6 +96,23 @@ pub enum Commands {
     },
     /// Show the active keybinding map (preset + user overrides)
     Keybindings,
+    /// Configuration helpers
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ConfigAction {
+    /// Write a starter config to ~/.config/ink/config.toml
+    Init {
+        /// Overwrite an existing config file
+        #[arg(long)]
+        force: bool,
+    },
+    /// Print the path to the active config file
+    Path,
 }
 
 /// Resolved arguments for the app.
@@ -155,6 +172,13 @@ fn main() -> Result<()> {
                 print_keybindings();
                 Ok(())
             }
+            Commands::Config { action } => match action {
+                ConfigAction::Init { force } => config_init(*force),
+                ConfigAction::Path => {
+                    println!("{}", config::config_path_display());
+                    Ok(())
+                }
+            },
         };
     }
 
@@ -266,6 +290,57 @@ fn resolve_width(width_str: &Option<String>, config: &Option<config::Config>) ->
     config.as_ref().and_then(|c| c.width)
 }
 
+fn config_init(force: bool) -> Result<()> {
+    let path = config::config_path()
+        .ok_or_else(|| anyhow::anyhow!("could not resolve config directory"))?;
+    if path.exists() && !force {
+        eprintln!(
+            "ink: {} already exists (pass --force to overwrite)",
+            path.display()
+        );
+        std::process::exit(1);
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, STARTER_CONFIG)?;
+    println!("Wrote starter config to {}", path.display());
+    Ok(())
+}
+
+const STARTER_CONFIG: &str = r#"# ink configuration
+# https://github.com/borghei/ink
+
+# Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
+# theme = "catppuccin"
+
+# Max rendering width in columns (or use --width on the CLI)
+# width = 90
+
+# Line spacing: compact, normal, relaxed
+# spacing = "normal"
+
+# Show table of contents on startup
+# toc = false
+
+# Show YAML/TOML frontmatter as a code block at the top of the document
+# frontmatter = false
+
+[behavior]
+# When true, q/Esc returns to the file browser instead of exiting.
+# Default: false (q exits ink entirely; Shift+B reopens the browser on demand).
+# browser_loop = false
+
+[keybindings]
+# Built-in preset: "default" (vim-flavored), "vim", or "emacs"
+# preset = "default"
+
+# Per-action overrides on top of the preset.
+# Run `ink keybindings` to see the full list of action IDs and their current keys.
+# [keybindings.bindings]
+# toggle_toc = ["ctrl-t"]
+"#;
+
 fn print_keybindings() {
     use crossterm::event::{KeyCode, KeyModifiers};
     use std::collections::BTreeMap;
@@ -280,6 +355,15 @@ fn print_keybindings() {
     for ((code, mods), action) in map.iter() {
         let id = action_id(action);
         let key_str = format_key(code, mods);
+        by_action.entry(id).or_default().push(key_str);
+    }
+    for (prefix, second, action) in input::current_chords() {
+        let id = action_id(&action);
+        let key_str = format!(
+            "{} {}",
+            format_key(&prefix.0, &prefix.1),
+            format_key(&second.0, &second.1)
+        );
         by_action.entry(id).or_default().push(key_str);
     }
 

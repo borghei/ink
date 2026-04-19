@@ -124,18 +124,40 @@ pub fn action_from_id(id: &str) -> Option<Action> {
     })
 }
 
+/// Parse a binding string into one or two `KeyBinding`s.
+///
+/// Single key: `"ctrl-c"` → `[(Char('c'), CONTROL)]`.
+/// Chord (two keys, space-separated): `"ctrl-x ctrl-c"` → two-element vec.
+/// Anything beyond two segments is rejected.
+pub fn parse_binding(s: &str) -> Result<Vec<KeyBinding>, String> {
+    let segments: Vec<&str> = s.split_whitespace().collect();
+    match segments.len() {
+        1 => Ok(vec![parse_key(segments[0])?]),
+        2 => Ok(vec![parse_key(segments[0])?, parse_key(segments[1])?]),
+        0 => Err("empty binding".into()),
+        n => Err(format!("binding has {n} keys, max supported is 2 (chord)")),
+    }
+}
+
+/// Fully resolved keymap split into single-key bindings and two-key chords.
+///
+/// Chord lookup: when the user presses `prefix`, check `chord_prefixes[prefix]` —
+/// the value is a sub-map keyed by the second keypress.
+pub struct ResolvedKeymap {
+    pub singles: HashMap<KeyBinding, Action>,
+    pub chord_prefixes: HashMap<KeyBinding, HashMap<KeyBinding, Action>>,
+}
+
 /// Resolve the active key map from a preset + per-action overrides.
 ///
-/// Strategy: build a `(KeyBinding -> action_id)` map from the preset,
-/// then for each action in `overrides` REMOVE all preset bindings for that action
-/// and REPLACE with the override list. Last writer wins on cross-action collisions
-/// (a stderr warning is printed by the caller).
+/// Strategy: gather effective per-action key strings (preset, then overrides REPLACE
+/// per-action). Parse each binding into 1 or 2 keys. Single-key bindings go in
+/// `singles`. Two-key chords go in `chord_prefixes`. Conflicts emit warnings.
 pub fn build_keymap(
     preset: &[(&str, &[&str])],
     overrides: Option<&HashMap<String, Vec<String>>>,
-) -> (HashMap<KeyBinding, Action>, Vec<String>) {
+) -> (ResolvedKeymap, Vec<String>) {
     let mut warnings: Vec<String> = Vec::new();
-    // First, gather effective per-action key strings.
     let mut effective: HashMap<String, Vec<String>> = preset
         .iter()
         .map(|(id, keys)| {
@@ -156,25 +178,34 @@ pub fn build_keymap(
         }
     }
 
-    let mut map: HashMap<KeyBinding, Action> = HashMap::new();
-    let mut bound_to: HashMap<KeyBinding, String> = HashMap::new();
+    let mut singles: HashMap<KeyBinding, Action> = HashMap::new();
+    let mut chord_prefixes: HashMap<KeyBinding, HashMap<KeyBinding, Action>> = HashMap::new();
+    let mut bound_to: HashMap<String, String> = HashMap::new();
 
     for (id, keys) in &effective {
         let Some(action) = action_from_id(id) else {
             continue;
         };
         for key_str in keys {
-            match parse_key(key_str) {
-                Ok(kb) => {
-                    if let Some(prev) = bound_to.get(&kb) {
+            match parse_binding(key_str) {
+                Ok(parts) => {
+                    let key = format!("{parts:?}");
+                    if let Some(prev) = bound_to.get(&key) {
                         if prev != id {
                             warnings.push(format!(
                                 "keybinding conflict: '{key_str}' bound to both '{prev}' and '{id}' — using '{id}'"
                             ));
                         }
                     }
-                    bound_to.insert(kb, id.clone());
-                    map.insert(kb, action.clone());
+                    bound_to.insert(key, id.clone());
+                    if parts.len() == 1 {
+                        singles.insert(parts[0], action.clone());
+                    } else {
+                        chord_prefixes
+                            .entry(parts[0])
+                            .or_default()
+                            .insert(parts[1], action.clone());
+                    }
                 }
                 Err(e) => {
                     warnings.push(format!("invalid key '{key_str}' for '{id}': {e}"));
@@ -183,7 +214,13 @@ pub fn build_keymap(
         }
     }
 
-    (map, warnings)
+    (
+        ResolvedKeymap {
+            singles,
+            chord_prefixes,
+        },
+        warnings,
+    )
 }
 
 #[cfg(test)]
@@ -233,6 +270,42 @@ mod tests {
         assert_eq!(
             parse_key("pagedown"),
             Ok((KeyCode::PageDown, KeyModifiers::empty()))
+        );
+    }
+
+    #[test]
+    fn parses_chord_binding() {
+        assert_eq!(
+            parse_binding("ctrl-x ctrl-c"),
+            Ok(vec![
+                (KeyCode::Char('x'), KeyModifiers::CONTROL),
+                (KeyCode::Char('c'), KeyModifiers::CONTROL),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_binding_rejects_three_keys() {
+        assert!(parse_binding("a b c").is_err());
+    }
+
+    #[test]
+    fn build_keymap_separates_singles_and_chords() {
+        let preset: &[(&str, &[&str])] = &[
+            ("exit_app", &["q", "ctrl-x ctrl-c"]),
+            ("scroll_down", &["j"]),
+        ];
+        let (km, warnings) = build_keymap(preset, None);
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+
+        let q = parse_key("q").unwrap();
+        assert_eq!(km.singles.get(&q), Some(&Action::ExitApp));
+
+        let cx = parse_key("ctrl-x").unwrap();
+        let cc = parse_key("ctrl-c").unwrap();
+        assert_eq!(
+            km.chord_prefixes.get(&cx).and_then(|s| s.get(&cc)),
+            Some(&Action::ExitApp)
         );
     }
 

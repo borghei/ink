@@ -197,9 +197,11 @@ preset = "emacs"   # default | vim | emacs
 toggle_toc = ["ctrl-t"]
 ```
 
-The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), and `Ctrl+F`/`Ctrl+B` (next/prev heading).
+The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), `Ctrl+F`/`Ctrl+B` (next/prev heading), and `Ctrl+X Ctrl+C` (chord exit).
 
-Run `ink keybindings` to print the active map.
+Two-key chord bindings work — write them with a space: `"ctrl-x ctrl-c"`.
+
+Run `ink keybindings` to print the active map. Run `ink config init` to drop a commented starter config in the right place for your platform.
 
 ## Configuration
 

@@ -137,6 +137,11 @@ fn run_inner(
         }
     }
 
+    // True when --watch is active and the latest read of the watched file failed
+    // (file was deleted / renamed away). The doc keeps showing the last good content
+    // and the bottom bar gets a "[file missing]" indicator.
+    let mut file_missing = false;
+
     loop {
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
 
@@ -144,15 +149,23 @@ fn run_inner(
         if let (Some(w), Some(input)) = (watcher.as_ref(), args.inputs.first()) {
             let path = std::path::Path::new(input);
             if tabs[active_tab].filename == *input && w.check(path) {
-                if let Ok(new_source) = std::fs::read_to_string(path) {
-                    let scroll = tabs[active_tab].scroll_offset;
-                    let term_w = terminal.size()?.width;
-                    let mut new_tab = build_tab(new_source, input, &args, term_w);
-                    let new_max =
-                        (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
-                    new_tab.scroll_offset = scroll.min(new_max);
-                    new_tab.toc.visible = tabs[active_tab].toc.visible;
-                    tabs[active_tab] = new_tab;
+                match std::fs::read_to_string(path) {
+                    Ok(new_source) => {
+                        let scroll = tabs[active_tab].scroll_offset;
+                        let term_w = terminal.size()?.width;
+                        let mut new_tab = build_tab(new_source, input, &args, term_w);
+                        let new_max =
+                            (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
+                        new_tab.scroll_offset = scroll.min(new_max);
+                        new_tab.toc.visible = tabs[active_tab].toc.visible;
+                        tabs[active_tab] = new_tab;
+                        file_missing = false;
+                    }
+                    Err(_) => {
+                        // File was deleted or renamed away. Keep the last-rendered content
+                        // and surface the state in the status bar.
+                        file_missing = true;
+                    }
                 }
             }
         }
@@ -281,6 +294,7 @@ fn run_inner(
                     tab.reading_time,
                     tabs.len() > 1,
                     tab_info,
+                    file_missing,
                 );
             }
         })?;

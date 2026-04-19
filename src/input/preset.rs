@@ -34,9 +34,9 @@ pub const VIM: Preset = DEFAULT;
 
 /// Emacs preset: C-n/p for line nav, C-v/M-v for page nav, C-a/C-e for home/end,
 /// C-s for search, C-f/C-b for next/prev heading (closest semantic to char-nav).
-/// q/esc still exit because chord bindings (C-x C-c) aren't supported yet.
+/// `ctrl-x ctrl-c` chord exits ink (alongside q/esc).
 pub const EMACS: Preset = &[
-    ("exit_app", &["q", "esc", "ctrl-c"]),
+    ("exit_app", &["q", "esc", "ctrl-c", "ctrl-x ctrl-c"]),
     ("open_browser", &["shift-b"]),
     ("scroll_down", &["ctrl-n", "down", "j"]),
     ("scroll_up", &["ctrl-p", "up", "k"]),
@@ -78,21 +78,21 @@ mod tests {
         let (map, warnings) = build_keymap(DEFAULT, None);
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
         let q = parse_key("q").unwrap();
-        assert_eq!(map.get(&q), Some(&Action::ExitApp));
+        assert_eq!(map.singles.get(&q), Some(&Action::ExitApp));
     }
 
     #[test]
     fn emacs_preset_has_ctrl_n_for_scroll_down() {
         let (map, _) = build_keymap(EMACS, None);
         let cn = parse_key("ctrl-n").unwrap();
-        assert_eq!(map.get(&cn), Some(&Action::ScrollDown(1)));
+        assert_eq!(map.singles.get(&cn), Some(&Action::ScrollDown(1)));
     }
 
     #[test]
     fn emacs_preset_has_ctrl_v_for_page_down() {
         let (map, _) = build_keymap(EMACS, None);
         let cv = parse_key("ctrl-v").unwrap();
-        assert_eq!(map.get(&cv), Some(&Action::PageDown));
+        assert_eq!(map.singles.get(&cv), Some(&Action::PageDown));
     }
 
     #[test]
