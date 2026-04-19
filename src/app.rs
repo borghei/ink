@@ -141,7 +141,7 @@ fn run_inner(
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
 
         // --watch: if the current doc is the watched file and it changed, rebuild it.
-        if let (Some(ref w), Some(input)) = (watcher.as_ref(), args.inputs.first()) {
+        if let (Some(w), Some(input)) = (watcher.as_ref(), args.inputs.first()) {
             let path = std::path::Path::new(input);
             if tabs[active_tab].filename == *input && w.check(path) {
                 if let Ok(new_source) = std::fs::read_to_string(path) {

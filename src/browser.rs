@@ -244,18 +244,16 @@ fn browse_inner(
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         return Ok(None);
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        if !filtered.is_empty() && selected < filtered.len() - 1 {
-                            selected += 1;
-                        }
+                    KeyCode::Down | KeyCode::Char('j')
+                        if !filtered.is_empty() && selected < filtered.len() - 1 =>
+                    {
+                        selected += 1;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         selected = selected.saturating_sub(1);
                     }
-                    KeyCode::Char('G') | KeyCode::End => {
-                        if !filtered.is_empty() {
-                            selected = filtered.len() - 1;
-                        }
+                    KeyCode::Char('G') | KeyCode::End if !filtered.is_empty() => {
+                        selected = filtered.len() - 1;
                     }
                     KeyCode::Home | KeyCode::Char('g') => {
                         selected = 0;

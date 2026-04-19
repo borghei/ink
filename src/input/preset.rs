@@ -1,7 +1,7 @@
-/// Built-in keybinding presets. Each preset is a list of (action_id, key_strings).
-///
-/// Preset selection happens in config: `[keybindings] preset = "emacs"`.
-/// User overrides under `[keybindings.bindings]` REPLACE the preset's keys for that action.
+//! Built-in keybinding presets. Each preset is a list of (action_id, key_strings).
+//!
+//! Preset selection happens in config: `[keybindings] preset = "emacs"`.
+//! User overrides under `[keybindings.bindings]` REPLACE the preset's keys for that action.
 
 pub type Preset = &'static [(&'static str, &'static [&'static str])];
 
