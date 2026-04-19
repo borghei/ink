@@ -148,7 +148,8 @@ fn run_inner(
                     let scroll = tabs[active_tab].scroll_offset;
                     let term_w = terminal.size()?.width;
                     let mut new_tab = build_tab(new_source, input, &args, term_w);
-                    let new_max = (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
+                    let new_max =
+                        (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
                     new_tab.scroll_offset = scroll.min(new_max);
                     new_tab.toc.visible = tabs[active_tab].toc.visible;
                     tabs[active_tab] = new_tab;

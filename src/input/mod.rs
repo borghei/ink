@@ -45,9 +45,7 @@ static KEYMAP: OnceLock<HashMap<KeyBinding, Action>> = OnceLock::new();
 /// Initialize the global keymap from config. Must be called before `poll_action`.
 /// Prints any keybinding warnings to stderr.
 pub fn init_keymap(cfg: Option<&KeybindingsConfig>) {
-    let preset_name = cfg
-        .and_then(|k| k.preset.as_deref())
-        .unwrap_or("default");
+    let preset_name = cfg.and_then(|k| k.preset.as_deref()).unwrap_or("default");
     let preset = preset::lookup(preset_name).unwrap_or_else(|| {
         eprintln!("ink: unknown keybinding preset '{preset_name}', falling back to default");
         preset::DEFAULT

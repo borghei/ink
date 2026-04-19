@@ -27,7 +27,10 @@ impl FileWatcher {
                 }
             }
         })?;
-        let parent = target.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+        let parent = target
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         watcher.watch(parent, RecursiveMode::NonRecursive)?;
         Ok(Self {
             _watcher: watcher,
@@ -90,7 +93,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(50));
         }
         let _ = fs::remove_dir_all(&dir);
-        assert!(detected, "FileWatcher did not report change to watched file");
+        assert!(
+            detected,
+            "FileWatcher did not report change to watched file"
+        );
     }
 
     #[test]
@@ -115,6 +121,9 @@ mod tests {
         std::thread::sleep(Duration::from_millis(300));
         let detected = watcher.check(&target);
         let _ = fs::remove_dir_all(&dir);
-        assert!(!detected, "FileWatcher reported a change for a different file");
+        assert!(
+            !detected,
+            "FileWatcher reported a change for a different file"
+        );
     }
 }

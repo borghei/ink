@@ -59,7 +59,9 @@ fn parse_keycode(s: &str) -> Result<KeyCode, String> {
         "delete" | "del" => KeyCode::Delete,
         "insert" | "ins" => KeyCode::Insert,
         f if f.starts_with('f') && f.len() >= 2 => {
-            let n: u8 = f[1..].parse().map_err(|_| format!("invalid function key '{s}'"))?;
+            let n: u8 = f[1..]
+                .parse()
+                .map_err(|_| format!("invalid function key '{s}'"))?;
             if (1..=12).contains(&n) {
                 KeyCode::F(n)
             } else {
@@ -136,7 +138,12 @@ pub fn build_keymap(
     // First, gather effective per-action key strings.
     let mut effective: HashMap<String, Vec<String>> = preset
         .iter()
-        .map(|(id, keys)| ((*id).to_string(), keys.iter().map(|s| (*s).to_string()).collect()))
+        .map(|(id, keys)| {
+            (
+                (*id).to_string(),
+                keys.iter().map(|s| (*s).to_string()).collect(),
+            )
+        })
         .collect();
 
     if let Some(over) = overrides {
@@ -185,7 +192,10 @@ mod tests {
 
     #[test]
     fn parses_plain_char() {
-        assert_eq!(parse_key("q"), Ok((KeyCode::Char('q'), KeyModifiers::empty())));
+        assert_eq!(
+            parse_key("q"),
+            Ok((KeyCode::Char('q'), KeyModifiers::empty()))
+        );
     }
 
     #[test]
@@ -198,7 +208,10 @@ mod tests {
 
     #[test]
     fn parses_alt_arrow() {
-        assert_eq!(parse_key("alt-down"), Ok((KeyCode::Down, KeyModifiers::ALT)));
+        assert_eq!(
+            parse_key("alt-down"),
+            Ok((KeyCode::Down, KeyModifiers::ALT))
+        );
     }
 
     #[test]
@@ -213,8 +226,14 @@ mod tests {
     #[test]
     fn parses_named_keys() {
         assert_eq!(parse_key("esc"), Ok((KeyCode::Esc, KeyModifiers::empty())));
-        assert_eq!(parse_key("space"), Ok((KeyCode::Char(' '), KeyModifiers::empty())));
-        assert_eq!(parse_key("pagedown"), Ok((KeyCode::PageDown, KeyModifiers::empty())));
+        assert_eq!(
+            parse_key("space"),
+            Ok((KeyCode::Char(' '), KeyModifiers::empty()))
+        );
+        assert_eq!(
+            parse_key("pagedown"),
+            Ok((KeyCode::PageDown, KeyModifiers::empty()))
+        );
     }
 
     #[test]
@@ -228,7 +247,10 @@ mod tests {
     fn action_from_id_known() {
         assert_eq!(action_from_id("exit_app"), Some(Action::ExitApp));
         assert_eq!(action_from_id("scroll_down"), Some(Action::ScrollDown(1)));
-        assert_eq!(action_from_id("scroll_down_fast"), Some(Action::ScrollDown(10)));
+        assert_eq!(
+            action_from_id("scroll_down_fast"),
+            Some(Action::ScrollDown(10))
+        );
         assert_eq!(action_from_id("nope"), None);
     }
 }
