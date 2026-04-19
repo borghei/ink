@@ -1,8 +1,18 @@
+pub mod keymap;
+pub mod preset;
+
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+use crate::config::KeybindingsConfig;
+use crate::input::keymap::{build_keymap, KeyBinding};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    Quit,
+    ExitApp,
+    CloseDoc,
+    OpenBrowser,
     ScrollUp(u16),
     ScrollDown(u16),
     PageUp,
@@ -27,6 +37,32 @@ pub enum Action {
     NavForward,
     ThemePicker,
     None,
+}
+
+/// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
+static KEYMAP: OnceLock<HashMap<KeyBinding, Action>> = OnceLock::new();
+
+/// Initialize the global keymap from config. Must be called before `poll_action`.
+/// Prints any keybinding warnings to stderr.
+pub fn init_keymap(cfg: Option<&KeybindingsConfig>) {
+    let preset_name = cfg
+        .and_then(|k| k.preset.as_deref())
+        .unwrap_or("default");
+    let preset = preset::lookup(preset_name).unwrap_or_else(|| {
+        eprintln!("ink: unknown keybinding preset '{preset_name}', falling back to default");
+        preset::DEFAULT
+    });
+    let overrides = cfg.and_then(|k| k.bindings.as_ref());
+    let (map, warnings) = build_keymap(preset, overrides);
+    for w in warnings {
+        eprintln!("ink: {w}");
+    }
+    let _ = KEYMAP.set(map);
+}
+
+/// Read-only access to the resolved keymap, for `ink keybindings` subcommand and tests.
+pub fn current_keymap() -> Option<&'static HashMap<KeyBinding, Action>> {
+    KEYMAP.get()
 }
 
 pub fn poll_action(timeout: std::time::Duration, search_active: bool) -> Option<Action> {
@@ -69,48 +105,26 @@ fn map_search_key(key: KeyEvent) -> Action {
 }
 
 fn map_key(key: KeyEvent) -> Action {
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return match key.code {
-            KeyCode::Char('c') => Action::Quit,
-            KeyCode::Char('d') => Action::PageDown,
-            KeyCode::Char('u') => Action::PageUp,
-            KeyCode::Char('f') => Action::PageDown,
-            KeyCode::Char('b') => Action::PageUp,
-            _ => Action::None,
-        };
+    // Normalize to (KeyCode, KeyModifiers) — strip SHIFT on already-uppercase letters
+    // so `shift-g` (parsed to ('G', empty)) matches a real `Shift-G` press.
+    let (code, mods) = normalize_event(key);
+    if let Some(map) = KEYMAP.get() {
+        if let Some(action) = map.get(&(code, mods)) {
+            return action.clone();
+        }
     }
+    Action::None
+}
 
-    if key.modifiers.contains(KeyModifiers::ALT) {
-        return match key.code {
-            KeyCode::Down => Action::ScrollDown(10),
-            KeyCode::Up => Action::ScrollUp(10),
-            KeyCode::Left => Action::NavBack,
-            KeyCode::Right => Action::NavForward,
-            _ => Action::None,
-        };
+fn normalize_event(key: KeyEvent) -> (KeyCode, KeyModifiers) {
+    let code = key.code;
+    let mut mods = key.modifiers;
+    if let KeyCode::Char(c) = code {
+        if c.is_ascii_uppercase() {
+            mods.remove(KeyModifiers::SHIFT);
+        }
     }
-
-    match key.code {
-        KeyCode::Char('q') => Action::Quit,
-        KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown(1),
-        KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp(1),
-        KeyCode::PageDown | KeyCode::Char(' ') => Action::PageDown,
-        KeyCode::PageUp => Action::PageUp,
-        KeyCode::Home => Action::Home,
-        KeyCode::End | KeyCode::Char('G') => Action::End,
-        KeyCode::Char('t') => Action::ToggleToc,
-        KeyCode::Char('/') => Action::Search,
-        KeyCode::Char('n') => Action::NextHeading,
-        KeyCode::Char('N') => Action::PrevHeading,
-        KeyCode::Esc => Action::CloseSearch,
-        KeyCode::Char('T') => Action::ThemePicker,
-        KeyCode::Tab => Action::NextTab,
-        KeyCode::BackTab => Action::PrevTab,
-        KeyCode::Enter => Action::FollowLink,
-        KeyCode::Char('[') => Action::NavBack,
-        KeyCode::Char(']') => Action::NavForward,
-        _ => Action::None,
-    }
+    (code, mods)
 }
 
 fn map_mouse(mouse: MouseEvent) -> Action {

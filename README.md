@@ -142,11 +142,13 @@ ink --slides deck.md
 
 ### Watch mode
 
-Auto-reload when the file changes on disk:
+Auto-reload when the file changes on disk. Edit in another terminal, see the rendered view update within ~100ms. Scroll position is preserved.
 
 ```bash
 ink --watch draft.md
 ```
+
+Works with editors that save by replacing the inode (vim, IntelliJ) — ink watches the parent directory, not the file handle.
 
 ### Document stats and outline
 
@@ -179,7 +181,25 @@ ink diff old.md new.md
 | `Enter` | Follow link |
 | `[` / `]` | Navigation back / forward |
 | `Tab` / `Shift+Tab` | Next / previous tab |
-| `q` | Quit |
+| `Shift+B` | Back to file browser (when launched via browser) |
+| `q` / `Esc` / `Ctrl+C` | Quit ink |
+
+### Customizing keybindings
+
+Pick a preset or override individual bindings in `~/.config/ink/config.toml`:
+
+```toml
+[keybindings]
+preset = "emacs"   # default | vim | emacs
+
+[keybindings.bindings]
+# Per-action overrides, applied on top of the preset.
+toggle_toc = ["ctrl-t"]
+```
+
+The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), and `Ctrl+F`/`Ctrl+B` (next/prev heading).
+
+Run `ink keybindings` to print the active map.
 
 ## Configuration
 
@@ -200,6 +220,11 @@ toc = false
 
 # Show YAML/TOML frontmatter
 frontmatter = false
+
+# Behavior
+[behavior]
+# Set true to restore the old "return to file browser after closing a doc" behavior
+browser_loop = false
 ```
 
 ### Custom themes

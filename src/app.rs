@@ -48,7 +48,16 @@ const THEME_LIST: &[&str] = &[
     "solarized",
 ];
 
-pub fn run(source: String, args: Args) -> Result<()> {
+/// How the document viewer exited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppExit {
+    /// User wants to terminate ink entirely.
+    Quit,
+    /// User wants to return to the file browser to pick another file.
+    BackToBrowser,
+}
+
+pub fn run(source: String, args: Args) -> Result<AppExit> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
@@ -72,7 +81,7 @@ fn run_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     source: String,
     mut args: Args,
-) -> Result<()> {
+) -> Result<AppExit> {
     let size = terminal.size()?;
 
     let mut tabs: Vec<Tab> = Vec::new();
@@ -98,6 +107,28 @@ fn run_inner(
     let mut theme_picker_open = false;
     let mut theme_picker_index: usize = 0;
 
+    // --watch: spawn a file watcher for the current document if a real path is in play.
+    let watcher: Option<crate::watch::FileWatcher> = if args.watch {
+        match args.inputs.first() {
+            Some(input) if is_local_file(input) => {
+                let path = std::path::PathBuf::from(input);
+                match crate::watch::FileWatcher::new(&path) {
+                    Ok(w) => Some(w),
+                    Err(e) => {
+                        eprintln!("ink: failed to start file watcher: {e}");
+                        None
+                    }
+                }
+            }
+            _ => {
+                eprintln!("ink: --watch requires a local file path, ignoring");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Find current theme index
     for (i, t) in THEME_LIST.iter().enumerate() {
         if *t == args.theme {
@@ -108,6 +139,23 @@ fn run_inner(
 
     loop {
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
+
+        // --watch: if the current doc is the watched file and it changed, rebuild it.
+        if let (Some(ref w), Some(input)) = (watcher.as_ref(), args.inputs.first()) {
+            let path = std::path::Path::new(input);
+            if tabs[active_tab].filename == *input && w.check(path) {
+                if let Ok(new_source) = std::fs::read_to_string(path) {
+                    let scroll = tabs[active_tab].scroll_offset;
+                    let term_w = terminal.size()?.width;
+                    let mut new_tab = build_tab(new_source, input, &args, term_w);
+                    let new_max = (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
+                    new_tab.scroll_offset = scroll.min(new_max);
+                    new_tab.toc.visible = tabs[active_tab].toc.visible;
+                    tabs[active_tab] = new_tab;
+                }
+            }
+        }
+
         let tab = &tabs[active_tab];
         let total_lines = tab.ratatui_lines.len();
         let max_scroll = (total_lines as u16).saturating_sub(viewport_height);
@@ -241,7 +289,7 @@ fn run_inner(
             // Theme picker mode
             if theme_picker_open {
                 match action {
-                    Action::Quit | Action::CloseSearch => {
+                    Action::ExitApp | Action::CloseSearch => {
                         theme_picker_open = false;
                     }
                     Action::ScrollDown(_) => {
@@ -269,7 +317,9 @@ fn run_inner(
             }
 
             match action {
-                Action::Quit => break,
+                Action::ExitApp => return Ok(AppExit::Quit),
+                Action::OpenBrowser => return Ok(AppExit::BackToBrowser),
+                Action::CloseDoc => return Ok(AppExit::BackToBrowser),
 
                 // Search
                 Action::Search => {
@@ -466,8 +516,10 @@ fn run_inner(
             tabs[active_tab].toc.update_selection(current_offset);
         }
     }
+}
 
-    Ok(())
+fn is_local_file(input: &str) -> bool {
+    !input.starts_with("http://") && !input.starts_with("https://") && input != "stdin"
 }
 
 fn rebuild_all_tabs(tabs: &mut [Tab], args: &Args, term_width: u16) {

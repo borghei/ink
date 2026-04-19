@@ -10,6 +10,7 @@ mod search;
 mod stats;
 mod theme;
 mod toc;
+mod watch;
 mod wikilink;
 
 use anyhow::Result;
@@ -93,6 +94,8 @@ pub enum Commands {
         /// Shell name: bash, zsh, or fish
         shell: String,
     },
+    /// Show the active keybinding map (preset + user overrides)
+    Keybindings,
 }
 
 /// Resolved arguments for the app.
@@ -120,6 +123,11 @@ pub enum Spacing {
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Load config + initialize keymap up front so subcommands (e.g. `keybindings`)
+    // can read the resolved map.
+    let user_config = config::load_config();
+    input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
+
     // Handle subcommands
     if let Some(cmd) = &cli.command {
         return match cmd {
@@ -143,11 +151,12 @@ fn main() -> Result<()> {
                 print_shell_setup(shell);
                 Ok(())
             }
+            Commands::Keybindings => {
+                print_keybindings();
+                Ok(())
+            }
         };
     }
-
-    // Load config
-    let user_config = config::load_config();
 
     let width = resolve_width(&cli.width, &user_config);
     let spacing = match cli.spacing.as_str() {
@@ -195,8 +204,18 @@ fn main() -> Result<()> {
     };
 
     if let Some(dir) = browse_dir {
-        // File browser loop — user returns here after closing a file
-        while let Some(selected) = browser::browse(&dir, &args.theme)? {
+        // Browser → doc → exit by default. User can press Shift-B inside the
+        // doc (or set behavior.browser_loop = true in config) to return here.
+        let browser_loop = user_config
+            .as_ref()
+            .and_then(|c| c.behavior.as_ref())
+            .and_then(|b| b.browser_loop)
+            .unwrap_or(false);
+
+        loop {
+            let Some(selected) = browser::browse(&dir, &args.theme)? else {
+                break;
+            };
             let source = std::fs::read_to_string(&selected)?;
             let mut file_args = args.clone();
             file_args.inputs = vec![selected.to_string_lossy().to_string()];
@@ -204,9 +223,15 @@ fn main() -> Result<()> {
                 let rendered = render::plain::render_plain(&source, &file_args)?;
                 print!("{rendered}");
                 break;
-            } else {
-                app::run(source, file_args)?;
-                // After viewer exits, return to browser
+            }
+            match app::run(source, file_args)? {
+                app::AppExit::Quit => {
+                    if browser_loop {
+                        continue;
+                    }
+                    break;
+                }
+                app::AppExit::BackToBrowser => continue,
             }
         }
         return Ok(());
@@ -239,6 +264,96 @@ fn resolve_width(width_str: &Option<String>, config: &Option<config::Config>) ->
         }
     }
     config.as_ref().and_then(|c| c.width)
+}
+
+fn print_keybindings() {
+    use crossterm::event::{KeyCode, KeyModifiers};
+    use std::collections::BTreeMap;
+
+    let Some(map) = input::current_keymap() else {
+        eprintln!("ink: keymap not initialized");
+        return;
+    };
+
+    // Group keys by action for readable output (sorted by action name).
+    let mut by_action: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for ((code, mods), action) in map.iter() {
+        let id = action_id(action);
+        let key_str = format_key(code, mods);
+        by_action.entry(id).or_default().push(key_str);
+    }
+
+    println!("{:<22} Keys", "Action");
+    println!("{:<22} ----", "------");
+    for (action, mut keys) in by_action {
+        keys.sort();
+        println!("{:<22} {}", action, keys.join(", "));
+    }
+
+    fn format_key(code: &KeyCode, mods: &KeyModifiers) -> String {
+        let mut parts: Vec<&str> = Vec::new();
+        if mods.contains(KeyModifiers::CONTROL) {
+            parts.push("ctrl");
+        }
+        if mods.contains(KeyModifiers::ALT) {
+            parts.push("alt");
+        }
+        if mods.contains(KeyModifiers::SHIFT) {
+            parts.push("shift");
+        }
+        let key = match code {
+            KeyCode::Char(' ') => "space".to_string(),
+            KeyCode::Char(c) => c.to_string(),
+            KeyCode::Esc => "esc".into(),
+            KeyCode::Enter => "enter".into(),
+            KeyCode::Tab => "tab".into(),
+            KeyCode::BackTab => "backtab".into(),
+            KeyCode::PageUp => "pageup".into(),
+            KeyCode::PageDown => "pagedown".into(),
+            KeyCode::Home => "home".into(),
+            KeyCode::End => "end".into(),
+            KeyCode::Up => "up".into(),
+            KeyCode::Down => "down".into(),
+            KeyCode::Left => "left".into(),
+            KeyCode::Right => "right".into(),
+            KeyCode::Backspace => "backspace".into(),
+            other => format!("{other:?}").to_lowercase(),
+        };
+        if parts.is_empty() {
+            key
+        } else {
+            format!("{}-{}", parts.join("-"), key)
+        }
+    }
+
+    fn action_id(a: &input::Action) -> String {
+        use input::Action::*;
+        match a {
+            ExitApp => "exit_app",
+            CloseDoc => "close_doc",
+            OpenBrowser => "open_browser",
+            ScrollUp(1) => "scroll_up",
+            ScrollDown(1) => "scroll_down",
+            ScrollUp(_) => "scroll_up_fast",
+            ScrollDown(_) => "scroll_down_fast",
+            PageUp => "page_up",
+            PageDown => "page_down",
+            Home => "home",
+            End => "end",
+            NextHeading => "next_heading",
+            PrevHeading => "prev_heading",
+            NextTab => "next_tab",
+            PrevTab => "prev_tab",
+            ToggleToc => "toggle_toc",
+            Search => "search",
+            ThemePicker => "theme_picker",
+            FollowLink => "follow_link",
+            NavBack => "nav_back",
+            NavForward => "nav_forward",
+            _ => "?",
+        }
+        .to_string()
+    }
 }
 
 fn print_shell_setup(shell: &str) {

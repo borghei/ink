@@ -1,6 +1,6 @@
 [package]
 name = "ink-md"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
 description = "The most advanced terminal markdown reader"
@@ -8,6 +8,10 @@ license-file = "LICENSE"
 repository = "https://github.com/borghei/ink"
 keywords = ["markdown", "terminal", "reader", "tui", "cli"]
 categories = ["command-line-utilities", "text-processing"]
+
+[[bin]]
+name = "ink"
+path = "src/main.rs"
 
 [dependencies]
 # Markdown parsing (GFM-compliant)
@@ -44,6 +48,9 @@ unicode-width = "0.2"
 
 # Image decoding for inline image rendering
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+
+# Cross-platform file watching for --watch (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows)
+notify = "8"
 
 [profile.release]
 lto = true
