@@ -973,7 +973,15 @@ fn wrap_spans(
         for (i, word) in words.iter().enumerate() {
             let w = word.width();
             if w == 0 && i > 0 {
-                if col < effective_width {
+                // Empty word means a literal space here (trailing space of this
+                // span, or a run of consecutive spaces). Emit it so spacing is
+                // preserved across span boundaries — e.g. "word **bold**" must
+                // not collapse to "wordbold".
+                if col > 0 && col < effective_width {
+                    current.push(StyledSpan {
+                        text: " ".to_string(),
+                        style: span.style.clone(),
+                    });
                     col += 1;
                 }
                 continue;
@@ -1024,4 +1032,46 @@ fn wrap_spans(
     }
 
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span(text: &str, bold: bool) -> StyledSpan {
+        StyledSpan {
+            text: text.to_string(),
+            style: SpanStyle {
+                bold,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn line_text(line: &StyledLine) -> String {
+        line.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn keeps_space_before_styled_span() {
+        // "roughly " (plain) + "17,800 km" (bold) must not collapse.
+        let spans = vec![span("roughly ", false), span("17,800 km", true)];
+        let lines = wrap_spans(spans, 80, 0, 0);
+        assert_eq!(line_text(&lines[0]), "roughly 17,800 km");
+    }
+
+    #[test]
+    fn keeps_space_after_styled_span() {
+        // "17,800 km" (bold) + " logged" (plain leading space).
+        let spans = vec![span("17,800 km", true), span(" logged", false)];
+        let lines = wrap_spans(spans, 80, 0, 0);
+        assert_eq!(line_text(&lines[0]), "17,800 km logged");
+    }
+
+    #[test]
+    fn keeps_space_between_adjacent_styled_spans() {
+        let spans = vec![span("touched ", false), span("44 bpm", true)];
+        let lines = wrap_spans(spans, 80, 0, 0);
+        assert_eq!(line_text(&lines[0]), "touched 44 bpm");
+    }
 }

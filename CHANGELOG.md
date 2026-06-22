@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.2 — 2026-06-22
+
+### Fixed
+- Inline text no longer loses the space before a styled span. `word **bold**` (and the same with code/links/italics) rendered as `wordbold` because the word-wrapper dropped a span's trailing space at the boundary. Spacing is now preserved across span boundaries.
+
 ## 0.2.1 — 2026-04-19
 
 ### Added
