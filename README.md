@@ -30,6 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 
 ```bash
 brew tap borghei/tap
+brew trust borghei/tap   # recent Homebrew requires trusting third-party taps
 brew install ink
 ```
 

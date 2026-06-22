@@ -1,12 +1,18 @@
 name: Update Homebrew Formula
 
 on:
-  release:
-    types: [published]
+  # Called automatically by the Release workflow after a tag is published.
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to bump (e.g. v0.2.2)'
+        required: true
+        type: string
+  # Manual fallback — re-bump the tap for an existing release.
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag to bump (e.g. v0.2.0)'
+        description: 'Release tag to bump (e.g. v0.2.2)'
         required: true
         type: string
 
@@ -14,10 +20,42 @@ jobs:
   update-formula:
     runs-on: ubuntu-latest
     steps:
-      - name: Update Homebrew formula
-        uses: dawidd6/action-homebrew-bump-formula@v4
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          tap: borghei/tap
-          formula: ink
-          tag: ${{ github.event.release.tag_name || inputs.tag }}
+      # We edit and push the formula directly instead of using
+      # action-homebrew-bump-formula: that action runs `brew developer on`,
+      # which (since Homebrew's tap-trust change) refuses to load formulae
+      # from third-party taps with an UntrustedTapError. A plain file edit
+      # sidesteps `brew` entirely and never hits the trust check.
+      - name: Bump tap formula
+        env:
+          TAG: ${{ inputs.tag }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          echo "Bumping borghei/tap ink formula to ${VERSION}"
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/borghei/homebrew-tap.git" tap
+          F=tap/Formula/ink.rb
+
+          # Bump the version field and the version embedded in every download URL.
+          sed -i -E "s#version \"[0-9]+\.[0-9]+\.[0-9]+\"#version \"${VERSION}\"#" "$F"
+          sed -i -E "s#/releases/download/v[0-9]+\.[0-9]+\.[0-9]+/#/releases/download/v${VERSION}/#g" "$F"
+
+          # Recompute each platform's sha256 from the published release asset and
+          # replace the sha256 line that immediately follows its url line.
+          for plat in macos-arm64 macos-amd64 linux-arm64 linux-amd64; do
+            url="https://github.com/borghei/ink/releases/download/v${VERSION}/ink-${plat}"
+            curl -fsSL "$url" -o "/tmp/ink-${plat}"
+            sha="$(sha256sum "/tmp/ink-${plat}" | cut -d' ' -f1)"
+            perl -0777 -pi -e "s/(ink-${plat}\"\s*\n\s*sha256 \")[0-9a-f]{64}/\${1}${sha}/" "$F"
+          done
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet; then
+            echo "Formula already up to date — nothing to push."
+            exit 0
+          fi
+          git commit -am "ink ${VERSION}"
+          git push

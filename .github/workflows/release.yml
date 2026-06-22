@@ -74,3 +74,14 @@ jobs:
         with:
           files: ink-*
           generate_release_notes: true
+
+  # Bump the Homebrew tap formula in the same run. Chaining via `needs` (rather
+  # than a `release: published` trigger on homebrew.yml) is deliberate: releases
+  # created with the default GITHUB_TOKEN do not emit events that trigger other
+  # workflows, so a `release`-triggered bump would silently never fire.
+  homebrew:
+    needs: release
+    uses: ./.github/workflows/homebrew.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit
