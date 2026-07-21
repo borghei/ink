@@ -16,7 +16,7 @@
 
 ---
 
-ink renders markdown in your terminal with syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, and a table of contents. One binary. No dependencies. Built in Rust.
+ink renders markdown in your terminal with syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, and a table of contents. It's fast on large documents, safe with untrusted files, and works as both an interactive reader and a `bat`-style pager. One binary. No dependencies. Built in Rust.
 
 ## Install
 
@@ -91,7 +91,9 @@ Language-aware highlighting for every major language. Code blocks get clean bord
 
 ### Inline images
 
-Images in your markdown get rendered directly in the terminal using Unicode half-block characters. Works in any terminal with true color support. If an image can't load, ink shows a placeholder instead of crashing.
+Local images in your markdown get rendered directly in the terminal using Unicode half-block characters. Works in any terminal with true color support. If an image can't load, ink shows a placeholder instead of crashing.
+
+Remote (`http`/`https`) images are **not** fetched by default — a document you didn't write shouldn't be able to phone home or probe your network. Pass `--remote-images` to enable them (private, loopback, and cloud-metadata addresses stay blocked even then).
 
 ### Mermaid diagrams
 
@@ -121,7 +123,15 @@ Switch between them with `Tab` and `Shift+Tab`.
 
 ### Search
 
-Press `/` to search within a document. Matches highlight inline. Jump between results with arrow keys.
+Press `/` to search within a document. Matches highlight inline; press Enter to lock in the search, then `n`/`N` to cycle forward and backward through results. `Esc` clears the highlights.
+
+### Open links from the keyboard
+
+Press `f` to label every link on screen with a letter. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link right inside ink.
+
+### Help overlay
+
+Press `?` any time for a popup listing every active keybinding — including your own overrides.
 
 ### Table of contents
 
@@ -133,13 +143,23 @@ Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, and Solarized. Pre
 
 Auto-detects your terminal background and picks dark or light mode by default.
 
+### Math and emoji
+
+Inline `$E=mc^2$` and block `$$...$$` math render in code style, and `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
+
 ### Presentation mode
 
-Split any markdown file into slides on `---` separators:
+Split any markdown file into slides on `---` separators and navigate with ←/→/Space:
 
 ```bash
 ink --slides deck.md
 ```
+
+### Works as a pager
+
+Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly.
+
+Honors `NO_COLOR`, and automatically downgrades 24-bit colors to the 256-color palette on terminals that don't advertise truecolor.
 
 ### Watch mode
 
@@ -175,15 +195,17 @@ ink diff old.md new.md
 | `Home` | Jump to start |
 | `Ctrl+f` / `Ctrl+b` | Page down / up |
 | `Ctrl+d` / `Ctrl+u` | Half-page down / up |
-| `n` / `N` | Next / previous heading |
+| `n` / `N` | Next / previous heading (cycles search matches after a search) |
 | `/` | Search |
+| `f` | Link-hint mode (open/follow links by letter) |
 | `t` | Toggle table of contents |
-| `T` | Theme picker |
-| `Enter` | Follow link |
+| `T` | Theme picker (choice is saved to config) |
+| `?` | Help overlay |
+| `Enter` | Follow first visible link |
 | `[` / `]` | Navigation back / forward |
 | `Tab` / `Shift+Tab` | Next / previous tab |
 | `Shift+B` | Back to file browser (when launched via browser) |
-| `q` / `Esc` / `Ctrl+C` | Quit ink |
+| `q` / `Esc` / `Ctrl+C` | Quit ink (first press clears an active search) |
 
 ### Customizing keybindings
 
@@ -228,6 +250,10 @@ frontmatter = false
 [behavior]
 # Set true to restore the old "return to file browser after closing a doc" behavior
 browser_loop = false
+
+# Set false to let your terminal handle the mouse (click-to-open links, text
+# selection) instead of ink capturing it for wheel-scroll. Default: true
+mouse_capture = true
 ```
 
 ### Custom themes
@@ -248,6 +274,13 @@ ink shell-setup bash   # or zsh, fish
 
 Prints config snippets you can add to your shell profile — aliases, fzf preview, git pager setup.
 
+### Shell completions and man page
+
+```bash
+ink completions zsh > ~/.zfunc/_ink        # bash | zsh | fish | powershell | elvish
+ink man > /usr/local/share/man/man1/ink.1  # man page (troff)
+```
+
 ## CLI reference
 
 ```
@@ -261,6 +294,9 @@ Options:
       --watch            Watch file for changes
       --toc              Show table of contents on startup
       --no-images        Disable image rendering
+      --remote-images    Allow fetching remote (http/https) images
+      --list-themes      List available themes and exit
+      --no-pager         Never page --plain output, even on a TTY
       --frontmatter      Show YAML/TOML frontmatter
       --spacing <MODE>   Line spacing: compact, normal, relaxed
 
@@ -269,6 +305,10 @@ Subcommands:
   stats        Show document statistics
   diff         Diff two markdown files
   shell-setup  Print shell integration snippets
+  completions  Generate shell completions
+  man          Generate a man page
+  config       Config helpers (init, path)
+  keybindings  Print the active keybinding map
 ```
 
 ## How it compares
@@ -286,6 +326,9 @@ Subcommands:
 | File browser | Yes | Yes | No | Yes |
 | Watch mode | Yes | No | No | No |
 | Presentation mode | Yes | No | No | No |
+| Pager mode | Yes | Yes | No | No |
+| Shell completions + man page | Yes | Yes | Yes | No |
+| Math + emoji | Yes | No | No | No |
 | Themes | 8 | 2 | 0 | 0 |
 | Single binary | Yes | Yes | Yes | No |
 
