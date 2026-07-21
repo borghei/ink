@@ -473,7 +473,14 @@ fn run_inner(
                         let base = std::path::Path::new(&tabs[active_tab].filename)
                             .parent()
                             .unwrap_or(std::path::Path::new("."));
-                        let target = base.join(&link_path);
+                        // Contain link targets: stay inside the current doc's
+                        // directory tree or the directory ink was launched in.
+                        let cwd = std::env::current_dir().unwrap_or_default();
+                        let Some(target) =
+                            crate::sanitize::resolve_within(base, &[base, &cwd], &link_path)
+                        else {
+                            continue;
+                        };
                         if let Ok(src) = std::fs::read_to_string(&target) {
                             nav_history.push(NavEntry {
                                 filename: tabs[active_tab].filename.clone(),
@@ -580,7 +587,7 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16) -> Ta
         args.spacing,
         center_margin,
         base_dir,
-        args.no_images,
+        args.images,
     );
     let ratatui_lines = render::styled_lines_to_ratatui(&styled_lines, &args.theme);
 

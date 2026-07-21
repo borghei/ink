@@ -34,10 +34,40 @@ if [ -z "$LATEST" ]; then
 fi
 
 URL="https://github.com/$REPO/releases/download/$LATEST/$BINARY"
+SUMS_URL="https://github.com/$REPO/releases/download/$LATEST/SHA256SUMS"
 
 echo "Downloading ink $LATEST for $os/$arch..."
 TMPFILE=$(mktemp)
 curl -fsSL "$URL" -o "$TMPFILE"
+
+# Verify the download against the published checksum manifest before trusting it.
+echo "Verifying checksum..."
+EXPECTED=$(curl -fsSL "$SUMS_URL" | grep " $BINARY\$" | cut -d' ' -f1)
+if [ -z "$EXPECTED" ]; then
+  echo "Could not fetch checksum for $BINARY from $SUMS_URL — aborting."
+  rm -f "$TMPFILE"
+  exit 1
+fi
+
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL=$(sha256sum "$TMPFILE" | cut -d' ' -f1)
+elif command -v shasum >/dev/null 2>&1; then
+  ACTUAL=$(shasum -a 256 "$TMPFILE" | cut -d' ' -f1)
+else
+  echo "Neither sha256sum nor shasum found — cannot verify download. Aborting."
+  rm -f "$TMPFILE"
+  exit 1
+fi
+
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "Checksum mismatch for $BINARY!"
+  echo "  expected: $EXPECTED"
+  echo "  actual:   $ACTUAL"
+  rm -f "$TMPFILE"
+  exit 1
+fi
+echo "Checksum OK."
+
 chmod +x "$TMPFILE"
 
 # Install

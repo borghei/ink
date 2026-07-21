@@ -22,8 +22,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let root = parse_document(&arena, &content, &options);
     let t = theme::resolve_theme(&args.theme);
     let width = args.width.unwrap_or(80);
-    let styled_lines =
-        layout::layout_document(root, &t, width, args.spacing, 2, None, args.no_images);
+    let styled_lines = layout::layout_document(root, &t, width, args.spacing, 2, None, args.images);
 
     let mut output = String::new();
     for line in &styled_lines {
@@ -56,14 +55,20 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
                 output.push_str(&format!("\x1b[{}m", codes.join(";")));
             }
 
-            // OSC 8 hyperlink
-            if let Some(ref url) = span.style.link_url {
+            // OSC 8 hyperlink. Layout already sanitizes URLs; re-check here
+            // so this sink stays safe even if a future code path skips it.
+            let link_url = span
+                .style
+                .link_url
+                .as_deref()
+                .and_then(crate::sanitize::sanitize_url);
+            if let Some(ref url) = link_url {
                 output.push_str(&format!("\x1b]8;;{url}\x1b\\"));
             }
 
             output.push_str(&span.text);
 
-            if span.style.link_url.is_some() {
+            if link_url.is_some() {
                 output.push_str("\x1b]8;;\x1b\\");
             }
 

@@ -69,10 +69,15 @@ jobs:
         with:
           merge-multiple: true
 
+      - name: Generate checksums
+        run: shasum -a 256 ink-* > SHA256SUMS
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
-          files: ink-*
+          files: |
+            ink-*
+            SHA256SUMS
           generate_release_notes: true
 
   # Bump the Homebrew tap formula in the same run. Chaining via `needs` (rather

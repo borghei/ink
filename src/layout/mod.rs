@@ -1,6 +1,7 @@
 pub mod mermaid;
 pub mod table;
 
+use crate::image::ImageMode;
 use crate::theme::Theme;
 use crate::Spacing;
 use comrak::nodes::{AstNode, ListType, NodeValue};
@@ -77,7 +78,7 @@ pub fn layout_document<'a>(
     spacing: Spacing,
     center_margin: usize,
     base_dir: Option<&std::path::Path>,
-    no_images: bool,
+    images: ImageMode,
 ) -> Vec<StyledLine> {
     let mut lines: Vec<StyledLine> = Vec::new();
     let ss = SyntaxSet::load_defaults_newlines();
@@ -92,10 +93,29 @@ pub fn layout_document<'a>(
         syntax_set: &ss,
         theme_set: &ts,
         base_dir,
-        no_images,
+        images,
     };
     layout_node(root, &ctx, &mut lines);
+    sanitize_lines(&mut lines);
     lines
+}
+
+/// Final pass over everything headed for the terminal: strip control bytes
+/// from text and drop link destinations with disallowed schemes or embedded
+/// controls. Untrusted markdown must not be able to emit escape sequences.
+fn sanitize_lines(lines: &mut [StyledLine]) {
+    use crate::sanitize::{sanitize_text, sanitize_url};
+    use std::borrow::Cow;
+    for line in lines.iter_mut() {
+        for span in line.spans.iter_mut() {
+            if let Cow::Owned(clean) = sanitize_text(&span.text) {
+                span.text = clean;
+            }
+            if let Some(url) = span.style.link_url.take() {
+                span.style.link_url = sanitize_url(&url);
+            }
+        }
+    }
 }
 
 struct LayoutContext<'a> {
@@ -108,7 +128,7 @@ struct LayoutContext<'a> {
     syntax_set: &'a SyntaxSet,
     theme_set: &'a ThemeSet,
     base_dir: Option<&'a std::path::Path>,
-    no_images: bool,
+    images: ImageMode,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -288,7 +308,7 @@ fn layout_heading<'a>(
 
 fn layout_paragraph<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     // Try to render standalone images as block-level elements with half-block pixels
-    if !ctx.no_images {
+    if ctx.images != ImageMode::Off {
         if let Some(image_lines) = try_render_image_block(node, ctx) {
             lines.extend(image_lines);
             add_spacing(ctx, lines);
@@ -325,7 +345,24 @@ fn try_render_image_block<'a>(
     let alt = collect_child_text(child);
 
     // Try to load and render the image
-    let image_data = crate::image::load_image(&url, ctx.base_dir)?;
+    let image_data = match crate::image::load_image(&url, ctx.base_dir, ctx.images) {
+        Ok(data) => data,
+        Err(crate::image::ImageUnavailable::RemoteBlocked) => {
+            let alt_display = if alt.is_empty() { &url } else { &alt };
+            let mut line = StyledLine::new();
+            ctx.add_margin(&mut line);
+            line.push(StyledSpan {
+                text: format!("🖼 {alt_display} (remote image — pass --remote-images to load)"),
+                style: SpanStyle {
+                    fg: Some(ctx.theme.colors.link_url.clone()),
+                    italic: true,
+                    ..Default::default()
+                },
+            });
+            return Some(vec![line]);
+        }
+        Err(crate::image::ImageUnavailable::Failed) => return None,
+    };
     let mut image_lines = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)?;
 
     // Add alt text as caption below the image
@@ -542,7 +579,7 @@ fn layout_blockquote<'a>(
         syntax_set: ctx.syntax_set,
         theme_set: ctx.theme_set,
         base_dir: ctx.base_dir,
-        no_images: ctx.no_images,
+        images: ctx.images,
     };
     let mut inner_lines = Vec::new();
     let mut skip_first = admonition.is_some();
@@ -637,7 +674,7 @@ fn layout_list<'a>(
         syntax_set: ctx.syntax_set,
         theme_set: ctx.theme_set,
         base_dir: ctx.base_dir,
-        no_images: ctx.no_images,
+        images: ctx.images,
     };
 
     for (i, item) in node.children().enumerate() {

@@ -47,6 +47,10 @@ pub struct Cli {
     #[arg(long)]
     pub no_images: bool,
 
+    /// Allow fetching remote (http/https) images referenced in documents
+    #[arg(long)]
+    pub remote_images: bool,
+
     /// Show YAML/TOML frontmatter
     #[arg(long)]
     pub frontmatter: bool,
@@ -111,7 +115,7 @@ pub struct Args {
     pub plain: bool,
     pub watch: bool,
     pub toc: bool,
-    pub no_images: bool,
+    pub images: crate::image::ImageMode,
     pub frontmatter: bool,
     pub spacing: Spacing,
 }
@@ -192,7 +196,13 @@ pub fn run() -> Result<()> {
         plain: cli.plain,
         watch: cli.watch,
         toc: cli.toc,
-        no_images: cli.no_images,
+        images: if cli.no_images {
+            crate::image::ImageMode::Off
+        } else if cli.remote_images {
+            crate::image::ImageMode::All
+        } else {
+            crate::image::ImageMode::LocalOnly
+        },
         frontmatter: cli.frontmatter,
         spacing,
     };
@@ -477,8 +487,7 @@ fn read_input(args: &Args) -> Result<String> {
 
     let input = &args.inputs[0];
     if input.starts_with("http://") || input.starts_with("https://") {
-        let resp = reqwest::blocking::get(input)?;
-        Ok(resp.text()?)
+        crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
     } else {
         let path = PathBuf::from(input);
         Ok(std::fs::read_to_string(&path)?)

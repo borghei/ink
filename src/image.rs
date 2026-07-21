@@ -5,32 +5,53 @@ use std::path::Path;
 const MAX_IMAGE_WIDTH: u32 = 60;
 const MAX_IMAGE_HEIGHT: u32 = 24; // Each row = 2 pixel rows with half-blocks
 
+/// Which images a document is allowed to load.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageMode {
+    /// No image rendering at all (`--no-images`).
+    Off,
+    /// Local files only — remote URLs show a placeholder (default; remote
+    /// fetches from inside untrusted documents are SSRF/tracking vectors).
+    LocalOnly,
+    /// Local files and remote URLs (`--remote-images`).
+    All,
+}
+
+/// Why an image could not be loaded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageUnavailable {
+    /// Remote image while remote fetching is disabled.
+    RemoteBlocked,
+    /// Missing file, escaping path, oversized, network or decode error.
+    Failed,
+}
+
 /// Load image data from a file path or URL.
 ///
-/// For relative paths, resolves against `base_dir`.
-/// Returns `None` if the image cannot be loaded (missing file, network error, etc.).
-pub fn load_image(src: &str, base_dir: Option<&Path>) -> Option<Vec<u8>> {
+/// Relative paths resolve against `base_dir` and must stay inside it
+/// (symlinks resolved); absolute paths are rejected — a hostile document
+/// must not read arbitrary files. Local reads and remote fetches are both
+/// size-capped.
+pub fn load_image(
+    src: &str,
+    base_dir: Option<&Path>,
+    mode: ImageMode,
+) -> Result<Vec<u8>, ImageUnavailable> {
     if src.starts_with("http://") || src.starts_with("https://") {
-        // Download with a short timeout to avoid blocking the UI
-        let client = reqwest::blocking::Client::builder()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .ok()?;
-        client
-            .get(src)
-            .send()
-            .ok()?
-            .bytes()
-            .ok()
-            .map(|b| b.to_vec())
-    } else {
-        let path = if let Some(base) = base_dir {
-            base.join(src)
-        } else {
-            std::path::PathBuf::from(src)
-        };
-        std::fs::read(&path).ok()
+        if mode != ImageMode::All {
+            return Err(ImageUnavailable::RemoteBlocked);
+        }
+        return crate::net::fetch_untrusted_bytes(src, crate::net::IMAGE_FETCH_CAP)
+            .map_err(|_| ImageUnavailable::Failed);
     }
+    let base = base_dir.unwrap_or_else(|| Path::new("."));
+    let path =
+        crate::sanitize::resolve_within(base, &[base], src).ok_or(ImageUnavailable::Failed)?;
+    let meta = std::fs::metadata(&path).map_err(|_| ImageUnavailable::Failed)?;
+    if !meta.is_file() || meta.len() > crate::net::IMAGE_FETCH_CAP {
+        return Err(ImageUnavailable::Failed);
+    }
+    std::fs::read(&path).map_err(|_| ImageUnavailable::Failed)
 }
 
 /// Render image data to styled lines using Unicode half-block characters (▄).

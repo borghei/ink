@@ -8,7 +8,15 @@ fn layout(source: &str, width: u16) -> Vec<ink_md::layout::StyledLine> {
     let arena = Arena::new();
     let root = parse_document(&arena, source, &parser::options());
     let theme = resolve_theme("dark");
-    layout_document(root, &theme, width, Spacing::Normal, 0, None, true)
+    layout_document(
+        root,
+        &theme,
+        width,
+        Spacing::Normal,
+        0,
+        None,
+        ink_md::image::ImageMode::Off,
+    )
 }
 
 #[test]

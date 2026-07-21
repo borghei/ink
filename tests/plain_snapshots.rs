@@ -10,7 +10,7 @@ fn test_args() -> Args {
         plain: true,
         watch: false,
         toc: false,
-        no_images: true,
+        images: ink_md::image::ImageMode::Off,
         frontmatter: false,
         spacing: Spacing::Normal,
     }
