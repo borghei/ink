@@ -144,6 +144,44 @@ fn headings_report_their_own_line() {
 }
 
 #[test]
+fn wide_table_transposes_at_narrow_width() {
+    let src = "| Name | Description | Status | Notes |\n\
+               |---|---|---|---|\n\
+               | alpha | a long description value here | active | some notes |\n";
+    // Narrow: can't fit 4 columns → transposed key/value layout, no box borders.
+    let narrow = layout(src, 28);
+    let narrow_text: String = narrow
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(narrow_text.contains("Name"));
+    assert!(narrow_text.contains("alpha"));
+    assert!(narrow_text.contains("Description"));
+    assert!(
+        !narrow
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.text.contains('┬'))),
+        "narrow table should transpose, not render a grid"
+    );
+    for line in &narrow {
+        assert!(
+            line_width(line) <= 28,
+            "transposed line too wide: {}",
+            line_width(line)
+        );
+    }
+
+    // Wide: fits → keep the grid (has box borders).
+    let wide = layout(src, 100);
+    assert!(
+        wide.iter()
+            .any(|l| l.spans.iter().any(|s| s.text.contains('┬'))),
+        "wide table should render as a grid"
+    );
+}
+
+#[test]
 fn code_block_is_highlighted() {
     let lines = layout("```rust\nfn main() {}\n```\n", 80);
     let all_text: String = lines

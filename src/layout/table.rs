@@ -1,7 +1,10 @@
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
 use comrak::nodes::{AstNode, NodeValue};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Minimum readable width for a shrunk table column.
+const MIN_COL: usize = 5;
 
 /// Layout a markdown table with word-wrapped cells that fit within max_width.
 pub fn layout_table<'a>(
@@ -34,11 +37,18 @@ pub fn layout_table<'a>(
     let total_content: usize = col_widths.iter().sum();
     let total = total_content + overhead;
 
+    // If the grid can't fit even at the minimum column width, the columns can't
+    // sit side by side readably — fall back to a transposed key/value layout
+    // (like `psql -x`) that fits any width.
+    if num_cols * MIN_COL + overhead > max_width && !rows.is_empty() {
+        render_transposed(&headers, &rows, theme, max_width, &margin_str, lines);
+        return;
+    }
+
     if total > max_width {
         // Shrink columns proportionally to fit. A small per-column floor keeps
         // narrow tables inside the width by wrapping cells hard rather than
         // overflowing (only reached when the table is wider than the view).
-        const MIN_COL: usize = 5;
         let available = max_width.saturating_sub(overhead);
         if total_content > 0 {
             let scale = available as f64 / total_content as f64;
@@ -124,6 +134,120 @@ pub fn layout_table<'a>(
         &margin_str,
     ));
     lines.push(StyledLine::empty());
+}
+
+/// Render a table too wide for the view as a stacked key/value layout: each
+/// row becomes a record of `Header  value` lines, values wrapped, records
+/// separated by a thin rule. Always fits the width.
+fn render_transposed(
+    headers: &[String],
+    rows: &[Vec<String>],
+    theme: &Theme,
+    max_width: usize,
+    margin: &str,
+    lines: &mut Vec<StyledLine>,
+) {
+    const INDENT: usize = 2;
+    const GAP: usize = 1;
+    let header_color = &theme.colors.table_header;
+    let border_color = &theme.colors.table_border;
+
+    // Label column: the widest header, capped so values keep a usable width.
+    let max_hdr = headers.iter().map(|h| h.width()).max().unwrap_or(0);
+    let label_w = max_hdr
+        .min(max_width.saturating_sub(INDENT + GAP + 8))
+        .max(1);
+    let value_w = max_width.saturating_sub(INDENT + label_w + GAP).max(1);
+
+    let push_prefix = |line: &mut StyledLine| {
+        if !margin.is_empty() {
+            line.push(StyledSpan {
+                text: margin.to_string(),
+                style: SpanStyle::default(),
+            });
+        }
+        line.push(StyledSpan {
+            text: " ".repeat(INDENT),
+            style: SpanStyle::default(),
+        });
+    };
+
+    for (ri, row) in rows.iter().enumerate() {
+        for (ci, header) in headers.iter().enumerate() {
+            let value = row.get(ci).map(|s| s.as_str()).unwrap_or("");
+            let value_lines = wrap_text(value, value_w);
+            for (li, vline) in value_lines.iter().enumerate() {
+                let mut line = StyledLine::new();
+                push_prefix(&mut line);
+                if li == 0 {
+                    line.push(StyledSpan {
+                        text: format!("{}{}", fit_label(header, label_w), " ".repeat(GAP)),
+                        style: SpanStyle {
+                            fg: Some(header_color.clone()),
+                            bold: true,
+                            ..Default::default()
+                        },
+                    });
+                } else {
+                    line.push(StyledSpan {
+                        text: " ".repeat(label_w + GAP),
+                        style: SpanStyle::default(),
+                    });
+                }
+                line.push(StyledSpan {
+                    text: vline.clone(),
+                    style: SpanStyle::default(),
+                });
+                lines.push(line);
+            }
+        }
+        // Thin separator between records (not after the last).
+        if ri + 1 < rows.len() {
+            let mut sep = StyledLine::new();
+            if !margin.is_empty() {
+                sep.push(StyledSpan {
+                    text: margin.to_string(),
+                    style: SpanStyle::default(),
+                });
+            }
+            sep.push(StyledSpan {
+                text: "╌".repeat(max_width),
+                style: SpanStyle {
+                    fg: Some(border_color.clone()),
+                    ..Default::default()
+                },
+            });
+            lines.push(sep);
+        }
+    }
+    lines.push(StyledLine::empty());
+}
+
+/// Pad or truncate (with an ellipsis) `s` to exactly `w` display columns.
+fn fit_label(s: &str, w: usize) -> String {
+    let sw = s.width();
+    if sw == w {
+        return s.to_string();
+    }
+    if sw < w {
+        return format!("{s}{}", " ".repeat(w - sw));
+    }
+    let mut out = String::new();
+    let mut acc = 0;
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(1);
+        if acc + cw > w.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        acc += cw;
+    }
+    out.push('…');
+    let ow = out.width();
+    if ow < w {
+        out.push_str(&" ".repeat(w - ow));
+    }
+    out
 }
 
 /// Word-wrap each cell in a row to fit its column width.

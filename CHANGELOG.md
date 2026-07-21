@@ -10,7 +10,9 @@
 - **Footnote definitions** render the label and text on one line (`[^1]: text`) instead of splitting them across two lines.
 - Removed stray blank/indented lines after nested list items and the trailing empty bar line after blockquotes and admonitions; consecutive admonitions and a following block now have proper spacing.
 - Raw HTML blocks (e.g. centered `<img>` headers) wrap to the width instead of overflowing.
-- Very narrow tables degrade by wrapping cells harder rather than overflowing.
+
+### Added
+- **Responsive tables.** A table too wide to fit the terminal — even after shrinking columns — now falls back to a stacked key/value layout (like `psql -x`): each row becomes a record of `Header  value` lines with wrapped values, separated by a thin rule. This always fits any width and stays readable, instead of a grid that overflows and gets clipped. Tables that fit still render as the usual bordered grid.
 
 ### Internal
 - `--plain` output coalesces adjacent same-styled spans, so multi-word runs stay contiguous (greppable) and emit far fewer escape sequences.
