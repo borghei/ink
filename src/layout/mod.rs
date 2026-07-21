@@ -16,6 +16,12 @@ pub struct StyledLine {
     pub spans: Vec<StyledSpan>,
 }
 
+impl Default for StyledLine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl StyledLine {
     pub fn new() -> Self {
         Self { spans: Vec::new() }

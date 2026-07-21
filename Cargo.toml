@@ -9,6 +9,10 @@ repository = "https://github.com/borghei/ink"
 keywords = ["markdown", "terminal", "reader", "tui", "cli"]
 categories = ["command-line-utilities", "text-processing"]
 
+[lib]
+name = "ink_md"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ink"
 path = "src/main.rs"
@@ -19,7 +23,7 @@ comrak = { version = "0.36", default-features = false, features = ["syntect"] }
 
 # TUI framework
 ratatui = { version = "0.30", features = ["crossterm"] }
-crossterm = { version = "0.28", features = ["event-stream"] }
+crossterm = "0.28"
 
 # Syntax highlighting
 syntect = { version = "5.2", default-features = false, features = ["default-fancy"] }
@@ -37,9 +41,6 @@ serde = { version = "1", features = ["derive"] }
 # URL fetching (rustls = no system OpenSSL dependency, cross-compiles cleanly)
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 
-# Open URLs in browser
-open = "5"
-
 # XDG directories
 dirs = "6"
 
@@ -51,6 +52,12 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 # Cross-platform file watching for --watch (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows)
 notify = "8"
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+insta = "1"
+tempfile = "3"
 
 [profile.release]
 lto = true
