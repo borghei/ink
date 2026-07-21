@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.0 — 2026-07-21
+
+### Added
+- **Help overlay.** Press `?` in the viewer for a popup of the active keybindings.
+- **Open links from the keyboard.** Press `f` to label every link on screen; press its letter to open web/mail links in your browser or follow a relative `.md` link in place. (Previously `Enter` only guessed the first visible link.)
+- **Search result cycling.** After running a search and pressing Enter, `n`/`N` now cycle forward/backward through matches; the first `Esc`/`q` clears the highlights, the next exits.
+- **`NO_COLOR` support** and automatic color downgrade: honors the `NO_COLOR` convention in `--plain`, and quantizes 24-bit colors to the 256-color palette on terminals that don't advertise truecolor.
+- **Theme persistence.** Picking a theme in the theme picker (`T`, then Enter) now saves it to your config, preserving existing comments.
+- **`ink completions <shell>`** generates bash/zsh/fish/PowerShell/elvish completions; **`ink man`** generates a man page; **`ink --list-themes`** lists available themes.
+- **`mouse_capture` config option** (`[behavior]`) — set to `false` to let your terminal's own click-to-open links and text selection work instead of ink capturing the mouse.
+- Friendly error messages (`ink: cannot read 'x.md'`) instead of raw OS errors; non-UTF-8 files render with replacement characters and a warning instead of failing.
+- A "terminal too small" message instead of a broken layout on very small terminals.
+
 ## 0.3.0 — 2026-07-21
 
 ### Security

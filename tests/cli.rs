@@ -77,3 +77,53 @@ fn keybindings_lists_actions() {
         .success()
         .stdout(predicate::str::contains("toggle_toc"));
 }
+
+#[test]
+fn list_themes_includes_builtins() {
+    ink()
+        .arg("--list-themes")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("dracula").and(predicate::str::contains("nord")));
+}
+
+#[test]
+fn completions_bash_generates_script() {
+    ink()
+        .args(["completions", "bash"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_ink"));
+}
+
+#[test]
+fn completions_zsh_and_fish() {
+    for shell in ["zsh", "fish"] {
+        ink()
+            .args(["completions", shell])
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty().not());
+    }
+}
+
+#[test]
+fn man_page_renders_troff() {
+    ink()
+        .arg("man")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(".TH").and(predicate::str::contains("ink")));
+}
+
+#[test]
+fn no_color_strips_ansi_color() {
+    // NO_COLOR must drop SGR color codes from --plain output.
+    ink()
+        .env("NO_COLOR", "1")
+        .args(["--plain", "--theme", "dark", "--width", "80"])
+        .arg("tests/fixtures/test.md")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\x1b[38;2;").not());
+}

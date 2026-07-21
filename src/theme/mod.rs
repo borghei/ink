@@ -1,7 +1,48 @@
 pub mod builtin;
+pub mod caps;
 pub mod detect;
 
 use serde::Deserialize;
+
+/// The built-in theme names, in display order.
+pub const BUILTIN_THEMES: &[&str] = &[
+    "dark",
+    "light",
+    "dracula",
+    "catppuccin",
+    "nord",
+    "tokyo-night",
+    "gruvbox",
+    "solarized",
+];
+
+/// All available theme names: built-ins plus any `*.toml` in the user themes
+/// directory (`~/.config/ink/themes/`).
+pub fn available_themes() -> Vec<String> {
+    let mut names: Vec<String> = BUILTIN_THEMES.iter().map(|s| s.to_string()).collect();
+    if let Some(dir) = dirs::config_dir() {
+        let themes_dir = dir.join("ink").join("themes");
+        if let Ok(entries) = std::fs::read_dir(&themes_dir) {
+            let mut user: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let path = e.path();
+                    if path.extension().and_then(|s| s.to_str()) == Some("toml") {
+                        path.file_stem()
+                            .and_then(|s| s.to_str())
+                            .map(|s| s.to_string())
+                    } else {
+                        None
+                    }
+                })
+                .filter(|n| !BUILTIN_THEMES.contains(&n.as_str()))
+                .collect();
+            user.sort();
+            names.extend(user);
+        }
+    }
+    names
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -106,7 +147,16 @@ pub fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
     (r, g, b)
 }
 
+/// Convert a hex string to a ratatui color, adapted to the terminal:
+/// quantized to the 256-color cube when truecolor isn't available. (In the
+/// TUI, `NO_COLOR` is not honored — an alternate-screen reader without color
+/// is not useful; use `--plain` for the no-color path.)
 pub fn hex_to_color(hex: &str) -> ratatui::style::Color {
     let (r, g, b) = hex_to_rgb(hex);
-    ratatui::style::Color::Rgb(r, g, b)
+    let rgb = ratatui::style::Color::Rgb(r, g, b);
+    if caps::caps().truecolor {
+        rgb
+    } else {
+        ratatui::style::Color::Indexed(caps::rgb_to_256(r, g, b))
+    }
 }

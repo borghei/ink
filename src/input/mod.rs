@@ -36,7 +36,21 @@ pub enum Action {
     NavBack,
     NavForward,
     ThemePicker,
+    Help,
+    LinkMode,
+    LinkHint(char),
     None,
+}
+
+/// Which key-mapping regime `poll_action` should use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputMode {
+    /// Normal document navigation (the configured keymap).
+    Normal,
+    /// Search input line — keys become query text.
+    Search,
+    /// Link-hint overlay — letter keys pick a link, Esc cancels.
+    LinkHint,
 }
 
 /// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
@@ -82,26 +96,144 @@ pub fn current_chords() -> Vec<(KeyBinding, KeyBinding, Action)> {
         .collect()
 }
 
-pub fn poll_action(timeout: std::time::Duration, search_active: bool) -> Option<Action> {
+/// A readable summary of the active keymap, grouped by action, for the help
+/// overlay and the `ink keybindings` subcommand. Returns `(label, keys)`
+/// pairs in a curated display order.
+pub fn keymap_summary() -> Vec<(&'static str, Vec<String>)> {
+    use std::collections::BTreeMap;
+    let Some(km) = KEYMAP.get() else {
+        return Vec::new();
+    };
+
+    let mut by_action: BTreeMap<&'static str, Vec<String>> = BTreeMap::new();
+    for ((code, mods), action) in km.singles.iter() {
+        by_action
+            .entry(action_label(action))
+            .or_default()
+            .push(fmt_key(code, mods));
+    }
+    for (prefix, sub) in km.chord_prefixes.iter() {
+        for (second, action) in sub.iter() {
+            by_action
+                .entry(action_label(action))
+                .or_default()
+                .push(format!(
+                    "{} {}",
+                    fmt_key(&prefix.0, &prefix.1),
+                    fmt_key(&second.0, &second.1)
+                ));
+        }
+    }
+
+    // Curated order for the overlay; unknown/other actions are dropped.
+    const ORDER: &[&str] = &[
+        "scroll",
+        "page",
+        "top / bottom",
+        "next / prev heading",
+        "search",
+        "table of contents",
+        "follow link",
+        "link hints",
+        "theme picker",
+        "tabs",
+        "back / forward",
+        "help",
+        "quit",
+    ];
+    let mut out = Vec::new();
+    for label in ORDER {
+        if let Some(mut keys) = by_action.remove(label) {
+            keys.sort();
+            keys.dedup();
+            out.push((*label, keys));
+        }
+    }
+    out
+}
+
+fn action_label(a: &Action) -> &'static str {
+    match a {
+        Action::ScrollUp(1) | Action::ScrollDown(1) => "scroll",
+        Action::ScrollUp(_) | Action::ScrollDown(_) => "scroll",
+        Action::PageUp | Action::PageDown => "page",
+        Action::Home | Action::End => "top / bottom",
+        Action::NextHeading | Action::PrevHeading => "next / prev heading",
+        Action::Search => "search",
+        Action::ToggleToc => "table of contents",
+        Action::FollowLink => "follow link",
+        Action::LinkMode => "link hints",
+        Action::ThemePicker => "theme picker",
+        Action::NextTab | Action::PrevTab => "tabs",
+        Action::NavBack | Action::NavForward => "back / forward",
+        Action::Help => "help",
+        Action::ExitApp => "quit",
+        _ => "other",
+    }
+}
+
+fn fmt_key(code: &KeyCode, mods: &KeyModifiers) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if mods.contains(KeyModifiers::CONTROL) {
+        parts.push("ctrl");
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        parts.push("alt");
+    }
+    if mods.contains(KeyModifiers::SHIFT) {
+        parts.push("shift");
+    }
+    let key = match code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_string(),
+        KeyCode::Esc => "esc".into(),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::BackTab => "backtab".into(),
+        KeyCode::Up => "↑".into(),
+        KeyCode::Down => "↓".into(),
+        KeyCode::Left => "←".into(),
+        KeyCode::Right => "→".into(),
+        KeyCode::PageUp => "pgup".into(),
+        KeyCode::PageDown => "pgdn".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::Backspace => "bksp".into(),
+        other => format!("{other:?}").to_lowercase(),
+    };
+    if parts.is_empty() {
+        key
+    } else {
+        format!("{}-{}", parts.join("-"), key)
+    }
+}
+
+pub fn poll_action(timeout: std::time::Duration, mode: InputMode) -> Option<Action> {
     if event::poll(timeout).ok()? {
         let event = event::read().ok()?;
-        Some(map_event(event, search_active))
+        Some(map_event(event, mode))
     } else {
         None
     }
 }
 
-fn map_event(event: Event, search_active: bool) -> Action {
+fn map_event(event: Event, mode: InputMode) -> Action {
     match event {
-        Event::Key(key) => {
-            if search_active {
-                map_search_key(key)
-            } else {
-                map_key(key)
-            }
-        }
+        Event::Key(key) => match mode {
+            InputMode::Search => map_search_key(key),
+            InputMode::LinkHint => map_link_hint_key(key),
+            InputMode::Normal => map_key(key),
+        },
         Event::Mouse(mouse) => map_mouse(mouse),
         Event::Resize(w, h) => Action::Resize(w, h),
+        _ => Action::None,
+    }
+}
+
+fn map_link_hint_key(key: KeyEvent) -> Action {
+    match key.code {
+        KeyCode::Esc => Action::CloseSearch,
+        KeyCode::Char(c) if c.is_ascii_alphabetic() => Action::LinkHint(c.to_ascii_lowercase()),
         _ => Action::None,
     }
 }

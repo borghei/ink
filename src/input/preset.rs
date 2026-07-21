@@ -25,6 +25,8 @@ pub const DEFAULT: Preset = &[
     ("next_tab", &["tab"]),
     ("prev_tab", &["backtab"]),
     ("follow_link", &["enter"]),
+    ("link_mode", &["f"]),
+    ("help", &["?"]),
     ("nav_back", &["[", "alt-left"]),
     ("nav_forward", &["]", "alt-right"]),
 ];
@@ -54,6 +56,8 @@ pub const EMACS: Preset = &[
     ("next_tab", &["tab"]),
     ("prev_tab", &["backtab"]),
     ("follow_link", &["enter"]),
+    ("link_mode", &["f"]),
+    ("help", &["?"]),
     ("nav_back", &["[", "alt-left"]),
     ("nav_forward", &["]", "alt-right"]),
 ];

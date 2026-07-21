@@ -13,6 +13,7 @@ fn test_args() -> Args {
         images: ink_md::image::ImageMode::Off,
         frontmatter: false,
         spacing: Spacing::Normal,
+        mouse_capture: true,
     }
 }
 

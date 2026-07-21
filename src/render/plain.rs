@@ -25,6 +25,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let styled_lines =
         layout::layout_document(root, &t, width, args.spacing, 2, None, args.images).lines;
 
+    let caps = theme::caps::caps();
     let mut output = String::new();
     for line in &styled_lines {
         for span in &line.spans {
@@ -44,13 +45,15 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
             if span.style.dim {
                 codes.push("2");
             }
-            if let Some(ref fg) = span.style.fg {
-                let (r, g, b) = theme::hex_to_rgb(fg);
-                output.push_str(&format!("\x1b[38;2;{r};{g};{b}m"));
-            }
-            if let Some(ref bg) = span.style.bg {
-                let (r, g, b) = theme::hex_to_rgb(bg);
-                output.push_str(&format!("\x1b[48;2;{r};{g};{b}m"));
+            // NO_COLOR: keep text attributes, drop color (per no-color.org).
+            let color_on = !caps.no_color;
+            if color_on {
+                if let Some(ref fg) = span.style.fg {
+                    output.push_str(&sgr_color(theme::hex_to_rgb(fg), true, caps.truecolor));
+                }
+                if let Some(ref bg) = span.style.bg {
+                    output.push_str(&sgr_color(theme::hex_to_rgb(bg), false, caps.truecolor));
+                }
             }
             if !codes.is_empty() {
                 output.push_str(&format!("\x1b[{}m", codes.join(";")));
@@ -73,8 +76,8 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
                 output.push_str("\x1b]8;;\x1b\\");
             }
 
-            if span.style.fg.is_some()
-                || span.style.bg.is_some()
+            let emitted_color = color_on && (span.style.fg.is_some() || span.style.bg.is_some());
+            if emitted_color
                 || span.style.bold
                 || span.style.italic
                 || span.style.underline
@@ -88,4 +91,16 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     }
 
     Ok(output)
+}
+
+/// Build an SGR color escape: 24-bit when `truecolor`, else the 256-color
+/// cube. `fg` selects foreground (38) vs background (48).
+fn sgr_color((r, g, b): (u8, u8, u8), fg: bool, truecolor: bool) -> String {
+    let sel = if fg { 38 } else { 48 };
+    if truecolor {
+        format!("\x1b[{sel};2;{r};{g};{b}m")
+    } else {
+        let idx = theme::caps::rgb_to_256(r, g, b);
+        format!("\x1b[{sel};5;{idx}m")
+    }
 }

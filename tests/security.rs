@@ -16,6 +16,7 @@ fn args() -> Args {
         images: ink_md::image::ImageMode::LocalOnly,
         frontmatter: false,
         spacing: Spacing::Normal,
+        mouse_capture: true,
     }
 }
 

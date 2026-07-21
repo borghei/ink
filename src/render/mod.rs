@@ -104,10 +104,10 @@ pub fn render_bottom_bar(
 
     let mut keys: Vec<(&str, &str)> = vec![
         ("↑↓/jk", "scroll"),
-        ("n/N", "heading"),
-        ("t", "toc"),
         ("/", "search"),
-        ("T", "theme"),
+        ("f", "links"),
+        ("t", "toc"),
+        ("?", "help"),
     ];
     if multi_tab {
         keys.push(("Tab", "next"));
@@ -367,6 +367,111 @@ pub fn render_toc(
     }
 
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Render the help overlay: a centered popup of keybindings.
+pub fn render_help(frame: &mut Frame, area: Rect, t: &theme::Theme) {
+    let entries = crate::input::keymap_summary();
+    let title_color = theme::hex_to_color(&t.colors.heading1);
+    let key_color = theme::hex_to_color(&t.colors.heading2);
+    let desc_color = theme::hex_to_color(&t.colors.status_bar_fg);
+    let bg = theme::hex_to_color(&t.colors.code_block_bg);
+    let border_color = theme::hex_to_color(&t.colors.table_border);
+
+    let label_w = entries.iter().map(|(l, _)| l.len()).max().unwrap_or(10);
+    let lines: Vec<Line<'static>> = entries
+        .iter()
+        .map(|(label, keys)| {
+            Line::from(vec![
+                Span::styled(
+                    format!("  {label:label_w$}  "),
+                    Style::default().fg(desc_color).bg(bg),
+                ),
+                Span::styled(keys.join(", "), Style::default().fg(key_color).bg(bg)),
+            ])
+        })
+        .collect();
+
+    let popup_width = 48u16.min(area.width.saturating_sub(2));
+    let popup_height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .title(" Keys — press any key to close ")
+        .title_style(
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(bg));
+    frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+}
+
+/// Render the link-hint overlay: a centered popup listing labeled links.
+pub fn render_link_hints(
+    frame: &mut Frame,
+    area: Rect,
+    hints: &[(char, String)],
+    t: &theme::Theme,
+) {
+    let title_color = theme::hex_to_color(&t.colors.heading1);
+    let label_color = theme::hex_to_color(&t.colors.heading2);
+    let url_color = theme::hex_to_color(&t.colors.link_url);
+    let bg = theme::hex_to_color(&t.colors.code_block_bg);
+    let border_color = theme::hex_to_color(&t.colors.table_border);
+
+    let popup_width = 60u16.min(area.width.saturating_sub(2));
+    let max_url = popup_width.saturating_sub(8) as usize;
+    let lines: Vec<Line<'static>> = hints
+        .iter()
+        .map(|(label, url)| {
+            let shown: String = if url.chars().count() > max_url {
+                format!(
+                    "{}…",
+                    url.chars()
+                        .take(max_url.saturating_sub(1))
+                        .collect::<String>()
+                )
+            } else {
+                url.clone()
+            };
+            Line::from(vec![
+                Span::styled(
+                    format!("  {label}  "),
+                    Style::default()
+                        .fg(label_color)
+                        .bg(bg)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(shown, Style::default().fg(url_color).bg(bg)),
+            ])
+        })
+        .collect();
+
+    let popup_height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
+    let x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(x, y, popup_width, popup_height);
+    frame.render_widget(Clear, popup_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color))
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .title(" Follow link — press a letter, Esc to cancel ")
+        .title_style(
+            Style::default()
+                .fg(title_color)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(bg));
+    frame.render_widget(Paragraph::new(lines).block(block), popup_area);
 }
 
 /// Render the theme picker overlay.

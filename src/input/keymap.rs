@@ -118,6 +118,8 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "search" => Action::Search,
         "theme_picker" => Action::ThemePicker,
         "follow_link" => Action::FollowLink,
+        "link_mode" => Action::LinkMode,
+        "help" => Action::Help,
         "nav_back" => Action::NavBack,
         "nav_forward" => Action::NavForward,
         _ => return None,

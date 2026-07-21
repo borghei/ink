@@ -43,6 +43,12 @@ struct NavEntry {
     scroll_offset: u16,
 }
 
+/// A labeled link in the current viewport for hint-mode selection.
+struct LinkHint {
+    label: char,
+    url: String,
+}
+
 /// Available themes for the theme picker.
 const THEME_LIST: &[&str] = &[
     "dark",
@@ -65,20 +71,23 @@ pub enum AppExit {
 }
 
 pub fn run(source: String, args: Args) -> Result<AppExit> {
+    let mouse_capture = args.mouse_capture;
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    if mouse_capture {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_inner(&mut terminal, source, args);
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
+    if mouse_capture {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
     result
@@ -99,6 +108,9 @@ fn run_inner(
     let mut nav_forward: Vec<NavEntry> = Vec::new();
     let mut theme_picker_open = false;
     let mut theme_picker_index: usize = 0;
+    let mut help_open = false;
+    // Active link-hint overlay: labeled links currently on screen.
+    let mut link_hints: Vec<LinkHint> = Vec::new();
     // Bumped on every theme change so tabs know their cached layout is stale.
     let mut theme_gen: u32 = 0;
 
@@ -208,6 +220,15 @@ fn run_inner(
                     frame.render_widget(bg_block, size);
                 }
 
+                // Guard against a terminal too small to lay out safely.
+                if size.width < 20 || size.height < 6 {
+                    let msg = Paragraph::new("terminal too small")
+                        .alignment(Alignment::Center)
+                        .style(Style::default().fg(theme::hex_to_color(&t.colors.fg)));
+                    frame.render_widget(msg, size);
+                    return;
+                }
+
                 let vertical = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -297,6 +318,20 @@ fn run_inner(
                     );
                 }
 
+                // Link-hint overlay
+                if !link_hints.is_empty() {
+                    let hints: Vec<(char, String)> = link_hints
+                        .iter()
+                        .map(|h| (h.label, h.url.clone()))
+                        .collect();
+                    render::render_link_hints(frame, main_area, &hints, &t);
+                }
+
+                // Help overlay
+                if help_open {
+                    render::render_help(frame, main_area, &t);
+                }
+
                 // Bottom bar: search input OR keybindings + stats
                 if search.active {
                     render::render_search_bar(frame, bottom_bar_area, &search, &t);
@@ -318,9 +353,39 @@ fn run_inner(
         }
 
         // Handle input
-        if let Some(action) = input::poll_action(Duration::from_millis(50), search.active) {
+        let input_mode = if search.active {
+            input::InputMode::Search
+        } else if !link_hints.is_empty() {
+            input::InputMode::LinkHint
+        } else {
+            input::InputMode::Normal
+        };
+        if let Some(action) = input::poll_action(Duration::from_millis(50), input_mode) {
             // Any recognized action changes state → redraw on the next iteration.
             dirty = true;
+
+            // Help overlay is modal: any key closes it.
+            if help_open {
+                if action != Action::None {
+                    help_open = false;
+                }
+                continue;
+            }
+
+            // Link-hint overlay is modal: a label opens that link, Esc cancels.
+            if !link_hints.is_empty() {
+                match action {
+                    Action::LinkHint(c) => {
+                        if let Some(hint) = link_hints.iter().find(|h| h.label == c) {
+                            open_link(&hint.url, &mut tabs, active_tab, &args, terminal, theme_gen);
+                        }
+                        link_hints.clear();
+                    }
+                    Action::CloseSearch => link_hints.clear(),
+                    _ => link_hints.clear(),
+                }
+                continue;
+            }
             // Theme picker mode
             if theme_picker_open {
                 match action {
@@ -356,11 +421,21 @@ fn run_inner(
                         );
                     }
                     Action::SearchConfirm => {
-                        // Confirm theme selection
+                        // Confirm theme selection and persist it to config.
                         theme_picker_open = false;
+                        let _ = crate::config::set_theme(THEME_LIST[theme_picker_index]);
                     }
                     _ => {}
                 }
+                continue;
+            }
+
+            // A confirmed search shows highlighted matches; the first Esc/q
+            // dismisses them (vim/less convention) rather than quitting.
+            if action == Action::ExitApp && !search.matches.is_empty() {
+                search.deactivate();
+                let current_offset = tabs[active_tab].scroll_offset as usize;
+                tabs[active_tab].toc.update_selection(current_offset);
                 continue;
             }
 
@@ -437,35 +512,63 @@ fn run_inner(
                 // TOC
                 Action::ToggleToc => tabs[active_tab].toc.toggle(),
 
+                // Help overlay
+                Action::Help => {
+                    help_open = true;
+                }
+
                 // Theme picker
                 Action::ThemePicker => {
                     theme_picker_open = true;
                 }
 
-                // Heading jump: n = next heading, N = previous heading
+                // Link-hint mode: label every link in the viewport.
+                Action::LinkMode => {
+                    let offset = tabs[active_tab].scroll_offset as usize;
+                    let end = (offset + viewport_height as usize)
+                        .min(tabs[active_tab].styled_lines.len());
+                    link_hints = collect_link_hints(&tabs[active_tab].styled_lines[offset..end]);
+                }
+
+                // After a confirmed search, n/N cycle matches (less/vim
+                // convention); otherwise they jump between headings.
                 Action::NextHeading => {
-                    let current = tabs[active_tab].scroll_offset as usize;
-                    if let Some(next) = tabs[active_tab]
-                        .toc
-                        .headings
-                        .iter()
-                        .find(|h| h.line_index > current + 1)
-                    {
-                        tabs[active_tab].scroll_offset =
-                            (next.line_index.saturating_sub(1) as u16).min(max_scroll);
+                    if !search.matches.is_empty() {
+                        search.next_match();
+                        if let Some(line) = search.current_line() {
+                            tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        }
+                    } else {
+                        let current = tabs[active_tab].scroll_offset as usize;
+                        if let Some(next) = tabs[active_tab]
+                            .toc
+                            .headings
+                            .iter()
+                            .find(|h| h.line_index > current + 1)
+                        {
+                            tabs[active_tab].scroll_offset =
+                                (next.line_index.saturating_sub(1) as u16).min(max_scroll);
+                        }
                     }
                 }
                 Action::PrevHeading => {
-                    let current = tabs[active_tab].scroll_offset as usize;
-                    if let Some(prev) = tabs[active_tab]
-                        .toc
-                        .headings
-                        .iter()
-                        .rev()
-                        .find(|h| h.line_index + 1 < current)
-                    {
-                        tabs[active_tab].scroll_offset =
-                            (prev.line_index.saturating_sub(1) as u16).min(max_scroll);
+                    if !search.matches.is_empty() {
+                        search.prev_match();
+                        if let Some(line) = search.current_line() {
+                            tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        }
+                    } else {
+                        let current = tabs[active_tab].scroll_offset as usize;
+                        if let Some(prev) = tabs[active_tab]
+                            .toc
+                            .headings
+                            .iter()
+                            .rev()
+                            .find(|h| h.line_index + 1 < current)
+                        {
+                            tabs[active_tab].scroll_offset =
+                                (prev.line_index.saturating_sub(1) as u16).min(max_scroll);
+                        }
                     }
                 }
 
@@ -605,6 +708,71 @@ fn run_inner(
 
 fn is_local_file(input: &str) -> bool {
     !input.starts_with("http://") && !input.starts_with("https://") && input != "stdin"
+}
+
+/// Collect one hint per distinct link URL in the given (visible) lines,
+/// labeled a, b, c… Adjacent spans sharing a URL collapse to one hint.
+fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
+    let mut hints: Vec<LinkHint> = Vec::new();
+    let mut labels = b'a';
+    for line in lines {
+        for span in &line.spans {
+            if let Some(ref url) = span.style.link_url {
+                if hints.iter().any(|h| &h.url == url) {
+                    continue;
+                }
+                if labels > b'z' {
+                    return hints;
+                }
+                hints.push(LinkHint {
+                    label: labels as char,
+                    url: url.clone(),
+                });
+                labels += 1;
+            }
+        }
+    }
+    hints
+}
+
+/// Act on a chosen link: open web/mail URLs in the default handler; follow a
+/// relative `.md` link in-place (with containment + nav history).
+fn open_link(
+    url: &str,
+    tabs: &mut [Tab],
+    active_tab: usize,
+    args: &Args,
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    gen: u32,
+) {
+    // Web / mail: hand off to the OS. (URLs are already scheme-validated by
+    // sanitize_url during layout, but re-check defensively.)
+    if let Some(safe) = crate::sanitize::sanitize_url(url) {
+        let lower = safe.to_ascii_lowercase();
+        if lower.starts_with("http://")
+            || lower.starts_with("https://")
+            || lower.starts_with("mailto:")
+        {
+            let _ = open::that_detached(&safe);
+            return;
+        }
+    }
+    // Relative markdown link: follow in-place if it stays in-tree.
+    if !(url.ends_with(".md") || url.ends_with(".markdown")) {
+        return;
+    }
+    let base = std::path::Path::new(&tabs[active_tab].filename)
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let Some(target) = crate::sanitize::resolve_within(&base, &[&base, &cwd], url) else {
+        return;
+    };
+    if let Ok(src) = std::fs::read_to_string(&target) {
+        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+        tabs[active_tab] = build_tab(src, target.to_str().unwrap_or(url), args, width, gen);
+    }
 }
 
 /// Rebuild one tab for the current width/theme, preserving scroll and TOC

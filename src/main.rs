@@ -1,3 +1,6 @@
-fn main() -> anyhow::Result<()> {
-    ink_md::cli::run()
+fn main() {
+    if let Err(e) = ink_md::cli::run() {
+        eprintln!("ink: {e:#}");
+        std::process::exit(1);
+    }
 }

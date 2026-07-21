@@ -18,6 +18,10 @@ pub struct Config {
 pub struct BehaviorConfig {
     /// When true, closing a file via q/Esc returns to the browser instead of exiting.
     pub browser_loop: Option<bool>,
+    /// When false, ink does not grab the mouse, so the terminal's own
+    /// click-to-open (OSC 8) and text selection keep working. Default true
+    /// (mouse wheel scrolls the document).
+    pub mouse_capture: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -47,4 +51,22 @@ pub fn load_config() -> Option<Config> {
     let path = config_path()?;
     let content = std::fs::read_to_string(path).ok()?;
     toml::from_str(&content).ok()
+}
+
+/// Persist the chosen theme to the config file, preserving existing content
+/// and comments. Creates the file (and parent dir) if absent.
+pub fn set_theme(name: &str) -> anyhow::Result<()> {
+    use anyhow::Context;
+    let path = config_path().context("no config directory on this platform")?;
+    let mut doc = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|c| c.parse::<toml_edit::DocumentMut>().ok())
+        .unwrap_or_default();
+    doc["theme"] = toml_edit::value(name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    std::fs::write(&path, doc.to_string())
+        .with_context(|| format!("writing {}", path.display()))?;
+    Ok(())
 }

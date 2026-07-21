@@ -1,4 +1,4 @@
-use crate::{app, browser, config, input, render, stats};
+use crate::{app, browser, config, input, render, stats, theme};
 use anyhow::Result;
 use clap::{Parser as ClapParser, Subcommand};
 use std::io::IsTerminal;
@@ -51,6 +51,10 @@ pub struct Cli {
     #[arg(long)]
     pub remote_images: bool,
 
+    /// List available themes and exit
+    #[arg(long)]
+    pub list_themes: bool,
+
     /// Show YAML/TOML frontmatter
     #[arg(long)]
     pub frontmatter: bool,
@@ -86,6 +90,13 @@ pub enum Commands {
     },
     /// Show the active keybinding map (preset + user overrides)
     Keybindings,
+    /// Generate shell completions (bash, zsh, fish, powershell, elvish)
+    Completions {
+        /// Shell to generate completions for
+        shell: clap_complete::Shell,
+    },
+    /// Generate a man page (troff, to stdout)
+    Man,
     /// Configuration helpers
     Config {
         #[command(subcommand)]
@@ -118,6 +129,7 @@ pub struct Args {
     pub images: crate::image::ImageMode,
     pub frontmatter: bool,
     pub spacing: Spacing,
+    pub mouse_capture: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -139,18 +151,18 @@ pub fn run() -> Result<()> {
     if let Some(cmd) = &cli.command {
         return match cmd {
             Commands::Outline { file } => {
-                let source = std::fs::read_to_string(file)?;
+                let source = read_file(file)?;
                 stats::print_outline(&source);
                 Ok(())
             }
             Commands::Stats { file } => {
-                let source = std::fs::read_to_string(file)?;
+                let source = read_file(file)?;
                 stats::print_stats(&source, file);
                 Ok(())
             }
             Commands::Diff { file_a, file_b } => {
-                let source_a = std::fs::read_to_string(file_a)?;
-                let source_b = std::fs::read_to_string(file_b)?;
+                let source_a = read_file(file_a)?;
+                let source_b = read_file(file_b)?;
                 stats::print_diff(&source_a, &source_b, file_a, file_b);
                 Ok(())
             }
@@ -162,6 +174,17 @@ pub fn run() -> Result<()> {
                 print_keybindings();
                 Ok(())
             }
+            Commands::Completions { shell } => {
+                use clap::CommandFactory;
+                clap_complete::generate(*shell, &mut Cli::command(), "ink", &mut std::io::stdout());
+                Ok(())
+            }
+            Commands::Man => {
+                use clap::CommandFactory;
+                let man = clap_mangen::Man::new(Cli::command());
+                man.render(&mut std::io::stdout())?;
+                Ok(())
+            }
             Commands::Config { action } => match action {
                 ConfigAction::Init { force } => config_init(*force),
                 ConfigAction::Path => {
@@ -170,6 +193,13 @@ pub fn run() -> Result<()> {
                 }
             },
         };
+    }
+
+    if cli.list_themes {
+        for name in theme::available_themes() {
+            println!("{name}");
+        }
+        return Ok(());
     }
 
     let width = resolve_width(&cli.width, &user_config);
@@ -205,6 +235,11 @@ pub fn run() -> Result<()> {
         },
         frontmatter: cli.frontmatter,
         spacing,
+        mouse_capture: user_config
+            .as_ref()
+            .and_then(|c| c.behavior.as_ref())
+            .and_then(|b| b.mouse_capture)
+            .unwrap_or(true),
     };
 
     // Check if input is a directory or no input with a TTY → launch file browser
@@ -270,6 +305,21 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Read a file as UTF-8, falling back to a lossy decode (with a stderr note)
+/// for non-UTF-8 input instead of hard-failing. Missing files get a friendly
+/// message.
+fn read_file(path: &str) -> Result<String> {
+    use anyhow::Context;
+    let bytes = std::fs::read(path).with_context(|| format!("cannot read '{path}'"))?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            eprintln!("ink: '{path}' is not valid UTF-8; rendering with replacements");
+            Ok(String::from_utf8_lossy(e.as_bytes()).into_owned())
+        }
+    }
+}
+
 fn resolve_width(width_str: &Option<String>, config: &Option<config::Config>) -> Option<u16> {
     if let Some(w) = width_str {
         match w.as_str() {
@@ -326,6 +376,11 @@ const STARTER_CONFIG: &str = r#"# ink configuration
 # When true, q/Esc returns to the file browser instead of exiting.
 # Default: false (q exits ink entirely; Shift+B reopens the browser on demand).
 # browser_loop = false
+
+# When false, ink does not capture the mouse, so your terminal's own
+# click-to-open links and text selection keep working (you lose wheel-scroll
+# inside ink). Default: true.
+# mouse_capture = true
 
 [keybindings]
 # Built-in preset: "default" (vim-flavored), "vim", or "emacs"
@@ -428,6 +483,8 @@ fn print_keybindings() {
             Search => "search",
             ThemePicker => "theme_picker",
             FollowLink => "follow_link",
+            LinkMode => "link_mode",
+            Help => "help",
             NavBack => "nav_back",
             NavForward => "nav_forward",
             _ => "?",
@@ -489,7 +546,6 @@ fn read_input(args: &Args) -> Result<String> {
     if input.starts_with("http://") || input.starts_with("https://") {
         crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
     } else {
-        let path = PathBuf::from(input);
-        Ok(std::fs::read_to_string(&path)?)
+        read_file(input)
     }
 }
