@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.2 — 2026-07-21
+
+### CI
+- The release workflow's Homebrew tap bump is now non-blocking: if the tap token is missing or expired, the bump fails on its own but no longer marks the whole release run as failed (the binaries and checksums have already published). No user-facing changes to `ink` itself.
+
 ## 0.5.1 — 2026-07-21
 
 ### Fixed (rendering)
