@@ -97,14 +97,30 @@ pub struct LayoutHeading {
     pub line_index: usize,
 }
 
+/// A block image reserved in the text flow for graphics-protocol rendering.
+/// The `image` is decoded once here; `build_tab` turns it into a protocol.
+pub struct ImageSpec {
+    pub line_index: usize,
+    pub col_offset: u16,
+    pub cols: u16,
+    pub rows: u16,
+    pub image: std::sync::Arc<image::DynamicImage>,
+}
+
 /// Result of laying out a document: the display lines plus the headings and
 /// their line positions.
 pub struct LayoutResult {
     pub lines: Vec<StyledLine>,
     pub headings: Vec<LayoutHeading>,
+    pub images: Vec<ImageSpec>,
 }
 
 /// Convert a comrak AST into a flat list of styled lines for rendering.
+///
+/// `graphics_font`: when `Some((cell_w, cell_h))`, block images are reserved as
+/// blank rows and collected into `LayoutResult.images` for graphics-protocol
+/// rendering; when `None`, images render inline as Unicode half-blocks.
+#[allow(clippy::too_many_arguments)]
 pub fn layout_document<'a>(
     root: &'a AstNode<'a>,
     theme: &Theme,
@@ -113,9 +129,11 @@ pub fn layout_document<'a>(
     center_margin: usize,
     base_dir: Option<&std::path::Path>,
     images: ImageMode,
+    graphics_font: Option<(u16, u16)>,
 ) -> LayoutResult {
     let mut lines: Vec<StyledLine> = Vec::new();
     let headings = std::cell::RefCell::new(Vec::new());
+    let image_specs = std::cell::RefCell::new(Vec::new());
     let ctx = LayoutContext {
         theme,
         width: width as usize,
@@ -127,7 +145,9 @@ pub fn layout_document<'a>(
         theme_set: crate::highlight::theme_set(),
         base_dir,
         images,
+        graphics_font,
         headings: &headings,
+        image_specs: &image_specs,
         record_headings: true,
     };
     layout_node(root, &ctx, &mut lines);
@@ -135,6 +155,7 @@ pub fn layout_document<'a>(
     LayoutResult {
         lines,
         headings: headings.into_inner(),
+        images: image_specs.into_inner(),
     }
 }
 
@@ -167,7 +188,10 @@ struct LayoutContext<'a> {
     theme_set: &'a ThemeSet,
     base_dir: Option<&'a std::path::Path>,
     images: ImageMode,
+    /// `Some((cell_w, cell_h))` → graphics mode: reserve rows + collect specs.
+    graphics_font: Option<(u16, u16)>,
     headings: &'a std::cell::RefCell<Vec<LayoutHeading>>,
+    image_specs: &'a std::cell::RefCell<Vec<ImageSpec>>,
     // Only the top-level walk writes into the shared `lines`, so only it can
     // record correct absolute line indices. Nested walks (blockquotes, list
     // items) build into their own buffers, so they don't record headings.
@@ -395,9 +419,10 @@ fn layout_heading<'a>(
 }
 
 fn layout_paragraph<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
-    // Try to render standalone images as block-level elements with half-block pixels
+    // Try to render standalone images as block-level elements (graphics
+    // protocol when available, else half-block pixels).
     if ctx.images != ImageMode::Off {
-        if let Some(image_lines) = try_render_image_block(node, ctx) {
+        if let Some(image_lines) = try_render_image_block(node, ctx, lines.len()) {
             lines.extend(image_lines);
             add_spacing(ctx, lines);
             return;
@@ -410,11 +435,14 @@ fn layout_paragraph<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut 
     add_spacing(ctx, lines);
 }
 
-/// If the paragraph contains only a single image, try to render it as a block
-/// using half-block Unicode characters. Falls back to None (inline placeholder).
+/// If the paragraph contains only a single image, render it as a block: in
+/// graphics mode, reserve blank rows and record an `ImageSpec` (the draw loop
+/// paints the pixels); otherwise render Unicode half-blocks. `start_line` is
+/// the index the returned lines will occupy in the document.
 fn try_render_image_block<'a>(
     node: &'a AstNode<'a>,
     ctx: &LayoutContext,
+    start_line: usize,
 ) -> Option<Vec<StyledLine>> {
     let children: Vec<_> = node.children().collect();
     if children.len() != 1 {
@@ -451,24 +479,60 @@ fn try_render_image_block<'a>(
         }
         Err(crate::image::ImageUnavailable::Failed) => return None,
     };
-    let mut image_lines = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)?;
 
-    // Add alt text as caption below the image
-    if !alt.is_empty() {
-        let mut caption = StyledLine::new();
-        ctx.add_margin(&mut caption);
-        caption.push(StyledSpan {
-            text: format!("  {alt}"),
-            style: SpanStyle {
-                fg: Some(ctx.theme.colors.link_url.clone()),
-                italic: true,
-                ..Default::default()
-            },
-        });
-        image_lines.push(caption);
+    // Graphics mode (top-level only, like heading indices): reserve blank rows
+    // sized to the image and record a spec for the draw loop to paint.
+    if let Some(font) = ctx.graphics_font {
+        if ctx.record_headings {
+            use image::GenericImageView;
+            let (iw, ih) = image_data.dimensions();
+            let max_cols = ctx.width.saturating_sub(ctx.margin).max(1) as u16;
+            let (cols, rows) =
+                crate::graphics::cell_dimensions(iw, ih, font, max_cols, MAX_IMAGE_ROWS);
+            let mut image_lines: Vec<StyledLine> = Vec::with_capacity(rows as usize + 2);
+            image_lines.push(StyledLine::empty()); // gap before
+            let img_start = start_line + image_lines.len();
+            for _ in 0..rows {
+                image_lines.push(StyledLine::empty());
+            }
+            ctx.image_specs.borrow_mut().push(ImageSpec {
+                line_index: img_start,
+                col_offset: ctx.margin as u16,
+                cols,
+                rows,
+                image: image_data,
+            });
+            push_image_caption(&alt, ctx, &mut image_lines);
+            return Some(image_lines);
+        }
+        // Nested (blockquote/list) graphics images aren't positioned reliably;
+        // fall through to half-blocks.
     }
 
+    let mut image_lines = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)?;
+    push_image_caption(&alt, ctx, &mut image_lines);
     Some(image_lines)
+}
+
+/// Maximum rows a graphics-protocol image may occupy in the text flow.
+const MAX_IMAGE_ROWS: u16 = 30;
+
+/// Append the image's alt text as an italic caption line, if any.
+fn push_image_caption(alt: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
+    if alt.is_empty() {
+        return;
+    }
+    let mut caption = StyledLine::new();
+    ctx.add_margin(&mut caption);
+    caption.push(StyledSpan {
+        text: format!("  {alt}"),
+        style: SpanStyle {
+            fg: Some(ctx.theme.colors.link_url.clone()),
+            italic: true,
+            ..Default::default()
+        },
+    });
+    lines.push(caption);
 }
 
 fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
@@ -686,6 +750,8 @@ fn layout_blockquote<'a>(
         base_dir: ctx.base_dir,
         images: ctx.images,
         headings: ctx.headings,
+        image_specs: ctx.image_specs,
+        graphics_font: ctx.graphics_font,
         record_headings: false,
     };
     let mut inner_lines = Vec::new();
@@ -791,6 +857,8 @@ fn layout_list<'a>(
         base_dir: ctx.base_dir,
         images: ctx.images,
         headings: ctx.headings,
+        image_specs: ctx.image_specs,
+        graphics_font: ctx.graphics_font,
         record_headings: false,
     };
 

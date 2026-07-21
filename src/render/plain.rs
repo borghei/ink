@@ -34,6 +34,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
         margin,
         None,
         args.images,
+        None, // plain output never uses graphics protocols
     )
     .lines;
 

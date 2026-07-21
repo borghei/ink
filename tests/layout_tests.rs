@@ -16,6 +16,7 @@ fn layout(source: &str, width: u16) -> Vec<ink_md::layout::StyledLine> {
         0,
         None,
         ink_md::image::ImageMode::Off,
+        None,
     )
     .lines
 }
@@ -117,6 +118,7 @@ fn headings_report_their_own_line() {
         0,
         None,
         ink_md::image::ImageMode::Off,
+        None,
     );
     // Three headings, including two identical "Dup" — the reverse-scan bug
     // would have collapsed these onto the same wrong line.
