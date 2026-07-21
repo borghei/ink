@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 — 2026-07-21
+
+### Security
+- **Terminal escape-sequence injection fixed.** Untrusted markdown could embed raw ANSI/OSC escape bytes (in text or code blocks) that reached the terminal verbatim — able to rewrite the window title, move the cursor, or spoof hyperlinks. This mattered most in `--plain`, which the docs promote as an fzf preview and git diff pager for arbitrary files. All rendered text is now stripped of control bytes (ESC, C0, C1, DEL) as a final layout pass covering both the TUI and `--plain` outputs.
+- **OSC 8 hyperlink injection fixed.** Link destinations are validated: only `http`, `https`, `mailto`, and relative paths are emitted; `javascript:`, `file:`, `data:`, and any URL containing control bytes are dropped.
+- **Remote images are now opt-in.** By default a remote image shows a placeholder; pass `--remote-images` to load them. Auto-fetching images from untrusted documents was an SSRF and tracking-pixel vector. When enabled, requests to loopback / private / link-local / cloud-metadata addresses are refused (re-checked on every redirect hop) and capped at 20 MB.
+- **URL document fetches** now enforce a 10s timeout, connection timeout, redirect limit, and a 10 MB size cap (previously unbounded — a slow or huge URL could hang or OOM ink).
+- **Path traversal fixed.** Relative image and link targets are resolved with symlink canonicalization and contained to the document's directory tree; absolute paths are rejected. Local image reads are size-capped.
+- **Supply chain:** `install.sh` now verifies the downloaded binary against a published `SHA256SUMS` manifest before installing; the release workflow generates and uploads it. CI runs `cargo audit` on every push.
+
+### Performance
+- Syntax-highlighting assets (syntect syntax + theme sets) load once for the process instead of on every render rebuild — cuts a large constant off startup, window resize, theme switching, and `--watch` reloads.
+- The reader is now event-driven: it redraws only when something changes. An idle document consumes effectively no CPU (previously it redrew ~20×/second).
+- Large-document scrolling is now virtualized — only the on-screen lines are processed per frame, instead of cloning the entire document every frame. A 5,000-line document scrolls without lag.
+- The theme is resolved once per frame rather than several times; the table of contents is built from exact heading positions recorded during layout (also fixing duplicate headings jumping to the wrong place); search caches lowercased line text; decoded images are cached; and only the visible tab rebuilds on resize/theme change.
+
+### Internal
+- Split into a library target (`ink_md`) plus a thin binary, enabling integration tests. Added CLI tests, `--plain` snapshot tests, layout/heading tests, adversarial security tests, and a virtualized-render test.
+
 ## 0.2.2 — 2026-06-22
 
 ### Fixed
