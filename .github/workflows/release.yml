@@ -84,8 +84,14 @@ jobs:
   # than a `release: published` trigger on homebrew.yml) is deliberate: releases
   # created with the default GITHUB_TOKEN do not emit events that trigger other
   # workflows, so a `release`-triggered bump would silently never fire.
+  #
+  # continue-on-error: the tap bump needs a valid HOMEBREW_TAP_TOKEN secret. If
+  # it's missing/expired the bump fails, but the release itself (binaries +
+  # checksums) has already published, so a tap failure must not fail the run.
+  # Fix the token and re-run this job to update the formula.
   homebrew:
     needs: release
+    continue-on-error: true
     uses: ./.github/workflows/homebrew.yml
     with:
       tag: ${{ github.ref_name }}
