@@ -2,6 +2,12 @@ use ink_md::render::plain::render_plain;
 use ink_md::{Args, Spacing};
 
 fn test_args() -> Args {
+    // Plain output adapts to the terminal's color capabilities (truecolor vs
+    // 256-color, NO_COLOR). Pin those so snapshots are deterministic across
+    // machines and CI runners, which advertise different COLORTERM/TERM.
+    // Set before the first render (which initializes the cached caps).
+    std::env::set_var("COLORTERM", "truecolor");
+    std::env::remove_var("NO_COLOR");
     Args {
         inputs: vec![],
         theme: "dark".to_string(),
