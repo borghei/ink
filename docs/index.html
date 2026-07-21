@@ -4,8 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ink — terminal markdown reader</title>
-  <meta name="description" content="A terminal markdown reader that actually looks good. Syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, and more. Built in Rust.">
-  <meta name="keywords" content="markdown, terminal, reader, cli, tui, rust, syntax highlighting, mermaid, themes">
+  <meta name="description" content="A terminal markdown reader that actually looks good. Syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, presentation mode, and a bat-style pager. Fast, safe with untrusted files, and built in Rust.">
+  <meta name="keywords" content="markdown, terminal, reader, cli, tui, rust, syntax highlighting, mermaid, themes, pager, presentation, glow alternative">
   <meta name="author" content="Amin Borghei">
 
   <!-- Open Graph -->
@@ -26,7 +26,7 @@
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "ink",
-    "description": "A terminal markdown reader that actually looks good. Renders markdown with syntax highlighting, inline images, mermaid diagrams, themes, multi-tab support, search, and table of contents. Built in Rust as a single binary with no runtime dependencies.",
+    "description": "A terminal markdown reader that actually looks good. Renders markdown with syntax highlighting, inline images, mermaid diagrams, themes, multi-tab support, search, table of contents, presentation mode, math and emoji, and a bat-style pager. Sanitizes untrusted files and blocks remote image fetches by default. Built in Rust as a single binary with no runtime dependencies.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux, Windows",
     "url": "https://github.com/borghei/ink",
@@ -286,8 +286,8 @@
   </section>
 
   <section class="install">
-    <code>cargo install ink</code>
-    <p>Requires Rust. Or grab a binary from the <a href="https://github.com/borghei/ink/releases" style="color: var(--accent);">releases page</a>.</p>
+    <code>cargo install ink-md</code>
+    <p>Requires Rust. Or install with <code>brew install borghei/tap/ink</code>, the one-line <a href="https://github.com/borghei/ink#install" style="color: var(--accent);">install script</a>, or grab a binary from the <a href="https://github.com/borghei/ink/releases" style="color: var(--accent);">releases page</a>.</p>
   </section>
 
   <section class="features">
@@ -319,11 +319,19 @@
       </div>
       <div class="feature">
         <h3>Search</h3>
-        <p>Full-text search with highlighted matches and jump-to-result navigation.</p>
+        <p>Full-text search with highlighted matches; cycle results with <code>n</code>/<code>N</code>.</p>
       </div>
       <div class="feature">
         <h3>Table of contents</h3>
         <p>Sidebar showing every heading. Tracks your scroll position.</p>
+      </div>
+      <div class="feature">
+        <h3>Open links by keyboard</h3>
+        <p>Press <code>f</code> to label links, then a letter to open or follow them.</p>
+      </div>
+      <div class="feature">
+        <h3>Math &amp; emoji</h3>
+        <p>Renders <code>$math$</code> in code style and resolves <code>:emoji:</code> shortcodes.</p>
       </div>
       <div class="feature">
         <h3>Admonitions</h3>
@@ -336,6 +344,18 @@
       <div class="feature">
         <h3>Presentation mode</h3>
         <p>Turn any markdown file into slides with <code>--slides</code>.</p>
+      </div>
+      <div class="feature">
+        <h3>Works as a pager</h3>
+        <p><code>ink --plain</code> pages long docs through <code>$PAGER</code>, like <code>bat</code>.</p>
+      </div>
+      <div class="feature">
+        <h3>Safe with untrusted files</h3>
+        <p>Strips terminal escape sequences and never phones home for remote images by default.</p>
+      </div>
+      <div class="feature">
+        <h3>Fast on big documents</h3>
+        <p>Virtualized rendering and zero idle CPU. 5,000-line files scroll without lag.</p>
       </div>
       <div class="feature">
         <h3>Single binary</h3>
@@ -368,6 +388,9 @@
         <tr><td>Themes</td><td class="yes">8</td><td class="no">2</td><td class="no">0</td><td class="no">0</td></tr>
         <tr><td>Watch mode</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
         <tr><td>Presentation mode</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
+        <tr><td>Pager mode</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td></tr>
+        <tr><td>Completions + man page</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
+        <tr><td>Math + emoji</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
       </tbody>
     </table>
   </section>

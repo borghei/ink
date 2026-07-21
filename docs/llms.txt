@@ -11,30 +11,45 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 - Renders mermaid diagrams (flowcharts, sequence diagrams, pie charts, Gantt charts) as ASCII art
 - Supports GitHub-style admonitions: NOTE, TIP, IMPORTANT, WARNING, CAUTION
 - Supports wikilink syntax: [[page]] and [[page|display text]]
-- Interactive TUI with multi-tab support, in-document search, and table of contents sidebar
+- Renders inline/block math ($...$, $$...$$) in code style and resolves :emoji: shortcodes
+- Interactive TUI with multi-tab support, in-document search (n/N to cycle matches), keyboard link opening (press f), a help overlay (?), and a table of contents sidebar
 - File browser mode for exploring directories of markdown files
-- 8 built-in color themes with auto dark/light detection, plus custom TOML themes
-- Presentation mode (split on --- separators)
+- 8 built-in color themes with auto dark/light detection, live theme picker that saves to config, plus custom TOML themes
+- Presentation mode (split on --- separators), navigate with arrows/space
 - Watch mode for live-reloading on file changes
-- Document statistics, outline view, and markdown diff
-- Vim-style keybindings (j/k/G/Ctrl+f/Ctrl+b)
+- Pager mode: `ink --plain` on a TTY pages long output through $PAGER (like bat)
+- Honors NO_COLOR and downgrades to 256-color on non-truecolor terminals
+- Document statistics, outline view, and a real (Myers) markdown diff
+- Vim-style keybindings (j/k/G/Ctrl+f/Ctrl+b), also emacs preset, fully customizable
 - Reads from files, URLs, or stdin
 - Plain output mode for piping (ANSI-colored, no TUI)
+- Shell completions (bash/zsh/fish/PowerShell/elvish) and a man page
+
+## Security
+
+- Sanitizes terminal control/escape bytes out of untrusted markdown before rendering (both TUI and --plain), preventing ANSI/OSC escape-sequence and hyperlink injection
+- Remote (http/https) images are not fetched by default; --remote-images opts in, and private/loopback/cloud-metadata addresses stay blocked
+- URL fetches are timeout- and size-capped; relative file/link paths are contained to the document's directory
+- install.sh verifies a published SHA256SUMS manifest before installing
 
 ## Install
 
-cargo install ink
+cargo install ink-md
 
 ## Usage
 
-ink README.md          # read a file
-ink .                  # browse markdown files in current directory
-ink --plain file.md    # pipe-friendly ANSI output
-ink --slides deck.md   # presentation mode
-ink --watch draft.md   # auto-reload on changes
-ink outline file.md    # show heading structure
-ink stats file.md      # word count, reading time
-ink diff a.md b.md     # compare two files
+ink README.md            # read a file
+ink .                    # browse markdown files in current directory
+ink --plain file.md      # pipe-friendly ANSI output (pages via $PAGER on a TTY)
+ink --slides deck.md     # presentation mode
+ink --watch draft.md     # auto-reload on changes
+ink --remote-images x.md # allow remote images (off by default)
+ink --list-themes        # list available themes
+ink outline file.md      # show heading structure
+ink stats file.md        # word count, reading time
+ink diff a.md b.md       # compare two files (Myers diff)
+ink completions zsh      # shell completions
+ink man                  # man page
 
 ## Links
 

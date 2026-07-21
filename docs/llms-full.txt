@@ -18,14 +18,16 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Task lists with checkbox rendering
 - Footnotes
 - Horizontal rules
-- HTML blocks (rendered as-is)
+- Inline/block math ($...$, $$...$$) rendered in code style; :emoji: shortcodes resolved to glyphs
+- HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped
 - YAML and TOML frontmatter stripping (optional display)
 
 ### Images
 - Inline images rendered using Unicode half-block characters (▄) with 24-bit color
 - Works in any terminal with true color support
-- Loads images from local files (relative paths) and URLs (with 10s timeout)
-- Falls back to emoji placeholder (🖼) if image can't be loaded or decoded
+- Loads images from local files (relative paths, contained to the document directory)
+- Remote (http/https) images are OFF by default (shown as a placeholder); enable with --remote-images. Even then, private/loopback/link-local/cloud-metadata addresses are blocked, with timeouts and a 20 MB cap
+- Decoded images are cached; falls back to emoji placeholder (🖼) if an image can't be loaded or decoded
 - Respects --no-images flag
 
 ### Mermaid Diagrams
@@ -46,12 +48,14 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 ### Interactive TUI
 - Built on ratatui with crossterm backend
 - Multi-tab: open multiple files, switch with Tab/Shift+Tab
-- In-document search with highlighted matches and match navigation
+- In-document search with highlighted matches; press Enter then n/N to cycle results, Esc to clear
+- Keyboard link opening: press f to label on-screen links, then a letter to open web/mail links or follow a relative .md link
+- Help overlay: press ? for a popup of the active keybindings
 - Table of contents sidebar showing heading structure, tracks scroll position
 - Navigation history with back/forward ([ ] keys or Alt+Arrow)
-- Follow relative markdown links with Enter
-- Mouse wheel scrolling
-- Responsive to terminal resizing
+- Mouse wheel scrolling (can be disabled via behavior.mouse_capture so the terminal handles clicks/selection)
+- Event-driven redraw (no CPU when idle) and virtualized rendering for large documents
+- Responsive to terminal resizing; shows a message instead of breaking on very small terminals
 
 ### File Browser
 - Run `ink` with no args (TTY) or `ink .` or `ink <directory>`
@@ -59,25 +63,37 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Filter with /, navigate with j/k/arrows, open with Enter
 - Skips hidden files and common non-doc directories (node_modules, target, etc.)
 - README files sorted first
-- Returns to browser after closing a file
+- Browser opens a file then exits by default; press Shift+B to reopen, or set behavior.browser_loop = true to return automatically
 
 ### Themes
 - 8 built-in themes: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
 - Auto-detection of terminal background (dark/light)
-- Live theme preview with T key
+- Live theme preview with T key; the chosen theme is saved to config
+- ink --list-themes lists all available themes (built-in + custom)
 - 30+ customizable color properties per theme
 - Custom themes via TOML files in ~/.config/ink/themes/
+- Honors NO_COLOR and quantizes 24-bit colors to the 256-color palette on non-truecolor terminals
 
 ### Other Features
-- Presentation mode: split markdown on --- separators with --slides
+- Presentation mode: split markdown on --- separators with --slides (navigate with arrows/space, slide counter in the status bar)
 - Watch mode: auto-reload on file changes with --watch
 - Plain output mode: ANSI-colored output without TUI for piping with --plain
+- Pager mode: on an interactive terminal, --plain pages long output through $PAGER (default less -R), like bat; --no-pager disables it
 - Document outline: `ink outline <file>` shows heading structure
 - Document stats: `ink stats <file>` shows word count, reading time, element counts
-- Markdown diff: `ink diff <file_a> <file_b>` compares two files
+- Markdown diff: `ink diff <file_a> <file_b>` compares two files with a real Myers line diff
 - Shell integration: `ink shell-setup bash|zsh|fish` prints config snippets
-- URL fetching: open markdown from HTTP/HTTPS URLs directly
+- Shell completions: `ink completions bash|zsh|fish|powershell|elvish`
+- Man page: `ink man` (troff)
+- URL fetching: open markdown from HTTP/HTTPS URLs directly (timeout- and size-capped)
 - Stdin support: pipe markdown content to ink
+
+### Security
+- Strips terminal control/escape bytes (ESC, C0, C1, DEL) from all rendered text, covering both the TUI and --plain, preventing ANSI/OSC escape-sequence and hyperlink injection from untrusted markdown
+- Link destinations are scheme-validated (http/https/mailto/relative only); javascript:, file:, data: and control-byte URLs are dropped
+- Remote images off by default; SSRF protections when enabled (see Images)
+- Relative file/image paths are canonicalized and contained to the document's directory; absolute paths rejected
+- install.sh verifies a published SHA256SUMS manifest before installing; CI runs cargo audit
 
 ### Keybindings
 - j/k/↑/↓: scroll up/down
@@ -87,14 +103,18 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Home: jump to start
 - Ctrl+f/Ctrl+b: page down/up
 - Ctrl+d/Ctrl+u: half-page down/up
-- n/N: next/previous heading
+- n/N: next/previous heading (cycles search matches after a search)
 - /: search
+- f: link-hint mode (open/follow links by letter)
+- ?: help overlay
 - t: toggle table of contents
-- T: theme picker
-- Enter: follow link
+- T: theme picker (saved to config)
+- Enter: follow first visible link
 - [/]: navigation back/forward
 - Tab/Shift+Tab: next/previous tab
-- q: quit
+- Shift+B: reopen file browser
+- q/Esc/Ctrl+C: quit (first press clears an active search)
+- Presets: default (vim-flavored), vim, emacs; fully customizable, two-key chords supported
 
 ## Configuration
 
@@ -106,6 +126,13 @@ width = 90
 spacing = "normal"
 toc = false
 frontmatter = false
+
+[behavior]
+browser_loop = false   # return to browser after closing a doc
+mouse_capture = true    # set false to let the terminal handle clicks/selection
+
+[keybindings]
+preset = "emacs"        # default | vim | emacs
 ```
 
 ## Technical Stack
@@ -121,4 +148,4 @@ frontmatter = false
 - Repository: https://github.com/borghei/ink
 - Website: https://borghei.github.io/ink/
 - Author: Amin Borghei <borghei.mohammadamin@gmail.com>
-- Crates.io: https://crates.io/crates/ink
+- Crates.io: https://crates.io/crates/ink-md (install with `cargo install ink-md`)
