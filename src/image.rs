@@ -1,9 +1,72 @@
 use crate::layout::{SpanStyle, StyledLine, StyledSpan};
+use image::DynamicImage;
+use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::SystemTime;
 
 /// Maximum image dimensions in character cells.
 const MAX_IMAGE_WIDTH: u32 = 60;
 const MAX_IMAGE_HEIGHT: u32 = 24; // Each row = 2 pixel rows with half-blocks
+
+/// Cache of decoded images so a resize / theme-change / watch reload re-uses
+/// the decode instead of reading and decoding the file again. Keyed by a
+/// stable identity: canonical path + mtime for local files, URL for remote.
+type ImageCache = HashMap<String, Arc<DynamicImage>>;
+
+fn cache() -> &'static Mutex<ImageCache> {
+    static CACHE: OnceLock<Mutex<ImageCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Load and decode an image (via the cache), ready for half-block rendering.
+pub fn load_decoded(
+    src: &str,
+    base_dir: Option<&Path>,
+    mode: ImageMode,
+) -> Result<Arc<DynamicImage>, ImageUnavailable> {
+    let (key, bytes) = load_bytes_with_key(src, base_dir, mode)?;
+    if let Some(img) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return Ok(img);
+    }
+    let decoded = Arc::new(image::load_from_memory(&bytes).map_err(|_| ImageUnavailable::Failed)?);
+    if let Ok(mut c) = cache().lock() {
+        c.insert(key, decoded.clone());
+    }
+    Ok(decoded)
+}
+
+/// Resolve `src`, returning a cache key plus the raw bytes to decode.
+fn load_bytes_with_key(
+    src: &str,
+    base_dir: Option<&Path>,
+    mode: ImageMode,
+) -> Result<(String, Vec<u8>), ImageUnavailable> {
+    if src.starts_with("http://") || src.starts_with("https://") {
+        if mode != ImageMode::All {
+            return Err(ImageUnavailable::RemoteBlocked);
+        }
+        let bytes = crate::net::fetch_untrusted_bytes(src, crate::net::IMAGE_FETCH_CAP)
+            .map_err(|_| ImageUnavailable::Failed)?;
+        return Ok((format!("url:{src}"), bytes));
+    }
+    let base = base_dir.unwrap_or_else(|| Path::new("."));
+    let path =
+        crate::sanitize::resolve_within(base, &[base], src).ok_or(ImageUnavailable::Failed)?;
+    let meta = std::fs::metadata(&path).map_err(|_| ImageUnavailable::Failed)?;
+    if !meta.is_file() || meta.len() > crate::net::IMAGE_FETCH_CAP {
+        return Err(ImageUnavailable::Failed);
+    }
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let key = format!("file:{}:{mtime}", path.display());
+    let bytes = std::fs::read(&path).map_err(|_| ImageUnavailable::Failed)?;
+    Ok((key, bytes))
+}
 
 /// Which images a document is allowed to load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,34 +100,23 @@ pub fn load_image(
     base_dir: Option<&Path>,
     mode: ImageMode,
 ) -> Result<Vec<u8>, ImageUnavailable> {
-    if src.starts_with("http://") || src.starts_with("https://") {
-        if mode != ImageMode::All {
-            return Err(ImageUnavailable::RemoteBlocked);
-        }
-        return crate::net::fetch_untrusted_bytes(src, crate::net::IMAGE_FETCH_CAP)
-            .map_err(|_| ImageUnavailable::Failed);
-    }
-    let base = base_dir.unwrap_or_else(|| Path::new("."));
-    let path =
-        crate::sanitize::resolve_within(base, &[base], src).ok_or(ImageUnavailable::Failed)?;
-    let meta = std::fs::metadata(&path).map_err(|_| ImageUnavailable::Failed)?;
-    if !meta.is_file() || meta.len() > crate::net::IMAGE_FETCH_CAP {
-        return Err(ImageUnavailable::Failed);
-    }
-    std::fs::read(&path).map_err(|_| ImageUnavailable::Failed)
+    load_bytes_with_key(src, base_dir, mode).map(|(_, bytes)| bytes)
 }
 
-/// Render image data to styled lines using Unicode half-block characters (▄).
+/// Render a decoded image to styled lines using Unicode half-block characters (▄).
 ///
 /// This rendering method works in **any** terminal that supports 24-bit (true) color.
 /// Each character cell represents 2 vertical pixels: the top pixel uses the background
 /// color and the bottom pixel uses the foreground color of the `▄` character.
 ///
-/// Returns `None` if the image cannot be decoded or has zero dimensions.
-pub fn render_halfblock(data: &[u8], max_width: usize, margin: usize) -> Option<Vec<StyledLine>> {
+/// Returns `None` if the image has zero dimensions.
+pub fn render_halfblock(
+    img: &DynamicImage,
+    max_width: usize,
+    margin: usize,
+) -> Option<Vec<StyledLine>> {
     use image::GenericImageView;
 
-    let img = image::load_from_memory(data).ok()?;
     let (w, h) = img.dimensions();
 
     if w == 0 || h == 0 {

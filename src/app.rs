@@ -25,10 +25,17 @@ struct Tab {
     source: String,
     styled_lines: Vec<crate::layout::StyledLine>,
     ratatui_lines: Vec<Line<'static>>,
+    /// Per-line text, lowercased once, for allocation-free search scans.
+    lowered: Vec<String>,
     scroll_offset: u16,
     toc: TocState,
     word_count: usize,
     reading_time: usize,
+    /// Terminal width + theme generation this tab was laid out for. Used to
+    /// rebuild a tab lazily (only when it becomes visible under new conditions)
+    /// instead of rebuilding every tab on every resize / theme change.
+    built_width: u16,
+    built_gen: u32,
 }
 
 struct NavEntry {
@@ -87,25 +94,28 @@ fn run_inner(
     let mut tabs: Vec<Tab> = Vec::new();
     let mut active_tab: usize = 0;
 
-    let first_tab = build_tab(
-        source,
-        args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin"),
-        &args,
-        size.width,
-    );
-    tabs.push(first_tab);
-
-    for input in args.inputs.iter().skip(1) {
-        if let Ok(src) = std::fs::read_to_string(input) {
-            tabs.push(build_tab(src, input, &args, size.width));
-        }
-    }
-
     let mut search = SearchState::new();
     let mut nav_history: Vec<NavEntry> = Vec::new();
     let mut nav_forward: Vec<NavEntry> = Vec::new();
     let mut theme_picker_open = false;
     let mut theme_picker_index: usize = 0;
+    // Bumped on every theme change so tabs know their cached layout is stale.
+    let mut theme_gen: u32 = 0;
+
+    let first_tab = build_tab(
+        source,
+        args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin"),
+        &args,
+        size.width,
+        theme_gen,
+    );
+    tabs.push(first_tab);
+
+    for input in args.inputs.iter().skip(1) {
+        if let Ok(src) = std::fs::read_to_string(input) {
+            tabs.push(build_tab(src, input, &args, size.width, theme_gen));
+        }
+    }
 
     // --watch: spawn a file watcher for the current document if a real path is in play.
     let watcher: Option<crate::watch::FileWatcher> = if args.watch {
@@ -142,6 +152,10 @@ fn run_inner(
     // and the bottom bar gets a "[file missing]" indicator.
     let mut file_missing = false;
 
+    // Redraw only when something changed. An idle reader with no input pending
+    // does no per-frame work at all (previously it redrew ~20×/second).
+    let mut dirty = true;
+
     loop {
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
 
@@ -153,18 +167,24 @@ fn run_inner(
                     Ok(new_source) => {
                         let scroll = tabs[active_tab].scroll_offset;
                         let term_w = terminal.size()?.width;
-                        let mut new_tab = build_tab(new_source, input, &args, term_w);
+                        let mut new_tab = build_tab(new_source, input, &args, term_w, theme_gen);
                         let new_max =
                             (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
                         new_tab.scroll_offset = scroll.min(new_max);
                         new_tab.toc.visible = tabs[active_tab].toc.visible;
                         tabs[active_tab] = new_tab;
-                        file_missing = false;
+                        if file_missing {
+                            file_missing = false;
+                        }
+                        dirty = true;
                     }
                     Err(_) => {
                         // File was deleted or renamed away. Keep the last-rendered content
                         // and surface the state in the status bar.
-                        file_missing = true;
+                        if !file_missing {
+                            file_missing = true;
+                            dirty = true;
+                        }
                     }
                 }
             }
@@ -174,133 +194,133 @@ fn run_inner(
         let total_lines = tab.ratatui_lines.len();
         let max_scroll = (total_lines as u16).saturating_sub(viewport_height);
 
-        terminal.draw(|frame| {
-            let size = frame.area();
-            let tab = &tabs[active_tab];
+        if dirty {
+            terminal.draw(|frame| {
+                let size = frame.area();
+                let tab = &tabs[active_tab];
 
-            // Fill entire frame with theme background color
-            let t = theme::resolve_theme(&args.theme);
-            if let Some(ref bg_hex) = t.colors.bg {
-                let bg_color = theme::hex_to_color(bg_hex);
-                let bg_block =
-                    ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
-                frame.render_widget(bg_block, size);
-            }
+                // Fill entire frame with theme background color
+                let t = theme::resolve_theme(&args.theme);
+                if let Some(ref bg_hex) = t.colors.bg {
+                    let bg_color = theme::hex_to_color(bg_hex);
+                    let bg_block =
+                        ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
+                    frame.render_widget(bg_block, size);
+                }
 
-            let vertical = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(1), // top bar: progress
-                    Constraint::Min(1),    // main content
-                    Constraint::Length(2), // separator + bottom bar
-                ])
-                .split(size);
+                let vertical = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1), // top bar: progress
+                        Constraint::Min(1),    // main content
+                        Constraint::Length(2), // separator + bottom bar
+                    ])
+                    .split(size);
 
-            let top_bar_area = vertical[0];
-            let main_area = vertical[1];
-            let bottom_area = vertical[2];
+                let top_bar_area = vertical[0];
+                let main_area = vertical[1];
+                let bottom_area = vertical[2];
 
-            // Split bottom into separator line + bar
-            let bottom_split = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Length(1), Constraint::Length(1)])
-                .split(bottom_area);
-            let separator_area = bottom_split[0];
-            let bottom_bar_area = bottom_split[1];
+                // Split bottom into separator line + bar
+                let bottom_split = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(1), Constraint::Length(1)])
+                    .split(bottom_area);
+                let separator_area = bottom_split[0];
+                let bottom_bar_area = bottom_split[1];
 
-            // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
-            let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
-            let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
-            let sep_style = if let Some(cbg) = content_bg {
-                Style::default().fg(bar_bg).bg(cbg)
-            } else {
-                Style::default().fg(bar_bg)
-            };
-            let sep_line = Line::from(Span::styled(
-                "▁".repeat(separator_area.width as usize),
-                sep_style,
-            ));
-            frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
+                // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
+                let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
+                let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
+                let sep_style = if let Some(cbg) = content_bg {
+                    Style::default().fg(bar_bg).bg(cbg)
+                } else {
+                    Style::default().fg(bar_bg)
+                };
+                let sep_line = Line::from(Span::styled(
+                    "▁".repeat(separator_area.width as usize),
+                    sep_style,
+                ));
+                frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
 
-            // Top bar: filename + progress
-            let tab_info = if tabs.len() > 1 {
-                Some((active_tab, tabs.len()))
-            } else {
-                None
-            };
-            render::render_top_bar(
-                frame,
-                top_bar_area,
-                &tab.filename,
-                tab.scroll_offset as usize,
-                total_lines,
-                viewport_height as usize,
-                &args.theme,
-                tab_info,
-            );
-
-            let (toc_area, doc_area) = if tab.toc.visible && main_area.width > 40 {
-                let horizontal = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
-                    .split(main_area);
-                (Some(horizontal[0]), horizontal[1])
-            } else {
-                (None, main_area)
-            };
-
-            if let Some(toc_area) = toc_area {
-                render::render_toc(
+                // Top bar: filename + progress
+                let tab_info = if tabs.len() > 1 {
+                    Some((active_tab, tabs.len()))
+                } else {
+                    None
+                };
+                render::render_top_bar(
                     frame,
-                    toc_area,
-                    &tab.toc.headings,
-                    tab.toc.selected,
-                    &args.theme,
-                );
-            }
-
-            // Render document (with search highlights)
-            render::render_document_with_search(
-                frame,
-                doc_area,
-                &tab.ratatui_lines,
-                tab.scroll_offset,
-                total_lines,
-                &search,
-                &args.theme,
-            );
-
-            // Theme picker overlay
-            if theme_picker_open {
-                render::render_theme_picker(
-                    frame,
-                    main_area,
-                    THEME_LIST,
-                    theme_picker_index,
-                    &args.theme,
-                );
-            }
-
-            // Bottom bar: search input OR keybindings + stats
-            if search.active {
-                render::render_search_bar(frame, bottom_bar_area, &search, &args.theme);
-            } else {
-                render::render_bottom_bar(
-                    frame,
-                    bottom_bar_area,
-                    &args.theme,
+                    top_bar_area,
                     &tab.filename,
-                    tab.word_count,
-                    tab.reading_time,
-                    tabs.len() > 1,
+                    tab.scroll_offset as usize,
+                    total_lines,
+                    viewport_height as usize,
+                    &t,
                     tab_info,
-                    file_missing,
                 );
-            }
-        })?;
+
+                let (toc_area, doc_area) = if tab.toc.visible && main_area.width > 40 {
+                    let horizontal = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
+                        .split(main_area);
+                    (Some(horizontal[0]), horizontal[1])
+                } else {
+                    (None, main_area)
+                };
+
+                if let Some(toc_area) = toc_area {
+                    render::render_toc(frame, toc_area, &tab.toc.headings, tab.toc.selected, &t);
+                }
+
+                // Render document (with search highlights)
+                render::render_document_with_search(
+                    frame,
+                    doc_area,
+                    &tab.ratatui_lines,
+                    tab.scroll_offset,
+                    total_lines,
+                    &search,
+                    &t,
+                );
+
+                // Theme picker overlay
+                if theme_picker_open {
+                    render::render_theme_picker(
+                        frame,
+                        main_area,
+                        THEME_LIST,
+                        theme_picker_index,
+                        &args.theme,
+                        &t,
+                    );
+                }
+
+                // Bottom bar: search input OR keybindings + stats
+                if search.active {
+                    render::render_search_bar(frame, bottom_bar_area, &search, &t);
+                } else {
+                    render::render_bottom_bar(
+                        frame,
+                        bottom_bar_area,
+                        &t,
+                        &tab.filename,
+                        tab.word_count,
+                        tab.reading_time,
+                        tabs.len() > 1,
+                        tab_info,
+                        file_missing,
+                    );
+                }
+            })?;
+            dirty = false;
+        }
 
         // Handle input
         if let Some(action) = input::poll_action(Duration::from_millis(50), search.active) {
+            // Any recognized action changes state → redraw on the next iteration.
+            dirty = true;
             // Theme picker mode
             if theme_picker_open {
                 match action {
@@ -309,9 +329,16 @@ fn run_inner(
                     }
                     Action::ScrollDown(_) => {
                         theme_picker_index = (theme_picker_index + 1) % THEME_LIST.len();
-                        // Live preview: rebuild all tabs with new theme
+                        // Live preview: rebuild the visible tab now; others refresh
+                        // lazily when switched to (theme_gen marks them stale).
                         args.theme = THEME_LIST[theme_picker_index].to_string();
-                        rebuild_all_tabs(&mut tabs, &args, terminal.size()?.width);
+                        theme_gen = theme_gen.wrapping_add(1);
+                        rebuild_tab(
+                            &mut tabs[active_tab],
+                            &args,
+                            terminal.size()?.width,
+                            theme_gen,
+                        );
                     }
                     Action::ScrollUp(_) => {
                         theme_picker_index = if theme_picker_index == 0 {
@@ -320,7 +347,13 @@ fn run_inner(
                             theme_picker_index - 1
                         };
                         args.theme = THEME_LIST[theme_picker_index].to_string();
-                        rebuild_all_tabs(&mut tabs, &args, terminal.size()?.width);
+                        theme_gen = theme_gen.wrapping_add(1);
+                        rebuild_tab(
+                            &mut tabs[active_tab],
+                            &args,
+                            terminal.size()?.width,
+                            theme_gen,
+                        );
                     }
                     Action::SearchConfirm => {
                         // Confirm theme selection
@@ -349,7 +382,7 @@ fn run_inner(
                 }
                 Action::SearchInput(c) => {
                     search.push_char(c);
-                    search.update_matches(&tabs[active_tab].styled_lines);
+                    search.update_matches(&tabs[active_tab].lowered);
                     // Auto-jump to first match
                     if let Some(line) = search.current_line() {
                         tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
@@ -357,7 +390,7 @@ fn run_inner(
                 }
                 Action::SearchBackspace => {
                     search.pop_char();
-                    search.update_matches(&tabs[active_tab].styled_lines);
+                    search.update_matches(&tabs[active_tab].lowered);
                     if let Some(line) = search.current_line() {
                         tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
                     }
@@ -438,9 +471,16 @@ fn run_inner(
 
                 // Links are handled via OSC 8 hyperlinks (Cmd+Click / Ctrl+Click)
 
-                // Tabs
+                // Tabs — refresh the newly-active tab if it was laid out for a
+                // stale width/theme (lazy rebuild).
                 Action::NextTab if tabs.len() > 1 => {
                     active_tab = (active_tab + 1) % tabs.len();
+                    ensure_tab_current(
+                        &mut tabs[active_tab],
+                        &args,
+                        terminal.size()?.width,
+                        theme_gen,
+                    );
                 }
                 Action::PrevTab if tabs.len() > 1 => {
                     active_tab = if active_tab == 0 {
@@ -448,6 +488,12 @@ fn run_inner(
                     } else {
                         active_tab - 1
                     };
+                    ensure_tab_current(
+                        &mut tabs[active_tab],
+                        &args,
+                        terminal.size()?.width,
+                        theme_gen,
+                    );
                 }
 
                 // Follow relative link
@@ -492,6 +538,7 @@ fn run_inner(
                                 target.to_str().unwrap_or(&link_path),
                                 &args,
                                 terminal.size()?.width,
+                                theme_gen,
                             );
                         }
                     }
@@ -505,8 +552,13 @@ fn run_inner(
                             scroll_offset: tabs[active_tab].scroll_offset,
                         });
                         if let Ok(src) = std::fs::read_to_string(&entry.filename) {
-                            let mut new_tab =
-                                build_tab(src, &entry.filename, &args, terminal.size()?.width);
+                            let mut new_tab = build_tab(
+                                src,
+                                &entry.filename,
+                                &args,
+                                terminal.size()?.width,
+                                theme_gen,
+                            );
                             new_tab.scroll_offset = entry.scroll_offset;
                             tabs[active_tab] = new_tab;
                         }
@@ -519,8 +571,13 @@ fn run_inner(
                             scroll_offset: tabs[active_tab].scroll_offset,
                         });
                         if let Ok(src) = std::fs::read_to_string(&entry.filename) {
-                            let mut new_tab =
-                                build_tab(src, &entry.filename, &args, terminal.size()?.width);
+                            let mut new_tab = build_tab(
+                                src,
+                                &entry.filename,
+                                &args,
+                                terminal.size()?.width,
+                                theme_gen,
+                            );
                             new_tab.scroll_offset = entry.scroll_offset;
                             tabs[active_tab] = new_tab;
                         }
@@ -528,8 +585,14 @@ fn run_inner(
                 }
 
                 Action::Resize(_, _) => {
-                    // Rebuild on resize
-                    rebuild_all_tabs(&mut tabs, &args, terminal.size()?.width);
+                    // Rebuild only the visible tab; background tabs rebuild
+                    // lazily when switched to (their built_width won't match).
+                    rebuild_tab(
+                        &mut tabs[active_tab],
+                        &args,
+                        terminal.size()?.width,
+                        theme_gen,
+                    );
                 }
                 _ => {}
             }
@@ -544,19 +607,27 @@ fn is_local_file(input: &str) -> bool {
     !input.starts_with("http://") && !input.starts_with("https://") && input != "stdin"
 }
 
-fn rebuild_all_tabs(tabs: &mut [Tab], args: &Args, term_width: u16) {
-    for tab in tabs.iter_mut() {
-        let source = tab.source.clone();
-        let filename = tab.filename.clone();
-        let scroll = tab.scroll_offset;
-        let toc_visible = tab.toc.visible;
-        *tab = build_tab(source, &filename, args, term_width);
-        tab.scroll_offset = scroll;
-        tab.toc.visible = toc_visible;
+/// Rebuild one tab for the current width/theme, preserving scroll and TOC
+/// visibility. Only the tab the user is looking at is rebuilt eagerly; the
+/// rest are refreshed lazily the next time they're switched to.
+fn rebuild_tab(tab: &mut Tab, args: &Args, term_width: u16, gen: u32) {
+    let source = tab.source.clone();
+    let filename = tab.filename.clone();
+    let scroll = tab.scroll_offset;
+    let toc_visible = tab.toc.visible;
+    *tab = build_tab(source, &filename, args, term_width, gen);
+    tab.scroll_offset = scroll;
+    tab.toc.visible = toc_visible;
+}
+
+/// Refresh a tab only if it was laid out for a different width or theme.
+fn ensure_tab_current(tab: &mut Tab, args: &Args, term_width: u16, gen: u32) {
+    if tab.built_width != term_width || tab.built_gen != gen {
+        rebuild_tab(tab, args, term_width, gen);
     }
 }
 
-fn build_tab(source: String, filename: &str, args: &Args, term_width: u16) -> Tab {
+fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: u32) -> Tab {
     let (_, content) = if args.frontmatter {
         (None, source.clone())
     } else {
@@ -580,7 +651,10 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16) -> Ta
     // Resolve base directory for relative image paths
     let base_dir = std::path::Path::new(filename).parent();
 
-    let styled_lines = layout::layout_document(
+    let layout::LayoutResult {
+        lines: styled_lines,
+        headings,
+    } = layout::layout_document(
         root,
         &theme::resolve_theme(&args.theme),
         max_content_width,
@@ -590,26 +664,28 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16) -> Ta
         args.images,
     );
     let ratatui_lines = render::styled_lines_to_ratatui(&styled_lines, &args.theme);
+    let lowered: Vec<String> = styled_lines
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .collect();
 
     let (word_count, reading_time) = stats::document_stats(&content);
 
-    // Extract headings from the already-parsed AST (avoid parsing twice)
-    let headings = crate::parser::extract_headings_from_ast(root);
+    // Headings carry their exact display-line index straight from layout —
+    // no substring reverse-scan, and duplicate/split headings map correctly.
     let toc_entries: Vec<crate::toc::TocEntry> = headings
-        .iter()
-        .filter_map(|h| {
-            for (i, line) in styled_lines.iter().enumerate() {
-                for span in &line.spans {
-                    if span.style.bold && span.text.contains(&h.text) && !h.text.is_empty() {
-                        return Some(crate::toc::TocEntry {
-                            level: h.level,
-                            text: h.text.clone(),
-                            line_index: i,
-                        });
-                    }
-                }
-            }
-            None
+        .into_iter()
+        .filter(|h| !h.text.is_empty())
+        .map(|h| crate::toc::TocEntry {
+            level: h.level,
+            text: h.text,
+            line_index: h.line_index,
         })
         .collect();
 
@@ -622,9 +698,12 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16) -> Ta
         source,
         styled_lines,
         ratatui_lines,
+        lowered,
         scroll_offset: 0,
         toc,
         word_count,
         reading_time,
+        built_width: term_width,
+        built_gen: gen,
     }
 }

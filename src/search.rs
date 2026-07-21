@@ -1,5 +1,3 @@
-use crate::layout::StyledLine;
-
 /// Search state for in-document search.
 #[derive(Debug, Default)]
 pub struct SearchState {
@@ -41,17 +39,18 @@ impl SearchState {
         self.query.pop();
     }
 
-    /// Find all occurrences of the query in the styled lines.
-    pub fn update_matches(&mut self, lines: &[StyledLine]) {
+    /// Find all lines containing the query. `lowered` is the document's
+    /// per-line text, pre-lowercased once at build time — so a keystroke only
+    /// scans (no per-line allocation) instead of rebuilding + lowercasing the
+    /// whole document each time.
+    pub fn update_matches(&mut self, lowered: &[String]) {
         self.matches.clear();
         if self.query.is_empty() {
             return;
         }
         let query_lower = self.query.to_lowercase();
 
-        for (line_idx, line) in lines.iter().enumerate() {
-            let full_text: String = line.spans.iter().map(|s| s.text.as_str()).collect();
-            let text_lower = full_text.to_lowercase();
+        for (line_idx, text_lower) in lowered.iter().enumerate() {
             if text_lower.contains(&query_lower) {
                 self.matches.push(SearchMatch {
                     line_index: line_idx,
@@ -88,9 +87,12 @@ impl SearchState {
         self.matches.len()
     }
 
-    /// Check if a given line index has a match.
+    /// Check if a given line index has a match. `matches` is built in
+    /// ascending line order, so this is a binary search, not a linear scan.
     pub fn is_match_line(&self, line_idx: usize) -> bool {
-        self.matches.iter().any(|m| m.line_index == line_idx)
+        self.matches
+            .binary_search_by_key(&line_idx, |m| m.line_index)
+            .is_ok()
     }
 
     /// Check if a given line is the current match.

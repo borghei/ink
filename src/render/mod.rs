@@ -58,10 +58,9 @@ pub fn render_top_bar(
     scroll_offset: usize,
     total_lines: usize,
     viewport_height: usize,
-    theme_name: &str,
+    t: &theme::Theme,
     _tab_info: Option<(usize, usize)>,
 ) {
-    let t = theme::resolve_theme(theme_name);
     let accent = theme::hex_to_color(&t.colors.heading2);
     let bg = theme::hex_to_color(&t.colors.status_bar_bg);
     let width = area.width as usize;
@@ -91,7 +90,7 @@ pub fn render_top_bar(
 pub fn render_bottom_bar(
     frame: &mut Frame,
     area: Rect,
-    theme_name: &str,
+    t: &theme::Theme,
     filename: &str,
     word_count: usize,
     reading_time: usize,
@@ -99,7 +98,6 @@ pub fn render_bottom_bar(
     tab_info: Option<(usize, usize)>,
     file_missing: bool,
 ) {
-    let t = theme::resolve_theme(theme_name);
     let bg = theme::hex_to_color(&t.colors.status_bar_bg);
     let fg = theme::hex_to_color(&t.colors.status_bar_fg);
     let dim_fg = theme::hex_to_color(&t.colors.link_url);
@@ -182,6 +180,11 @@ pub fn render_bottom_bar(
 }
 
 /// Render document with search match highlighting (inline text only, not full lines).
+///
+/// Only the lines currently on screen are materialized: layout produces one
+/// display line per `Line` (the document `Paragraph` never wraps), so the
+/// slice `[scroll_offset .. scroll_offset + height]` is exactly the viewport.
+/// This bounds per-frame work to the viewport instead of the whole document.
 pub fn render_document_with_search(
     frame: &mut Frame,
     area: Rect,
@@ -189,25 +192,26 @@ pub fn render_document_with_search(
     scroll_offset: u16,
     _total_lines: usize,
     search: &SearchState,
-    theme_name: &str,
+    t: &theme::Theme,
 ) {
-    let t = theme::resolve_theme(theme_name);
+    let offset = (scroll_offset as usize).min(lines.len());
+    let end = (offset + area.height as usize).min(lines.len());
+    let visible = &lines[offset..end];
 
-    if !search.query.is_empty() && !search.matches.is_empty() {
+    let searching = !search.query.is_empty() && !search.matches.is_empty();
+    let rendered: Vec<Line<'static>> = if searching {
         let match_color = theme::hex_to_color(&t.colors.search_match);
         let current_color = theme::hex_to_color(&t.colors.search_current);
-
-        let highlighted: Vec<Line<'static>> = lines
+        visible
             .iter()
             .enumerate()
             .map(|(i, line)| {
-                let is_current = search.is_current_match_line(i);
-                let is_match = search.is_match_line(i);
-
+                let abs = offset + i;
+                let is_current = search.is_current_match_line(abs);
+                let is_match = search.is_match_line(abs);
                 if !is_match && !is_current {
                     return line.clone();
                 }
-
                 let hi_color = if is_current {
                     current_color
                 } else {
@@ -215,14 +219,13 @@ pub fn render_document_with_search(
                 };
                 highlight_query_in_line(line, &search.query, hi_color, is_current)
             })
-            .collect();
-
-        let paragraph = Paragraph::new(highlighted).scroll((scroll_offset, 0));
-        frame.render_widget(paragraph, area);
+            .collect()
     } else {
-        let paragraph = Paragraph::new(lines.to_vec()).scroll((scroll_offset, 0));
-        frame.render_widget(paragraph, area);
-    }
+        visible.to_vec()
+    };
+
+    // The slice already starts at the viewport top, so no Paragraph scroll.
+    frame.render_widget(Paragraph::new(rendered), area);
 }
 
 /// Split spans in a line to highlight only the matched query text.
@@ -283,8 +286,7 @@ fn highlight_query_in_line(
 }
 
 /// Render the search input bar.
-pub fn render_search_bar(frame: &mut Frame, area: Rect, search: &SearchState, theme_name: &str) {
-    let t = theme::resolve_theme(theme_name);
+pub fn render_search_bar(frame: &mut Frame, area: Rect, search: &SearchState, t: &theme::Theme) {
     let bg = theme::hex_to_color(&t.colors.status_bar_bg);
     let fg = theme::hex_to_color(&t.colors.status_bar_fg);
     let accent = theme::hex_to_color(&t.colors.heading2);
@@ -321,9 +323,8 @@ pub fn render_toc(
     area: Rect,
     entries: &[crate::toc::TocEntry],
     selected: usize,
-    theme_name: &str,
+    t: &theme::Theme,
 ) {
-    let t = theme::resolve_theme(theme_name);
     let active_color = theme::hex_to_color(&t.colors.toc_active);
     let inactive_color = theme::hex_to_color(&t.colors.toc_inactive);
     let border_color = theme::hex_to_color(&t.colors.table_border);
@@ -375,8 +376,8 @@ pub fn render_theme_picker(
     themes: &[&str],
     selected: usize,
     current_theme: &str,
+    t: &theme::Theme,
 ) {
-    let t = theme::resolve_theme(current_theme);
     let active_color = theme::hex_to_color(&t.colors.heading1);
     let inactive_color = theme::hex_to_color(&t.colors.status_bar_fg);
     let bg = theme::hex_to_color(&t.colors.code_block_bg);

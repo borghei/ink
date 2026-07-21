@@ -22,7 +22,8 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let root = parse_document(&arena, &content, &options);
     let t = theme::resolve_theme(&args.theme);
     let width = args.width.unwrap_or(80);
-    let styled_lines = layout::layout_document(root, &t, width, args.spacing, 2, None, args.images);
+    let styled_lines =
+        layout::layout_document(root, &t, width, args.spacing, 2, None, args.images).lines;
 
     let mut output = String::new();
     for line in &styled_lines {

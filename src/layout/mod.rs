@@ -9,6 +9,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
+// SyntaxSet/ThemeSet are shared singletons; see crate::highlight.
 use unicode_width::UnicodeWidthStr;
 
 /// A rendered line of styled text, ready for display.
@@ -70,6 +71,22 @@ pub struct SpanStyle {
     pub link_url: Option<String>,
 }
 
+/// A heading recorded during layout, with the exact display-line index where
+/// it lands. Used to build the TOC without a fragile substring reverse-scan.
+#[derive(Debug, Clone)]
+pub struct LayoutHeading {
+    pub level: u8,
+    pub text: String,
+    pub line_index: usize,
+}
+
+/// Result of laying out a document: the display lines plus the headings and
+/// their line positions.
+pub struct LayoutResult {
+    pub lines: Vec<StyledLine>,
+    pub headings: Vec<LayoutHeading>,
+}
+
 /// Convert a comrak AST into a flat list of styled lines for rendering.
 pub fn layout_document<'a>(
     root: &'a AstNode<'a>,
@@ -79,10 +96,9 @@ pub fn layout_document<'a>(
     center_margin: usize,
     base_dir: Option<&std::path::Path>,
     images: ImageMode,
-) -> Vec<StyledLine> {
+) -> LayoutResult {
     let mut lines: Vec<StyledLine> = Vec::new();
-    let ss = SyntaxSet::load_defaults_newlines();
-    let ts = ThemeSet::load_defaults();
+    let headings = std::cell::RefCell::new(Vec::new());
     let ctx = LayoutContext {
         theme,
         width: width as usize,
@@ -90,14 +106,19 @@ pub fn layout_document<'a>(
         list_depth: 0,
         spacing,
         margin: center_margin,
-        syntax_set: &ss,
-        theme_set: &ts,
+        syntax_set: crate::highlight::syntax_set(),
+        theme_set: crate::highlight::theme_set(),
         base_dir,
         images,
+        headings: &headings,
+        record_headings: true,
     };
     layout_node(root, &ctx, &mut lines);
     sanitize_lines(&mut lines);
-    lines
+    LayoutResult {
+        lines,
+        headings: headings.into_inner(),
+    }
 }
 
 /// Final pass over everything headed for the terminal: strip control bytes
@@ -129,6 +150,11 @@ struct LayoutContext<'a> {
     theme_set: &'a ThemeSet,
     base_dir: Option<&'a std::path::Path>,
     images: ImageMode,
+    headings: &'a std::cell::RefCell<Vec<LayoutHeading>>,
+    // Only the top-level walk writes into the shared `lines`, so only it can
+    // record correct absolute line indices. Nested walks (blockquotes, list
+    // items) build into their own buffers, so they don't record headings.
+    record_headings: bool,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -295,6 +321,15 @@ fn layout_heading<'a>(
         },
     });
 
+    // Record the heading's exact display-line index for the TOC.
+    if ctx.record_headings {
+        ctx.headings.borrow_mut().push(LayoutHeading {
+            level,
+            text: collect_child_text(node),
+            line_index: lines.len(),
+        });
+    }
+
     let spans = collect_inline_spans(node, ctx);
     for mut span in spans {
         span.style.fg = Some(color.clone());
@@ -345,7 +380,7 @@ fn try_render_image_block<'a>(
     let alt = collect_child_text(child);
 
     // Try to load and render the image
-    let image_data = match crate::image::load_image(&url, ctx.base_dir, ctx.images) {
+    let image_data = match crate::image::load_decoded(&url, ctx.base_dir, ctx.images) {
         Ok(data) => data,
         Err(crate::image::ImageUnavailable::RemoteBlocked) => {
             let alt_display = if alt.is_empty() { &url } else { &alt };
@@ -580,6 +615,8 @@ fn layout_blockquote<'a>(
         theme_set: ctx.theme_set,
         base_dir: ctx.base_dir,
         images: ctx.images,
+        headings: ctx.headings,
+        record_headings: false,
     };
     let mut inner_lines = Vec::new();
     let mut skip_first = admonition.is_some();
@@ -675,6 +712,8 @@ fn layout_list<'a>(
         theme_set: ctx.theme_set,
         base_dir: ctx.base_dir,
         images: ctx.images,
+        headings: ctx.headings,
+        record_headings: false,
     };
 
     for (i, item) in node.children().enumerate() {
