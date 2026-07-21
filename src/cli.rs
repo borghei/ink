@@ -51,6 +51,10 @@ pub struct Cli {
     #[arg(long)]
     pub remote_images: bool,
 
+    /// Image rendering protocol: auto, kitty, iterm2, sixel, halfblocks
+    #[arg(long, default_value = "auto")]
+    pub image_protocol: String,
+
     /// List available themes and exit
     #[arg(long)]
     pub list_themes: bool,
@@ -131,6 +135,7 @@ pub struct Args {
     pub watch: bool,
     pub toc: bool,
     pub images: crate::image::ImageMode,
+    pub image_protocol: crate::graphics::ProtocolChoice,
     pub frontmatter: bool,
     pub spacing: Spacing,
     pub mouse_capture: bool,
@@ -237,6 +242,8 @@ pub fn run() -> Result<()> {
         } else {
             crate::image::ImageMode::LocalOnly
         },
+        image_protocol: crate::graphics::ProtocolChoice::parse(&cli.image_protocol)
+            .unwrap_or(crate::graphics::ProtocolChoice::Auto),
         frontmatter: cli.frontmatter,
         spacing,
         mouse_capture: user_config

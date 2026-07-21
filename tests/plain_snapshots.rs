@@ -17,6 +17,7 @@ fn test_args() -> Args {
         watch: false,
         toc: false,
         images: ink_md::image::ImageMode::Off,
+        image_protocol: ink_md::graphics::ProtocolChoice::HalfBlocks,
         frontmatter: false,
         spacing: Spacing::Normal,
         mouse_capture: true,

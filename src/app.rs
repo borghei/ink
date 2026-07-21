@@ -36,6 +36,20 @@ struct Tab {
     /// instead of rebuilding every tab on every resize / theme change.
     built_width: u16,
     built_gen: u32,
+    /// Graphics-protocol images placed in the text flow (empty in half-block
+    /// mode). Painted over their reserved blank rows by the draw loop.
+    images: Vec<ImagePlacement>,
+}
+
+/// A decoded image positioned in the document for graphics-protocol rendering.
+struct ImagePlacement {
+    /// First document line the image occupies (its reserved blank rows).
+    line_index: usize,
+    /// Left column offset (content margin) within the document area.
+    col_offset: u16,
+    /// Reserved height in rows.
+    rows: u16,
+    protocol: ratatui_image::sliced::SlicedProtocol,
 }
 
 struct NavEntry {
@@ -72,6 +86,16 @@ pub enum AppExit {
 
 pub fn run(source: String, args: Args) -> Result<AppExit> {
     let mouse_capture = args.mouse_capture;
+
+    // Probe the terminal for a graphics protocol (Kitty/iTerm2/Sixel) BEFORE
+    // entering the alternate screen — the query talks over stdio. Falls back to
+    // half-blocks on any non-graphics terminal or when images are disabled.
+    let graphics = if args.images == crate::image::ImageMode::Off {
+        crate::graphics::Graphics::halfblocks()
+    } else {
+        crate::graphics::Graphics::detect(args.image_protocol)
+    };
+
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
@@ -81,7 +105,7 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let result = run_inner(&mut terminal, source, args);
+    let result = run_inner(&mut terminal, source, args, &graphics);
 
     disable_raw_mode()?;
     if mouse_capture {
@@ -97,6 +121,7 @@ fn run_inner(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     source: String,
     mut args: Args,
+    graphics: &crate::graphics::Graphics,
 ) -> Result<AppExit> {
     let size = terminal.size()?;
 
@@ -118,13 +143,19 @@ fn run_inner(
     if args.slides {
         // Presentation mode: one tab per slide, navigated with ←/→/Space.
         for slide in crate::slides::split_slides(&source) {
-            tabs.push(build_tab(slide, filename, &args, size.width, theme_gen));
+            tabs.push(build_tab(
+                slide, filename, &args, size.width, theme_gen, graphics,
+            ));
         }
     } else {
-        tabs.push(build_tab(source, filename, &args, size.width, theme_gen));
+        tabs.push(build_tab(
+            source, filename, &args, size.width, theme_gen, graphics,
+        ));
         for input in args.inputs.iter().skip(1) {
             if let Ok(src) = std::fs::read_to_string(input) {
-                tabs.push(build_tab(src, input, &args, size.width, theme_gen));
+                tabs.push(build_tab(
+                    src, input, &args, size.width, theme_gen, graphics,
+                ));
             }
         }
     }
@@ -179,7 +210,8 @@ fn run_inner(
                     Ok(new_source) => {
                         let scroll = tabs[active_tab].scroll_offset;
                         let term_w = terminal.size()?.width;
-                        let mut new_tab = build_tab(new_source, input, &args, term_w, theme_gen);
+                        let mut new_tab =
+                            build_tab(new_source, input, &args, term_w, theme_gen, graphics);
                         let new_max =
                             (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
                         new_tab.scroll_offset = scroll.min(new_max);
@@ -306,6 +338,25 @@ fn run_inner(
                     &t,
                 );
 
+                // Paint graphics-protocol images over their reserved blank rows.
+                // SlicedImage self-clips to doc_area, so partially-scrolled images
+                // (position.y negative or past the bottom) render correctly.
+                for img in &tab.images {
+                    let y = img.line_index as i32 - tab.scroll_offset as i32;
+                    // Skip images fully above or below the viewport.
+                    if y + img.rows as i32 <= 0 || y >= doc_area.height as i32 {
+                        continue;
+                    }
+                    let pos = ratatui_image::sliced::SignedPosition::from((
+                        img.col_offset as i16,
+                        y as i16,
+                    ));
+                    frame.render_widget(
+                        ratatui_image::sliced::SlicedImage::new(&img.protocol, pos),
+                        doc_area,
+                    );
+                }
+
                 // Theme picker overlay
                 if theme_picker_open {
                     render::render_theme_picker(
@@ -379,7 +430,10 @@ fn run_inner(
                 match action {
                     Action::LinkHint(c) => {
                         if let Some(hint) = link_hints.iter().find(|h| h.label == c) {
-                            open_link(&hint.url, &mut tabs, active_tab, &args, terminal, theme_gen);
+                            open_link(
+                                &hint.url, &mut tabs, active_tab, &args, terminal, theme_gen,
+                                graphics,
+                            );
                         }
                         link_hints.clear();
                     }
@@ -407,6 +461,7 @@ fn run_inner(
                             &args,
                             terminal.size()?.width,
                             theme_gen,
+                            graphics,
                         );
                     }
                     Action::ScrollUp(_) => {
@@ -422,6 +477,7 @@ fn run_inner(
                             &args,
                             terminal.size()?.width,
                             theme_gen,
+                            graphics,
                         );
                     }
                     Action::SearchConfirm => {
@@ -522,6 +578,7 @@ fn run_inner(
                             &args,
                             terminal.size()?.width,
                             theme_gen,
+                            graphics,
                         );
                     }
                 }
@@ -533,6 +590,7 @@ fn run_inner(
                             &args,
                             terminal.size()?.width,
                             theme_gen,
+                            graphics,
                         );
                     }
                 }
@@ -611,6 +669,7 @@ fn run_inner(
                         &args,
                         terminal.size()?.width,
                         theme_gen,
+                        graphics,
                     );
                 }
                 Action::PrevTab if tabs.len() > 1 => {
@@ -624,6 +683,7 @@ fn run_inner(
                         &args,
                         terminal.size()?.width,
                         theme_gen,
+                        graphics,
                     );
                 }
 
@@ -670,6 +730,7 @@ fn run_inner(
                                 &args,
                                 terminal.size()?.width,
                                 theme_gen,
+                                graphics,
                             );
                         }
                     }
@@ -689,6 +750,7 @@ fn run_inner(
                                 &args,
                                 terminal.size()?.width,
                                 theme_gen,
+                                graphics,
                             );
                             new_tab.scroll_offset = entry.scroll_offset;
                             tabs[active_tab] = new_tab;
@@ -708,6 +770,7 @@ fn run_inner(
                                 &args,
                                 terminal.size()?.width,
                                 theme_gen,
+                                graphics,
                             );
                             new_tab.scroll_offset = entry.scroll_offset;
                             tabs[active_tab] = new_tab;
@@ -723,6 +786,7 @@ fn run_inner(
                         &args,
                         terminal.size()?.width,
                         theme_gen,
+                        graphics,
                     );
                 }
                 _ => {}
@@ -765,6 +829,7 @@ fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
 
 /// Act on a chosen link: open web/mail URLs in the default handler; follow a
 /// relative `.md` link in-place (with containment + nav history).
+#[allow(clippy::too_many_arguments)]
 fn open_link(
     url: &str,
     tabs: &mut [Tab],
@@ -772,6 +837,7 @@ fn open_link(
     args: &Args,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     gen: u32,
+    graphics: &crate::graphics::Graphics,
 ) {
     // Web / mail: hand off to the OS. (URLs are already scheme-validated by
     // sanitize_url during layout, but re-check defensively.)
@@ -799,31 +865,57 @@ fn open_link(
     };
     if let Ok(src) = std::fs::read_to_string(&target) {
         let width = terminal.size().map(|s| s.width).unwrap_or(80);
-        tabs[active_tab] = build_tab(src, target.to_str().unwrap_or(url), args, width, gen);
+        tabs[active_tab] = build_tab(
+            src,
+            target.to_str().unwrap_or(url),
+            args,
+            width,
+            gen,
+            graphics,
+        );
     }
 }
 
 /// Rebuild one tab for the current width/theme, preserving scroll and TOC
 /// visibility. Only the tab the user is looking at is rebuilt eagerly; the
 /// rest are refreshed lazily the next time they're switched to.
-fn rebuild_tab(tab: &mut Tab, args: &Args, term_width: u16, gen: u32) {
+fn rebuild_tab(
+    tab: &mut Tab,
+    args: &Args,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) {
     let source = tab.source.clone();
     let filename = tab.filename.clone();
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
-    *tab = build_tab(source, &filename, args, term_width, gen);
+    *tab = build_tab(source, &filename, args, term_width, gen, graphics);
     tab.scroll_offset = scroll;
     tab.toc.visible = toc_visible;
 }
 
 /// Refresh a tab only if it was laid out for a different width or theme.
-fn ensure_tab_current(tab: &mut Tab, args: &Args, term_width: u16, gen: u32) {
+fn ensure_tab_current(
+    tab: &mut Tab,
+    args: &Args,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) {
     if tab.built_width != term_width || tab.built_gen != gen {
-        rebuild_tab(tab, args, term_width, gen);
+        rebuild_tab(tab, args, term_width, gen, graphics);
     }
 }
 
-fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: u32) -> Tab {
+fn build_tab(
+    source: String,
+    filename: &str,
+    args: &Args,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) -> Tab {
     let (_, content) = if args.frontmatter {
         (None, source.clone())
     } else {
@@ -854,6 +946,7 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: 
     let layout::LayoutResult {
         lines: styled_lines,
         headings,
+        images: image_specs,
     } = layout::layout_document(
         root,
         &theme::resolve_theme(&args.theme),
@@ -862,7 +955,21 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: 
         center_margin,
         base_dir,
         args.images,
+        graphics.font_size(),
     );
+    // Turn reserved image specs into renderable placements (graphics mode only).
+    let images: Vec<ImagePlacement> = image_specs
+        .into_iter()
+        .filter_map(|spec| {
+            let proto = graphics.build((*spec.image).clone(), spec.cols, spec.rows)?;
+            Some(ImagePlacement {
+                line_index: spec.line_index,
+                col_offset: spec.col_offset,
+                rows: spec.rows,
+                protocol: proto,
+            })
+        })
+        .collect();
     let ratatui_lines = render::styled_lines_to_ratatui(&styled_lines, &args.theme);
     let lowered: Vec<String> = styled_lines
         .iter()
@@ -905,5 +1012,6 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: 
         reading_time,
         built_width: term_width,
         built_gen: gen,
+        images,
     }
 }
