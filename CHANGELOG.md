@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0 — 2026-07-21
+
+### Added
+- **Presentation mode (`--slides`) is now implemented.** Splits the document on top-level `---` rules (ignoring `---` inside code fences) into slides; navigate with ←/→/Space (or Tab), with a slide counter in the status bar. Previously the flag was accepted but did nothing.
+- **Math and emoji.** `$inline$` and `$$block$$` math render in code style (kept literal — terminals can't typeset LaTeX); `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
+- **Saner inline HTML.** `<br>` becomes a break and other inline tags (`<sub>`, `<sup>`, `<kbd>`, …) are dropped instead of silently swallowing their surrounding text.
+- **Pager mode.** `ink --plain` on an interactive terminal now pages long output through `$PAGER` (default `less -R`), like `bat`. Piped/redirected output and `--no-pager` print directly.
+
+### Changed
+- **`ink diff` now uses a real Myers line diff** (via `similar`) instead of a positional line-by-line compare, so a single inserted or deleted line no longer marks everything after it as changed.
+
 ## 0.4.0 — 2026-07-21
 
 ### Added

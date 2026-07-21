@@ -55,6 +55,10 @@ pub struct Cli {
     #[arg(long)]
     pub list_themes: bool,
 
+    /// Do not page --plain output through $PAGER even on a TTY
+    #[arg(long)]
+    pub no_pager: bool,
+
     /// Show YAML/TOML frontmatter
     #[arg(long)]
     pub frontmatter: bool,
@@ -296,13 +300,55 @@ pub fn run() -> Result<()> {
 
     if args.plain {
         let rendered = render::plain::render_plain(&source, &args)?;
-        print!("{rendered}");
+        emit_plain(&rendered, cli.no_pager);
         return Ok(());
     }
 
     app::run(source, args)?;
 
     Ok(())
+}
+
+/// Print rendered plain output, paging it through `$PAGER` (or `less -R`) when
+/// stdout is an interactive terminal and the content is taller than the
+/// screen — making `ink --plain` a drop-in markdown pager like `bat`/`less`.
+/// Falls back to a direct print for pipes, redirects, or `--no-pager`.
+fn emit_plain(rendered: &str, no_pager: bool) {
+    use std::io::Write;
+
+    let stdout_tty = std::io::stdout().is_terminal();
+    let term_height = crossterm::terminal::size().map(|(_, h)| h).unwrap_or(24);
+    let long_enough = rendered.lines().count() > term_height as usize;
+
+    if no_pager || !stdout_tty || !long_enough {
+        print!("{rendered}");
+        return;
+    }
+
+    let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
+    let mut parts = pager.split_whitespace();
+    let Some(program) = parts.next() else {
+        print!("{rendered}");
+        return;
+    };
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(parts);
+    // Ensure `less` passes through our ANSI colors even if $PAGER is bare `less`.
+    if program == "less" {
+        cmd.env(
+            "LESS",
+            std::env::var("LESS").unwrap_or_else(|_| "-R".to_string()),
+        );
+    }
+    match cmd.stdin(std::process::Stdio::piped()).spawn() {
+        Ok(mut child) => {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(rendered.as_bytes());
+            }
+            let _ = child.wait();
+        }
+        Err(_) => print!("{rendered}"),
+    }
 }
 
 /// Read a file as UTF-8, falling back to a lossy decode (with a stderr note)

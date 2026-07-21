@@ -932,6 +932,39 @@ fn collect_inlines<'a>(
                     },
                 });
             }
+            NodeValue::Math(ref math) => {
+                // No LaTeX rendering in a terminal; show the literal in code
+                // style so `$E=mc^2$` reads as math rather than vanishing.
+                spans.push(StyledSpan {
+                    text: math.literal.clone(),
+                    style: SpanStyle {
+                        fg: Some(ctx.theme.colors.code_fg.clone()),
+                        italic: true,
+                        ..parent_style.clone()
+                    },
+                });
+            }
+            NodeValue::ShortCode(ref sc) => {
+                // comrak resolves known emoji shortcodes to their glyph.
+                spans.push(StyledSpan {
+                    text: sc.emoji.clone(),
+                    style: parent_style.clone(),
+                });
+            }
+            NodeValue::HtmlInline(ref html) => {
+                // Honor common inline tags; drop the rest instead of emitting
+                // raw markup. <br> becomes a break handled by wrapping later;
+                // here we just skip structural tags and keep nothing visible.
+                let tag = html.trim().to_ascii_lowercase();
+                if tag == "<br>" || tag == "<br/>" || tag == "<br />" {
+                    spans.push(StyledSpan {
+                        text: " ".to_string(),
+                        style: parent_style.clone(),
+                    });
+                }
+                // <sub>/<sup>/<kbd>/etc.: ignore the tag, inner text is a
+                // sibling text node and renders normally.
+            }
             _ => {
                 drop(data);
                 collect_inlines(child, ctx, spans, parent_style);

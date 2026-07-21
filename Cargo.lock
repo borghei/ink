@@ -348,6 +348,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5afa2702ef2fecc5bd7ca605f37e875a6be3fc8138c4633e711a945b70351550"
 dependencies = [
  "caseless",
+ "emojis",
  "entities",
  "memchr",
  "slug",
@@ -596,6 +597,15 @@ name = "either"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48c757948c5ede0e46177b7add2e67155f70e33c07fea8284df6576da70b3719"
+
+[[package]]
+name = "emojis"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99e1f1df1f181f2539bac8bf027d31ca5ffbf9e559e3f2d09413b9107b5c02f4"
+dependencies = [
+ "phf",
+]
 
 [[package]]
 name = "encode_unicode"
@@ -1160,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "ink-md"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1178,6 +1188,7 @@ dependencies = [
  "ratatui",
  "reqwest",
  "serde",
+ "similar",
  "syntect",
  "tempfile",
  "toml",

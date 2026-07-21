@@ -39,6 +39,8 @@ pub enum Action {
     Help,
     LinkMode,
     LinkHint(char),
+    SlideNext,
+    SlidePrev,
     None,
 }
 
@@ -51,6 +53,8 @@ pub enum InputMode {
     Search,
     /// Link-hint overlay — letter keys pick a link, Esc cancels.
     LinkHint,
+    /// Presentation mode — arrows/space move between slides.
+    Slides,
 }
 
 /// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
@@ -222,6 +226,7 @@ fn map_event(event: Event, mode: InputMode) -> Action {
         Event::Key(key) => match mode {
             InputMode::Search => map_search_key(key),
             InputMode::LinkHint => map_link_hint_key(key),
+            InputMode::Slides => map_slides_key(key),
             InputMode::Normal => map_key(key),
         },
         Event::Mouse(mouse) => map_mouse(mouse),
@@ -234,6 +239,30 @@ fn map_link_hint_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => Action::CloseSearch,
         KeyCode::Char(c) if c.is_ascii_alphabetic() => Action::LinkHint(c.to_ascii_lowercase()),
+        _ => Action::None,
+    }
+}
+
+fn map_slides_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+        return Action::ExitApp;
+    }
+    match key.code {
+        KeyCode::Char('q') | KeyCode::Esc => Action::ExitApp,
+        KeyCode::Right
+        | KeyCode::Char(' ')
+        | KeyCode::Char('l')
+        | KeyCode::Char('n')
+        | KeyCode::PageDown
+        | KeyCode::Enter => Action::SlideNext,
+        KeyCode::Left
+        | KeyCode::Backspace
+        | KeyCode::Char('h')
+        | KeyCode::Char('p')
+        | KeyCode::PageUp => Action::SlidePrev,
+        KeyCode::Down | KeyCode::Char('j') => Action::ScrollDown(1),
+        KeyCode::Up | KeyCode::Char('k') => Action::ScrollUp(1),
+        KeyCode::Char('t') => Action::ThemePicker,
         _ => Action::None,
     }
 }

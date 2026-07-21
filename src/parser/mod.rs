@@ -38,6 +38,8 @@ pub fn options() -> Options<'static> {
     opts.extension.tasklist = true;
     opts.extension.footnotes = true;
     opts.extension.header_ids = Some(String::new());
+    opts.extension.math_dollars = true;
+    opts.extension.shortcodes = true;
     opts.parse.smart = true;
     opts
 }

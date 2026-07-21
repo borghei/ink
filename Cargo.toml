@@ -1,6 +1,6 @@
 [package]
 name = "ink-md"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2021"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
 description = "The most advanced terminal markdown reader"
@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Markdown parsing (GFM-compliant)
-comrak = { version = "0.36", default-features = false, features = ["syntect"] }
+comrak = { version = "0.36", default-features = false, features = ["syntect", "shortcodes"] }
 
 # TUI framework
 ratatui = { version = "0.30", features = ["crossterm"] }
@@ -62,6 +62,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 
 # Cross-platform file watching for --watch (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows)
 notify = "8"
+
+# Real (Myers) line diff for `ink diff`
+similar = "2"
 
 [dev-dependencies]
 assert_cmd = "2"

@@ -58,30 +58,22 @@ pub fn print_stats(source: &str, filename: &str) {
     println!("╰───╯");
 }
 
-/// Print a simple line-by-line diff between two markdown files.
+/// Print a real (Myers) line diff between two markdown files. A single
+/// inserted line no longer marks everything after it as changed.
 pub fn print_diff(source_a: &str, source_b: &str, name_a: &str, name_b: &str) {
-    let lines_a: Vec<&str> = source_a.lines().collect();
-    let lines_b: Vec<&str> = source_b.lines().collect();
+    use similar::{ChangeTag, TextDiff};
 
     println!("\x1b[1m--- {name_a}\x1b[0m");
     println!("\x1b[1m+++ {name_b}\x1b[0m");
     println!();
 
-    let max_lines = lines_a.len().max(lines_b.len());
-
-    for i in 0..max_lines {
-        let a = lines_a.get(i).copied().unwrap_or("");
-        let b = lines_b.get(i).copied().unwrap_or("");
-
-        if a == b {
-            println!("  {a}");
-        } else {
-            if !a.is_empty() || i < lines_a.len() {
-                println!("\x1b[31m- {a}\x1b[0m");
-            }
-            if !b.is_empty() || i < lines_b.len() {
-                println!("\x1b[32m+ {b}\x1b[0m");
-            }
+    let diff = TextDiff::from_lines(source_a, source_b);
+    for change in diff.iter_all_changes() {
+        let line = change.value().trim_end_matches('\n');
+        match change.tag() {
+            ChangeTag::Delete => println!("\x1b[31m- {line}\x1b[0m"),
+            ChangeTag::Insert => println!("\x1b[32m+ {line}\x1b[0m"),
+            ChangeTag::Equal => println!("  {line}"),
         }
     }
 }

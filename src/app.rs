@@ -114,18 +114,18 @@ fn run_inner(
     // Bumped on every theme change so tabs know their cached layout is stale.
     let mut theme_gen: u32 = 0;
 
-    let first_tab = build_tab(
-        source,
-        args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin"),
-        &args,
-        size.width,
-        theme_gen,
-    );
-    tabs.push(first_tab);
-
-    for input in args.inputs.iter().skip(1) {
-        if let Ok(src) = std::fs::read_to_string(input) {
-            tabs.push(build_tab(src, input, &args, size.width, theme_gen));
+    let filename = args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin");
+    if args.slides {
+        // Presentation mode: one tab per slide, navigated with ←/→/Space.
+        for slide in crate::slides::split_slides(&source) {
+            tabs.push(build_tab(slide, filename, &args, size.width, theme_gen));
+        }
+    } else {
+        tabs.push(build_tab(source, filename, &args, size.width, theme_gen));
+        for input in args.inputs.iter().skip(1) {
+            if let Ok(src) = std::fs::read_to_string(input) {
+                tabs.push(build_tab(src, input, &args, size.width, theme_gen));
+            }
         }
     }
 
@@ -357,6 +357,8 @@ fn run_inner(
             input::InputMode::Search
         } else if !link_hints.is_empty() {
             input::InputMode::LinkHint
+        } else if args.slides && !theme_picker_open && !help_open {
+            input::InputMode::Slides
         } else {
             input::InputMode::Normal
         };
@@ -390,7 +392,9 @@ fn run_inner(
             if theme_picker_open {
                 match action {
                     Action::ExitApp | Action::CloseSearch => {
+                        // Closing keeps the previewed theme — persist it.
                         theme_picker_open = false;
+                        let _ = crate::config::set_theme(THEME_LIST[theme_picker_index]);
                     }
                     Action::ScrollDown(_) => {
                         theme_picker_index = (theme_picker_index + 1) % THEME_LIST.len();
@@ -508,6 +512,30 @@ fn run_inner(
                 }
                 Action::Home => tabs[active_tab].scroll_offset = 0,
                 Action::End => tabs[active_tab].scroll_offset = max_scroll,
+
+                // Slides
+                Action::SlideNext => {
+                    if active_tab + 1 < tabs.len() {
+                        active_tab += 1;
+                        ensure_tab_current(
+                            &mut tabs[active_tab],
+                            &args,
+                            terminal.size()?.width,
+                            theme_gen,
+                        );
+                    }
+                }
+                Action::SlidePrev => {
+                    if active_tab > 0 {
+                        active_tab -= 1;
+                        ensure_tab_current(
+                            &mut tabs[active_tab],
+                            &args,
+                            terminal.size()?.width,
+                            theme_gen,
+                        );
+                    }
+                }
 
                 // TOC
                 Action::ToggleToc => tabs[active_tab].toc.toggle(),
