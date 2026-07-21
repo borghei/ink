@@ -26,6 +26,11 @@ jobs:
       # from third-party taps with an UntrustedTapError. A plain file edit
       # sidesteps `brew` entirely and never hits the trust check.
       - name: Bump tap formula
+        # Non-blocking: needs a valid HOMEBREW_TAP_TOKEN. If the token is
+        # missing/expired the bump fails here, but the calling release run
+        # stays green (the binaries + checksums have already published). Fix
+        # the token and re-run to bump the tap.
+        continue-on-error: true
         env:
           TAG: ${{ inputs.tag }}
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

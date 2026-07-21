@@ -85,13 +85,13 @@ jobs:
   # created with the default GITHUB_TOKEN do not emit events that trigger other
   # workflows, so a `release`-triggered bump would silently never fire.
   #
-  # continue-on-error: the tap bump needs a valid HOMEBREW_TAP_TOKEN secret. If
-  # it's missing/expired the bump fails, but the release itself (binaries +
-  # checksums) has already published, so a tap failure must not fail the run.
-  # Fix the token and re-run this job to update the formula.
+  # The bump is made non-blocking inside homebrew.yml (its step is
+  # continue-on-error): a missing/expired HOMEBREW_TAP_TOKEN fails the bump but
+  # not the release, since the binaries + checksums have already published.
+  # (`continue-on-error` is not valid on a reusable-workflow-call job, so the
+  # tolerance lives on the step instead.)
   homebrew:
     needs: release
-    continue-on-error: true
     uses: ./.github/workflows/homebrew.yml
     with:
       tag: ${{ github.ref_name }}
