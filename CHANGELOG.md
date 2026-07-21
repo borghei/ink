@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — 2026-07-21
+
+### Added
+- **True inline images via terminal graphics protocols.** On terminals that support them, images now render as real pixels using the Kitty graphics protocol, iTerm2 inline images, or Sixel — auto-detected at startup. Terminals without a graphics protocol keep the universal Unicode half-block rendering, so nothing changes there.
+  - Images scroll with the document and clip cleanly at the viewport edges.
+  - New `--image-protocol <auto|kitty|iterm2|sixel|halfblocks>` flag (default `auto`). Force `halfblocks` for the previous behavior everywhere, or pin a specific protocol.
+  - Detection is skipped for `--plain`, `--no-images`, and when `halfblocks` is forced; it never runs off a TTY and falls back safely on any non-graphics terminal.
+
 ## 0.5.2 — 2026-07-21
 
 ### CI

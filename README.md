@@ -91,7 +91,9 @@ Language-aware highlighting for every major language. Code blocks get clean bord
 
 ### Inline images
 
-Local images in your markdown get rendered directly in the terminal using Unicode half-block characters. Works in any terminal with true color support. If an image can't load, ink shows a placeholder instead of crashing.
+Images in your markdown render directly in the terminal. On terminals with a graphics protocol (Kitty, iTerm2, WezTerm, Ghostty, or Sixel) ink draws real pixels — auto-detected at startup; everywhere else it falls back to Unicode half-blocks, which work in any true-color terminal. Images scroll with the document and clip cleanly at the edges. If an image can't load, ink shows a placeholder instead of crashing.
+
+Pick a renderer explicitly with `--image-protocol <auto|kitty|iterm2|sixel|halfblocks>` (default `auto`).
 
 Remote (`http`/`https`) images are **not** fetched by default — a document you didn't write shouldn't be able to phone home or probe your network. Pass `--remote-images` to enable them (private, loopback, and cloud-metadata addresses stay blocked even then).
 
@@ -295,6 +297,7 @@ Options:
       --toc              Show table of contents on startup
       --no-images        Disable image rendering
       --remote-images    Allow fetching remote (http/https) images
+      --image-protocol <P>  auto | kitty | iterm2 | sixel | halfblocks
       --list-themes      List available themes and exit
       --no-pager         Never page --plain output, even on a TTY
       --frontmatter      Show YAML/TOML frontmatter
@@ -319,7 +322,8 @@ Subcommands:
 | Multi-tab | Yes | No | No | No |
 | In-document search | Yes | No | No | No |
 | Table of contents | Yes | No | No | Yes |
-| Inline images | Yes | No | Yes | No |
+| Inline images (graphics protocols) | Yes | No | Yes | No |
+| Inline images (half-block fallback) | Yes | No | No | No |
 | Mermaid diagrams | Yes | No | No | No |
 | Admonitions | Yes | No | No | No |
 | Wikilinks | Yes | No | No | No |

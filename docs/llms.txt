@@ -7,7 +7,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 ## What it does
 
 - Renders markdown with syntax highlighting, tables, blockquotes, lists, task lists, footnotes, and horizontal rules
-- Displays inline images using Unicode half-block characters (works in any terminal with true color)
+- Displays inline images using terminal graphics protocols (Kitty, iTerm2, Sixel) where supported, falling back to Unicode half-block characters (any true-color terminal); --image-protocol selects the renderer
 - Renders mermaid diagrams (flowcharts, sequence diagrams, pie charts, Gantt charts) as ASCII art
 - Supports GitHub-style admonitions: NOTE, TIP, IMPORTANT, WARNING, CAUTION
 - Supports wikilink syntax: [[page]] and [[page|display text]]

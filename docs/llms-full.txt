@@ -23,8 +23,9 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - YAML and TOML frontmatter stripping (optional display)
 
 ### Images
-- Inline images rendered using Unicode half-block characters (▄) with 24-bit color
-- Works in any terminal with true color support
+- Real pixel rendering via terminal graphics protocols (Kitty graphics, iTerm2 inline, Sixel), auto-detected at startup; --image-protocol auto|kitty|iterm2|sixel|halfblocks
+- Falls back to Unicode half-block characters (▄) with 24-bit color on terminals without a graphics protocol (any true-color terminal)
+- Images scroll with the document and clip cleanly at the viewport edges
 - Loads images from local files (relative paths, contained to the document directory)
 - Remote (http/https) images are OFF by default (shown as a placeholder); enable with --remote-images. Even then, private/loopback/link-local/cloud-metadata addresses are blocked, with timeouts and a 20 MB cap
 - Decoded images are cached; falls back to emoji placeholder (🖼) if an image can't be loaded or decoded
