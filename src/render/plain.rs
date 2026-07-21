@@ -21,9 +21,21 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let options = parser::options();
     let root = parse_document(&arena, &content, &options);
     let t = theme::resolve_theme(&args.theme);
+    // `width` is the total output width; reserve the left margin from it so the
+    // rendered lines (margin + content) never exceed the requested width.
+    let margin: usize = 2;
     let width = args.width.unwrap_or(80);
-    let styled_lines =
-        layout::layout_document(root, &t, width, args.spacing, 2, None, args.images).lines;
+    let content_width = width.saturating_sub(margin as u16).max(8);
+    let styled_lines = layout::layout_document(
+        root,
+        &t,
+        content_width,
+        args.spacing,
+        margin,
+        None,
+        args.images,
+    )
+    .lines;
 
     let caps = theme::caps::caps();
     let mut output = String::new();

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.5.1 — 2026-07-21
+
+### Fixed (rendering)
+- **Nothing overflows the render width anymore.** Long code lines, long headings, and long unbreakable tokens (URLs, long identifiers) now wrap or hard-break to fit instead of spilling past the edge (and, in the TUI, being silently clipped). Every block type is verified to stay within the width from 40 columns up.
+- **Code blocks are now a proper closed box.** Long lines wrap inside the frame and a right border is drawn on every row (previously the box had top and bottom borders but no right side, and long lines shot past it). Code blocks also match the paragraph width instead of being capped at 80.
+- **The left margin is now reserved from the width budget.** `ink --plain --width N` produces exactly N columns (was N+2), and an explicit `--width` wider than the terminal no longer overflows.
+- **Inline code spacing.** `` `code` `` no longer renders with a doubled leading space and a stray space before following punctuation.
+- **Footnote definitions** render the label and text on one line (`[^1]: text`) instead of splitting them across two lines.
+- Removed stray blank/indented lines after nested list items and the trailing empty bar line after blockquotes and admonitions; consecutive admonitions and a following block now have proper spacing.
+- Raw HTML blocks (e.g. centered `<img>` headers) wrap to the width instead of overflowing.
+- Very narrow tables degrade by wrapping cells harder rather than overflowing.
+
+### Internal
+- `--plain` output coalesces adjacent same-styled spans, so multi-word runs stay contiguous (greppable) and emit far fewer escape sequences.
+- Added a width-compliance regression test asserting no laid-out line exceeds the target width across widths 40–100.
+
 ## 0.5.0 — 2026-07-21
 
 A large release focused on security hardening, a performance overhaul, and closing the feature gap with other terminal markdown tools.

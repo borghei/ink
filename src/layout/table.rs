@@ -35,19 +35,22 @@ pub fn layout_table<'a>(
     let total = total_content + overhead;
 
     if total > max_width {
-        // Shrink columns proportionally to fit, minimum 8 chars per column
+        // Shrink columns proportionally to fit. A small per-column floor keeps
+        // narrow tables inside the width by wrapping cells hard rather than
+        // overflowing (only reached when the table is wider than the view).
+        const MIN_COL: usize = 5;
         let available = max_width.saturating_sub(overhead);
         if total_content > 0 {
             let scale = available as f64 / total_content as f64;
             for w in &mut col_widths {
                 let new_w = ((*w as f64) * scale).floor() as usize;
-                *w = new_w.max(8);
+                *w = new_w.max(MIN_COL);
             }
             // Trim excess from widest columns
             let mut sum: usize = col_widths.iter().sum();
             while sum > available {
                 if let Some((idx, _)) = col_widths.iter().enumerate().max_by_key(|(_, w)| *w) {
-                    if col_widths[idx] > 8 {
+                    if col_widths[idx] > MIN_COL {
                         col_widths[idx] -= 1;
                         sum -= 1;
                     } else {

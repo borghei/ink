@@ -837,7 +837,11 @@ fn build_tab(source: String, filename: &str, args: &Args, term_width: u16, gen: 
     let options = crate::parser::options();
     let root = parse_document(&arena, &content, &options);
 
-    let max_content_width = args.width.unwrap_or(term_width.saturating_sub(4)).min(120);
+    // Content must fit within the terminal even after the left margin, so cap
+    // it at term_width - 4 (a requested --width wider than the terminal would
+    // otherwise overflow and be clipped at the right edge).
+    let hard_cap = term_width.saturating_sub(4).clamp(8, 120);
+    let max_content_width = args.width.unwrap_or(hard_cap).clamp(8, hard_cap);
     let center_margin = if term_width > max_content_width + 4 {
         ((term_width - max_content_width) / 2) as usize
     } else {

@@ -10,7 +10,7 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 // SyntaxSet/ThemeSet are shared singletons; see crate::highlight.
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// A rendered line of styled text, ready for display.
 #[derive(Debug, Clone)]
@@ -59,7 +59,7 @@ pub struct StyledSpan {
     pub style: SpanStyle,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct SpanStyle {
     pub fg: Option<String>,
     pub bg: Option<String>,
@@ -69,6 +69,23 @@ pub struct SpanStyle {
     pub strikethrough: bool,
     pub dim: bool,
     pub link_url: Option<String>,
+}
+
+/// Merge adjacent spans that share a style into one, so a run of same-styled
+/// words stays a contiguous string (keeps `--plain` output greppable and cuts
+/// redundant escape sequences).
+fn coalesce_line(line: &mut StyledLine) {
+    let mut merged: Vec<StyledSpan> = Vec::with_capacity(line.spans.len());
+    for span in line.spans.drain(..) {
+        if let Some(last) = merged.last_mut() {
+            if last.style == span.style {
+                last.text.push_str(&span.text);
+                continue;
+            }
+        }
+        merged.push(span);
+    }
+    line.spans = merged;
 }
 
 /// A heading recorded during layout, with the exact display-line index where
@@ -186,6 +203,18 @@ fn add_spacing(ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     }
 }
 
+/// Drop trailing blank lines (all-whitespace spans) from a buffer. Used before
+/// wrapping child content in a bar/indent so trailing spacing doesn't become a
+/// stray `│ ` bar line or an indented run of spaces.
+fn trim_trailing_blank(lines: &mut Vec<StyledLine>) {
+    while lines
+        .last()
+        .is_some_and(|l| l.spans.iter().all(|s| s.text.trim().is_empty()))
+    {
+        lines.pop();
+    }
+}
+
 fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     let data = node.data.borrow();
     match &data.value {
@@ -240,34 +269,50 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         NodeValue::HtmlBlock(hb) => {
             let literal = hb.literal.clone();
             drop(data);
+            // Raw HTML is shown as dim text; wrap it so long tags/URLs (e.g. an
+            // `<img src="…long…">`) stay within the width instead of overflowing.
             for line_text in literal.lines() {
-                let mut line = StyledLine::new();
-                ctx.add_margin(&mut line);
-                line.push(StyledSpan {
+                if line_text.trim().is_empty() {
+                    continue;
+                }
+                let spans = vec![StyledSpan {
                     text: line_text.to_string(),
                     style: SpanStyle {
+                        fg: Some(ctx.theme.colors.link_url.clone()),
                         ..Default::default()
                     },
-                });
-                lines.push(line);
+                }];
+                lines.extend(wrap_spans(spans, ctx.width, 0, ctx.margin));
             }
         }
         NodeValue::FootnoteDefinition(ref fd) => {
             let name = fd.name.clone();
             drop(data);
-            let mut line = StyledLine::new();
-            ctx.add_margin(&mut line);
-            line.push(StyledSpan {
+            let label = StyledSpan {
                 text: format!("[^{name}]: "),
                 style: SpanStyle {
                     fg: Some(ctx.theme.colors.link.clone()),
                     bold: true,
                     ..Default::default()
                 },
-            });
-            lines.push(line);
-            for child in node.children() {
-                layout_node(child, ctx, lines);
+            };
+            let children: Vec<_> = node.children().collect();
+            // Common case: a single paragraph. Render the label inline with the
+            // text (was on its own line with a dangling colon).
+            let single_para = children.len() == 1
+                && matches!(children[0].data.borrow().value, NodeValue::Paragraph);
+            if single_para {
+                let mut spans = vec![label];
+                spans.extend(collect_inline_spans(children[0], ctx));
+                lines.extend(wrap_spans(spans, ctx.width, 0, ctx.margin));
+            } else {
+                let mut line = StyledLine::new();
+                ctx.add_margin(&mut line);
+                line.push(label);
+                lines.push(line);
+                for child in node.children() {
+                    layout_node(child, ctx, lines);
+                }
             }
             add_spacing(ctx, lines);
         }
@@ -301,25 +346,13 @@ fn layout_heading<'a>(
         lines.push(StyledLine::empty());
     }
 
-    let mut line = StyledLine::new();
-    ctx.add_margin(&mut line);
-
     let prefix = match level {
         1 => "█ ",
         2 => "▌ ",
         3 => "▎ ",
-        4 => "  ",
-        5 => "  ",
         _ => "  ",
     };
-
-    line.push(StyledSpan {
-        text: prefix.to_string(),
-        style: SpanStyle {
-            fg: Some(color.clone()),
-            ..Default::default()
-        },
-    });
+    let prefix_w = prefix.width();
 
     // Record the heading's exact display-line index for the TOC.
     if ctx.record_headings {
@@ -330,14 +363,34 @@ fn layout_heading<'a>(
         });
     }
 
-    let spans = collect_inline_spans(node, ctx);
-    for mut span in spans {
+    // Wrap the heading text so long headings don't overflow; the colored
+    // prefix goes on the first line, continuation lines align under the text.
+    let mut spans = collect_inline_spans(node, ctx);
+    for span in &mut spans {
         span.style.fg = Some(color.clone());
         span.style.bold = true;
-        line.push(span);
     }
-
-    lines.push(line);
+    let content_lines = wrap_spans(spans, ctx.width.saturating_sub(prefix_w), 0, 0);
+    for (i, cline) in content_lines.into_iter().enumerate() {
+        let mut line = StyledLine::new();
+        ctx.add_margin(&mut line);
+        if i == 0 {
+            line.push(StyledSpan {
+                text: prefix.to_string(),
+                style: SpanStyle {
+                    fg: Some(color.clone()),
+                    ..Default::default()
+                },
+            });
+        } else {
+            line.push(StyledSpan {
+                text: " ".repeat(prefix_w),
+                style: SpanStyle::default(),
+            });
+        }
+        line.spans.extend(cline.spans);
+        lines.push(line);
+    }
     add_spacing(ctx, lines);
 }
 
@@ -428,7 +481,10 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         return;
     }
 
-    let border_width = ctx.width.min(80);
+    // Match the code box to the content width (was capped at 80, making code
+    // blocks narrower than paragraphs on wide layouts).
+    let border_width = ctx.width.max(8);
+    let content_w = border_width.saturating_sub(4); // │ + space + content + space + │
 
     // Top border
     let mut header = StyledLine::new();
@@ -444,7 +500,8 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         });
     } else {
         let label = format!(" {} ", lang);
-        let remaining = border_width.saturating_sub(label.len() + 2);
+        // ╭─ (2) + label + <remaining ─> + ╮ (1) == border_width
+        let remaining = border_width.saturating_sub(label.width() + 3);
         header.push(StyledSpan {
             text: "╭─".to_string(),
             style: SpanStyle {
@@ -486,39 +543,32 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         .unwrap_or_else(|| ctx.theme_set.themes.values().next().unwrap());
 
     let mut highlighter = HighlightLines::new(syntax, highlight_theme);
+    let border_style = SpanStyle {
+        fg: Some(ctx.theme.colors.table_border.clone()),
+        ..Default::default()
+    };
 
     for code_line in LinesWithEndings::from(literal) {
-        let mut line = StyledLine::new();
-        ctx.add_margin(&mut line);
-        line.push(StyledSpan {
-            text: "│ ".to_string(),
-            style: SpanStyle {
-                fg: Some(ctx.theme.colors.table_border.clone()),
-
-                ..Default::default()
-            },
-        });
-
-        // Apply syntax highlighting
+        // Build the highlighted spans for this source line.
+        let mut content: Vec<StyledSpan> = Vec::new();
         if let Ok(ranges) = highlighter.highlight_line(code_line, ctx.syntax_set) {
             for (style, text) in ranges {
-                let fg_color = format!(
-                    "#{:02x}{:02x}{:02x}",
-                    style.foreground.r, style.foreground.g, style.foreground.b
-                );
                 let trimmed = text.trim_end_matches('\n');
                 if !trimmed.is_empty() {
-                    line.push(StyledSpan {
+                    content.push(StyledSpan {
                         text: trimmed.to_string(),
                         style: SpanStyle {
-                            fg: Some(fg_color),
+                            fg: Some(format!(
+                                "#{:02x}{:02x}{:02x}",
+                                style.foreground.r, style.foreground.g, style.foreground.b
+                            )),
                             ..Default::default()
                         },
                     });
                 }
             }
         } else {
-            line.push(StyledSpan {
+            content.push(StyledSpan {
                 text: code_line.trim_end_matches('\n').to_string(),
                 style: SpanStyle {
                     fg: Some(ctx.theme.colors.code_fg.clone()),
@@ -527,7 +577,27 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
             });
         }
 
-        lines.push(line);
+        // Wrap long lines to the box interior and draw a closed right border,
+        // padding each visual line so the border stays aligned.
+        for visual in wrap_code_spans(content, content_w) {
+            let mut line = StyledLine::new();
+            ctx.add_margin(&mut line);
+            line.push(StyledSpan {
+                text: "│ ".to_string(),
+                style: border_style.clone(),
+            });
+            let mut w = 0;
+            for s in &visual {
+                w += s.text.width();
+                line.push(s.clone());
+            }
+            let pad = content_w.saturating_sub(w);
+            line.push(StyledSpan {
+                text: format!("{} │", " ".repeat(pad)),
+                style: border_style.clone(),
+            });
+            lines.push(line);
+        }
     }
 
     // Bottom border
@@ -651,6 +721,7 @@ fn layout_blockquote<'a>(
     }
 
     // Prepend blockquote bar to each line
+    trim_trailing_blank(&mut inner_lines);
     for inner_line in inner_lines {
         let mut line = StyledLine::new();
         ctx.add_margin(&mut line);
@@ -669,6 +740,13 @@ fn layout_blockquote<'a>(
             line.push(span);
         }
         lines.push(line);
+    }
+
+    // Spacing after the quote so consecutive blockquotes/admonitions and a
+    // following block don't run together. Only at the top level — nested calls
+    // build into a buffer the parent trims.
+    if depth == 0 {
+        add_spacing(ctx, lines);
     }
 }
 
@@ -760,6 +838,7 @@ fn layout_list<'a>(
             }
         }
 
+        trim_trailing_blank(&mut item_lines);
         for (j, item_line) in item_lines.into_iter().enumerate() {
             let mut line = StyledLine::new();
             ctx.add_margin(&mut line);
@@ -861,8 +940,11 @@ fn collect_inlines<'a>(
                 });
             }
             NodeValue::Code(c) => {
+                // No literal padding spaces: they produced doubled spaces before
+                // the code and a stray space before following punctuation. The
+                // background color alone marks the inline code.
                 spans.push(StyledSpan {
-                    text: format!(" {} ", c.literal),
+                    text: c.literal.clone(),
                     style: SpanStyle {
                         fg: Some(ctx.theme.colors.code_fg.clone()),
                         bg: Some(ctx.theme.colors.code_bg.clone()),
@@ -1043,6 +1125,64 @@ fn collect_child_text<'a>(node: &'a AstNode<'a>) -> String {
     text
 }
 
+/// Hard-wrap styled code spans to a display width, preserving every character
+/// exactly (including leading indentation). Returns one span list per visual
+/// line; always at least one (possibly empty) line.
+fn wrap_code_spans(spans: Vec<StyledSpan>, width: usize) -> Vec<Vec<StyledSpan>> {
+    let width = width.max(1);
+    let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
+    let mut cur: Vec<StyledSpan> = Vec::new();
+    let mut col = 0usize;
+    for span in spans {
+        let mut piece = String::new();
+        for ch in span.text.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + cw > width && (col > 0 || !piece.is_empty()) {
+                if !piece.is_empty() {
+                    cur.push(StyledSpan {
+                        text: std::mem::take(&mut piece),
+                        style: span.style.clone(),
+                    });
+                }
+                lines.push(std::mem::take(&mut cur));
+                col = 0;
+            }
+            piece.push(ch);
+            col += cw;
+        }
+        if !piece.is_empty() {
+            cur.push(StyledSpan {
+                text: piece,
+                style: span.style.clone(),
+            });
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
+/// Split a string into pieces whose display width is at most `width`, breaking
+/// between characters. Used to hard-break tokens too long to wrap on a space.
+fn split_by_width(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > width && !cur.is_empty() {
+            out.push(std::mem::take(&mut cur));
+            w = 0;
+        }
+        cur.push(ch);
+        w += cw;
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 fn wrap_spans(
     spans: Vec<StyledSpan>,
     max_width: usize,
@@ -1083,6 +1223,24 @@ fn wrap_spans(
         });
     }
 
+    // Start a fresh line carrying the margin + indent prefix.
+    let new_prefixed_line = || -> StyledLine {
+        let mut l = StyledLine::new();
+        if margin > 0 {
+            l.push(StyledSpan {
+                text: margin_str.clone(),
+                style: SpanStyle::default(),
+            });
+        }
+        if indent > 0 {
+            l.push(StyledSpan {
+                text: indent_str.clone(),
+                style: SpanStyle::default(),
+            });
+        }
+        l
+    };
+
     for span in spans {
         let words: Vec<&str> = span.text.split(' ').collect();
         for (i, word) in words.iter().enumerate() {
@@ -1101,24 +1259,34 @@ fn wrap_spans(
                 }
                 continue;
             }
+
+            // A single token wider than the line can't be wrapped on a space —
+            // hard-break it into width-sized chunks so it never overflows.
+            if w > effective_width {
+                if col > 0 {
+                    lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                    col = 0;
+                }
+                for chunk in split_by_width(word, effective_width) {
+                    if col > 0 {
+                        lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                        col = 0;
+                    }
+                    let cw = chunk.width();
+                    current.push(StyledSpan {
+                        text: chunk,
+                        style: span.style.clone(),
+                    });
+                    col += cw;
+                }
+                continue;
+            }
+
             let need_space = col > 0 && i > 0;
             let total = col + w + if need_space { 1 } else { 0 };
 
             if total > effective_width && col > 0 {
-                lines.push(current);
-                current = StyledLine::new();
-                if margin > 0 {
-                    current.push(StyledSpan {
-                        text: margin_str.clone(),
-                        style: SpanStyle::default(),
-                    });
-                }
-                if indent > 0 {
-                    current.push(StyledSpan {
-                        text: indent_str.clone(),
-                        style: SpanStyle::default(),
-                    });
-                }
+                lines.push(std::mem::replace(&mut current, new_prefixed_line()));
                 col = 0;
             }
 
@@ -1146,6 +1314,9 @@ fn wrap_spans(
         lines.push(StyledLine::empty());
     }
 
+    for line in &mut lines {
+        coalesce_line(line);
+    }
     lines
 }
 

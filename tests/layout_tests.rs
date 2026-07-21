@@ -20,6 +20,12 @@ fn layout(source: &str, width: u16) -> Vec<ink_md::layout::StyledLine> {
     .lines
 }
 
+/// Display width of a styled line (mirrors StyledLine::width but public here).
+fn line_width(line: &ink_md::layout::StyledLine) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    line.spans.iter().map(|s| s.text.as_str().width()).sum()
+}
+
 #[test]
 fn lines_respect_width() {
     let source = std::fs::read_to_string("tests/fixtures/test.md").unwrap();
@@ -27,17 +33,48 @@ fn lines_respect_width() {
     let lines = layout(&source, width);
     assert!(!lines.is_empty());
     for line in &lines {
-        // Tables/code borders may sit exactly at width; nothing should exceed it
-        // by more than the border allowance used in layout.
         assert!(
-            line.width() <= width as usize + 4,
+            line_width(line) <= width as usize,
             "line too wide ({}): {:?}",
-            line.width(),
+            line_width(line),
             line.spans
                 .iter()
                 .map(|s| s.text.as_str())
                 .collect::<String>()
         );
+    }
+}
+
+/// Every block type — long paragraphs, tables, code with long lines,
+/// blockquotes, lists, long URLs, and long headings — must fit the width.
+/// `layout` here passes margin 0, so lines must be <= width exactly.
+///
+/// Tested from width 40 up: a 4-column table needs ~33 columns even at the
+/// minimum readable cell size, so sub-40 widths can't hold wide tables — an
+/// inherent limit, not an overflow bug in the wrappable constructs.
+#[test]
+fn no_construct_overflows_width() {
+    let source = "\
+# A heading long enough that it clearly must wrap at narrow widths to fit\n\n\
+A paragraph with a very-long-unbreakable-token-that-cannot-wrap-on-spaces-and-must-hard-break here.\n\n\
+https://example.com/a/really/long/url/that/keeps/going/way/past/any/reasonable/width/limit\n\n\
+```rust\nfn f(argument_one: SomeType, argument_two: OtherType, argument_three: Third) -> Ret { 0 }\n```\n\n\
+> A blockquote that is also long enough to require wrapping inside the quote bar without spilling.\n\n\
+| Col A | Col B | Col C | Col D |\n|---|---|---|---|\n\
+| a fairly long cell value | another long one | third long value | fourth |\n\n\
+- a list item long enough to need wrapping across multiple continuation lines within budget\n";
+    for width in [40u16, 50, 60, 80, 100] {
+        for line in layout(source, width) {
+            assert!(
+                line_width(&line) <= width as usize,
+                "width {width}: line {} > {width}: {:?}",
+                line_width(&line),
+                line.spans
+                    .iter()
+                    .map(|s| s.text.as_str())
+                    .collect::<String>()
+            );
+        }
     }
 }
 
