@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.2 — 2026-07-24
+
+### Fixed (robustness)
+- **Searching no longer crashes on text whose case mapping changes length.** Match highlighting located matches in a lowercased copy of each line but applied those byte offsets to the original text. Unicode lowercasing isn't length-preserving — `İ` (U+0130) is two bytes and lowercases to three — so the offsets drifted and could land mid-character. Searching `i` in a document containing `İstanbul` aborted the process. Because release builds use `panic = "abort"`, the terminal-restore path was skipped too, leaving the shell in raw mode inside the alternate screen. Offsets are now mapped back to the source string explicitly.
+- **A panic can no longer leave the terminal unusable.** Raw mode and the alternate screen are now torn down from a panic hook before the message is printed, so an unexpected failure produces a readable error instead of a wrecked terminal. Applies to both the document viewer and the file browser.
+- **Malformed theme colors fall back instead of panicking.** The hex-color guard measured byte length, so a six-byte string of multi-byte characters (`€€`) passed the check and then split a character while slicing. Non-ASCII color values now fall back to the default gray.
+
 ## 0.6.1 — 2026-07-24
 
 ### Fixed
