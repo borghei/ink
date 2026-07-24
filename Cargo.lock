@@ -1521,7 +1521,7 @@ dependencies = [
 
 [[package]]
 name = "ink-md"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "assert_cmd",

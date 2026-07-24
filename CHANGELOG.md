@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-07-24
 
 ### Fixed
 - **SVG images now render** ([#3](https://github.com/borghei/ink/issues/3)). SVGs are vector documents the raster decoder can't read, so they silently fell back to a placeholder. They're now rasterized with resvg (SVG text and gzipped `.svgz` included) and flow through the same pipeline as every other image — graphics protocols and half-blocks alike. SVGs are detected by extension or content sniffing, so an SVG served without an extension works too.
