@@ -84,6 +84,24 @@ pub enum AppExit {
     BackToBrowser,
 }
 
+/// Restore the terminal before a panic reaches the default handler.
+///
+/// The normal restore path runs after `run_inner` returns, which a panic skips
+/// entirely — and release builds set `panic = "abort"`, so nothing unwinds.
+/// Without this hook, any panic in the render loop would leave the user in raw
+/// mode inside the alternate screen, with the panic message itself unreadable.
+pub(crate) fn install_panic_hook() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+            default_hook(info);
+        }));
+    });
+}
+
 pub fn run(source: String, args: Args) -> Result<AppExit> {
     let mouse_capture = args.mouse_capture;
 
@@ -96,6 +114,7 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
         crate::graphics::Graphics::detect(args.image_protocol)
     };
 
+    install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;

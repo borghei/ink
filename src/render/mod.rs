@@ -228,6 +228,28 @@ pub fn render_document_with_search(
     frame.render_widget(Paragraph::new(rendered), area);
 }
 
+/// Lowercase `s`, and map every byte of the result back to the byte offset in
+/// `s` it came from.
+///
+/// Case folding is not length-preserving — `İ` (U+0130) is two bytes but
+/// lowercases to three — so an offset found in the lowered copy cannot be used
+/// to slice the original. `offsets[i]` is the byte offset in `s` of the
+/// character that produced byte `i` of the lowered string, plus one trailing
+/// entry equal to `s.len()` so a match's end offset always resolves.
+fn lowercase_with_offsets(s: &str) -> (String, Vec<usize>) {
+    let mut lowered = String::with_capacity(s.len());
+    let mut offsets = Vec::with_capacity(s.len() + 1);
+    for (idx, ch) in s.char_indices() {
+        for lc in ch.to_lowercase() {
+            lowered.push(lc);
+        }
+        // Every byte this character expanded into maps back to its offset.
+        offsets.resize(lowered.len(), idx);
+    }
+    offsets.push(s.len());
+    (lowered, offsets)
+}
+
 /// Split spans in a line to highlight only the matched query text.
 /// Uses underline + color (not background) so text stays readable.
 fn highlight_query_in_line(
@@ -237,26 +259,35 @@ fn highlight_query_in_line(
     is_current: bool,
 ) -> Line<'static> {
     let query_lower = query.to_lowercase();
+    // An empty query matches at every position — it would never advance.
+    if query_lower.is_empty() {
+        return line.clone();
+    }
     let mut result_spans: Vec<Span<'static>> = Vec::new();
 
     for span in &line.spans {
         let text = span.content.to_string();
-        let text_lower = text.to_lowercase();
+        let (text_lower, offsets) = lowercase_with_offsets(&text);
         let original_style = span.style;
 
-        let mut pos = 0;
+        // `lpos` walks the lowercased copy (where matches are found); `opos`
+        // is the corresponding position in `text` (where slices are taken).
+        // Every slice of `text` goes through `offsets`, never through a
+        // lowercase index, so a multi-byte case mapping can't split a char.
+        let mut lpos = 0;
+        let mut opos = 0;
         loop {
-            match text_lower[pos..].find(&query_lower) {
+            match text_lower[lpos..].find(&query_lower) {
                 Some(found) => {
-                    let abs_start = pos + found;
-                    let abs_end = abs_start + query.len();
+                    let lstart = lpos + found;
+                    let lend = lstart + query_lower.len();
+                    let ostart = offsets[lstart];
+                    let oend = offsets[lend];
 
                     // Text before match
-                    if abs_start > pos {
-                        result_spans.push(Span::styled(
-                            text[pos..abs_start].to_string(),
-                            original_style,
-                        ));
+                    if ostart > opos {
+                        result_spans
+                            .push(Span::styled(text[opos..ostart].to_string(), original_style));
                     }
 
                     // The matched text — color + underline + bold, keep original bg
@@ -267,14 +298,19 @@ fn highlight_query_in_line(
                     if is_current {
                         hi_style = hi_style.add_modifier(Modifier::REVERSED);
                     }
-                    result_spans.push(Span::styled(text[abs_start..abs_end].to_string(), hi_style));
+                    // A match landing inside one source character's expansion
+                    // (searching "i" against "İ") covers no original bytes.
+                    if oend > ostart {
+                        result_spans.push(Span::styled(text[ostart..oend].to_string(), hi_style));
+                    }
 
-                    pos = abs_end;
+                    lpos = lend;
+                    opos = oend;
                 }
                 None => {
                     // Remaining text after last match
-                    if pos < text.len() {
-                        result_spans.push(Span::styled(text[pos..].to_string(), original_style));
+                    if opos < text.len() {
+                        result_spans.push(Span::styled(text[opos..].to_string(), original_style));
                     }
                     break;
                 }
@@ -529,4 +565,61 @@ pub fn render_theme_picker(
         .style(Style::default().bg(bg));
 
     frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn spans_of(line: &Line<'static>) -> Vec<String> {
+        line.spans.iter().map(|s| s.content.to_string()).collect()
+    }
+
+    fn highlight(text: &str, query: &str) -> Line<'static> {
+        let line = Line::from(vec![Span::raw(text.to_string())]);
+        highlight_query_in_line(&line, query, Color::Red, false)
+    }
+
+    #[test]
+    fn offsets_map_lowercase_bytes_back_to_source() {
+        // 'İ' is 2 bytes and lowercases to 3, so the map must not be identity.
+        let (lowered, offsets) = lowercase_with_offsets("İa");
+        assert_eq!(lowered, "i\u{307}a");
+        // All 3 bytes of the expansion point at the source char (offset 0),
+        // 'a' starts at source offset 2, and the trailing entry is the length.
+        assert_eq!(offsets, vec![0, 0, 0, 2, 3]);
+    }
+
+    #[test]
+    fn highlights_plain_ascii_match() {
+        let out = highlight("Hello World", "world");
+        assert_eq!(spans_of(&out), vec!["Hello ", "World"]);
+    }
+
+    #[test]
+    fn highlights_every_occurrence() {
+        let out = highlight("aXaXa", "x");
+        assert_eq!(spans_of(&out), vec!["a", "X", "a", "X", "a"]);
+    }
+
+    /// Regression: case folding is not length-preserving, so byte offsets from
+    /// the lowercased copy used to be applied to the original string — which
+    /// panicked on a char boundary and killed the process inside raw mode.
+    #[test]
+    fn length_changing_case_folding_does_not_panic() {
+        // Turkish dotted capital I: 2 bytes in, 3 bytes lowercased.
+        assert!(!spans_of(&highlight("İstanbul", "i")).is_empty());
+        // Capital sharp s: 3 bytes in, 2 bytes lowercased.
+        assert!(!spans_of(&highlight("MASSE ẞ", "masse")).is_empty());
+        // The whole document text is preserved even when a match maps to no
+        // original bytes.
+        assert_eq!(spans_of(&highlight("İstanbul", "i")).concat(), "İstanbul");
+        assert_eq!(spans_of(&highlight("aİb", "i")).concat(), "aİb");
+    }
+
+    #[test]
+    fn empty_query_returns_line_unchanged() {
+        let out = highlight("anything", "");
+        assert_eq!(spans_of(&out), vec!["anything"]);
+    }
 }

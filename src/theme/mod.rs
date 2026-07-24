@@ -138,7 +138,9 @@ pub fn resolve_theme(name: &str) -> Theme {
 /// Parse a hex color string to RGB. Returns (200,200,200) for invalid input.
 pub fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
     let hex = hex.trim_start_matches('#');
-    if hex.len() < 6 {
+    // Byte length alone is not enough to make the slices below safe: a 6-byte
+    // string can be two multi-byte characters, and slicing would split one.
+    if hex.len() < 6 || !hex.is_ascii() {
         return (200, 200, 200);
     }
     let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(200);
@@ -158,5 +160,25 @@ pub fn hex_to_color(hex: &str) -> ratatui::style::Color {
         rgb
     } else {
         ratatui::style::Color::Indexed(caps::rgb_to_256(r, g, b))
+    }
+}
+
+#[cfg(test)]
+mod hex_tests {
+    use super::*;
+
+    #[test]
+    fn parses_valid_hex() {
+        assert_eq!(hex_to_rgb("#ff0000"), (255, 0, 0));
+        assert_eq!(hex_to_rgb("00ff80"), (0, 255, 128));
+    }
+
+    /// Regression: the length guard counts bytes, so a 6-byte string of
+    /// multi-byte characters passed it and then split a char while slicing.
+    #[test]
+    fn non_ascii_hex_falls_back_instead_of_panicking() {
+        assert_eq!(hex_to_rgb("€€"), (200, 200, 200)); // 6 bytes, 2 chars
+        assert_eq!(hex_to_rgb("#ααα"), (200, 200, 200)); // 6 bytes, 3 chars
+        assert_eq!(hex_to_rgb("fff"), (200, 200, 200)); // too short
     }
 }

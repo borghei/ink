@@ -29,6 +29,7 @@ pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
         return Ok(None);
     }
 
+    crate::app::install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
