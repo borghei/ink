@@ -95,6 +95,8 @@ Images in your markdown render directly in the terminal. On terminals with a gra
 
 Pick a renderer explicitly with `--image-protocol <auto|kitty|iterm2|sixel|halfblocks>` (default `auto`).
 
+Supported formats: PNG, JPEG, GIF, WebP, BMP, TIFF, ICO, TGA, QOI, PNM, HDR, OpenEXR, farbfeld — and SVG (including gzipped `.svgz`), rasterized at load time so vector diagrams render like any other image.
+
 Remote (`http`/`https`) images are **not** fetched by default — a document you didn't write shouldn't be able to phone home or probe your network. Pass `--remote-images` to enable them (private, loopback, and cloud-metadata addresses stay blocked even then).
 
 ### Mermaid diagrams
