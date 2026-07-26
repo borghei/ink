@@ -29,7 +29,7 @@ pub fn print_stats(source: &str, filename: &str) {
 
     let doc = parser::parse(&content);
 
-    let words = content.split_whitespace().count();
+    let words = word_count(&content);
     let chars = content.chars().count();
     let lines = content.lines().count();
     let reading_time = (words as f64 / 200.0).ceil() as usize;
@@ -84,7 +84,29 @@ fn count_pattern(text: &str, pattern: &str) -> usize {
 
 /// Compute word count and reading time for status bar display.
 pub fn document_stats(source: &str) -> (usize, usize) {
-    let words = source.split_whitespace().count();
+    let words = word_count(source);
     let reading_time = (words as f64 / 200.0).ceil() as usize;
     (words, reading_time)
+}
+
+/// Whitespace-token counting undercounts scripts written without spaces: a
+/// 600-character Chinese document is one "word". Han and kana characters
+/// each count as a word of their own (the usual CJK convention); everything
+/// else counts by whitespace tokens as before.
+pub fn word_count(text: &str) -> usize {
+    let is_cjk = |c: char| {
+        matches!(c,
+            '\u{3400}'..='\u{4DBF}'   // CJK ext A
+            | '\u{4E00}'..='\u{9FFF}' // CJK unified
+            | '\u{3040}'..='\u{30FF}' // hiragana + katakana
+            | '\u{F900}'..='\u{FAFF}' // CJK compat
+        )
+    };
+    text.split_whitespace()
+        .map(|token| {
+            let cjk = token.chars().filter(|&c| is_cjk(c)).count();
+            let has_other = token.chars().any(|c| !is_cjk(c));
+            cjk + usize::from(has_other)
+        })
+        .sum()
 }

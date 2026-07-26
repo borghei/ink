@@ -48,7 +48,10 @@ impl SearchState {
         if self.query.is_empty() {
             return;
         }
-        let query_lower = self.query.to_lowercase();
+        // Char-level lowercasing — identical to how the per-tab `lowered`
+        // lines and the highlighter lowercase, so both sides always agree
+        // (str::to_lowercase applies Greek final-sigma rules chars don't).
+        let query_lower: String = self.query.chars().flat_map(char::to_lowercase).collect();
 
         for (line_idx, text_lower) in lowered.iter().enumerate() {
             if text_lower.contains(&query_lower) {

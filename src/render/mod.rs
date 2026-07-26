@@ -189,12 +189,12 @@ pub fn render_document_with_search(
     frame: &mut Frame,
     area: Rect,
     lines: &[Line<'static>],
-    scroll_offset: u16,
+    scroll_offset: usize,
     _total_lines: usize,
     search: &SearchState,
     t: &theme::Theme,
 ) {
-    let offset = (scroll_offset as usize).min(lines.len());
+    let offset = scroll_offset.min(lines.len());
     let end = (offset + area.height as usize).min(lines.len());
     let visible = &lines[offset..end];
 

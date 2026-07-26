@@ -27,7 +27,7 @@ struct Tab {
     ratatui_lines: Vec<Line<'static>>,
     /// Per-line text, lowercased once, for allocation-free search scans.
     lowered: Vec<String>,
-    scroll_offset: u16,
+    scroll_offset: usize,
     toc: TocState,
     word_count: usize,
     reading_time: usize,
@@ -49,12 +49,14 @@ struct ImagePlacement {
     col_offset: u16,
     /// Reserved height in rows.
     rows: u16,
-    protocol: ratatui_image::sliced::SlicedProtocol,
+    /// `None` when the protocol encode failed — the draw loop then writes a
+    /// visible notice into the reserved rows instead of leaving a silent gap.
+    protocol: Option<ratatui_image::sliced::SlicedProtocol>,
 }
 
 struct NavEntry {
     filename: String,
-    scroll_offset: u16,
+    scroll_offset: usize,
 }
 
 /// A labeled link in the current viewport for hint-mode selection.
@@ -159,21 +161,29 @@ fn run_inner(
     let mut theme_gen: u32 = 0;
 
     let filename = args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin");
+    let init_width = effective_width(size.width, args.toc);
     if args.slides {
         // Presentation mode: one tab per slide, navigated with ←/→/Space.
-        for slide in crate::slides::split_slides(&source) {
+        // Frontmatter is stripped from the whole deck first — otherwise the
+        // YAML header becomes slide 1.
+        let deck = if args.frontmatter {
+            source.clone()
+        } else {
+            crate::parser::frontmatter::strip_frontmatter(&source).1
+        };
+        for slide in crate::slides::split_slides(&deck) {
             tabs.push(build_tab(
-                slide, filename, &args, size.width, theme_gen, graphics,
+                slide, filename, &args, init_width, theme_gen, graphics,
             ));
         }
     } else {
         tabs.push(build_tab(
-            source, filename, &args, size.width, theme_gen, graphics,
+            source, filename, &args, init_width, theme_gen, graphics,
         ));
         for input in args.inputs.iter().skip(1) {
             if let Ok(src) = std::fs::read_to_string(input) {
                 tabs.push(build_tab(
-                    src, input, &args, size.width, theme_gen, graphics,
+                    src, input, &args, init_width, theme_gen, graphics,
                 ));
             }
         }
@@ -217,6 +227,8 @@ fn run_inner(
     // Redraw only when something changed. An idle reader with no input pending
     // does no per-frame work at all (previously it redrew ~20×/second).
     let mut dirty = true;
+    // Set on every Resize event; the rebuild runs once events stop for 80ms.
+    let mut resize_pending: Option<std::time::Instant> = None;
 
     loop {
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
@@ -226,16 +238,41 @@ fn run_inner(
             let path = std::path::Path::new(input);
             if tabs[active_tab].filename == *input && w.check(path) {
                 match std::fs::read_to_string(path) {
+                    Ok(new_source) if args.slides => {
+                        let deck = if args.frontmatter {
+                            new_source
+                        } else {
+                            crate::parser::frontmatter::strip_frontmatter(&new_source).1
+                        };
+                        let toc_visible = tabs[active_tab].toc.visible;
+                        let term_w = effective_width(terminal.size()?.width, toc_visible);
+                        let slides = crate::slides::split_slides(&deck);
+                        if !slides.is_empty() {
+                            tabs = slides
+                                .into_iter()
+                                .map(|sl| build_tab(sl, input, &args, term_w, theme_gen, graphics))
+                                .collect();
+                            active_tab = active_tab.min(tabs.len() - 1);
+                            tabs[active_tab].toc.visible = toc_visible;
+                        }
+                        search.update_matches(&tabs[active_tab].lowered);
+                        file_missing = false;
+                        dirty = true;
+                    }
                     Ok(new_source) => {
                         let scroll = tabs[active_tab].scroll_offset;
-                        let term_w = terminal.size()?.width;
+                        let term_w =
+                            effective_width(terminal.size()?.width, tabs[active_tab].toc.visible);
                         let mut new_tab =
                             build_tab(new_source, input, &args, term_w, theme_gen, graphics);
-                        let new_max =
-                            (new_tab.ratatui_lines.len() as u16).saturating_sub(viewport_height);
+                        let new_max = new_tab
+                            .ratatui_lines
+                            .len()
+                            .saturating_sub(viewport_height as usize);
                         new_tab.scroll_offset = scroll.min(new_max);
                         new_tab.toc.visible = tabs[active_tab].toc.visible;
                         tabs[active_tab] = new_tab;
+                        search.update_matches(&tabs[active_tab].lowered);
                         if file_missing {
                             file_missing = false;
                         }
@@ -253,9 +290,25 @@ fn run_inner(
             }
         }
 
+        // Debounced resize: rebuild once the flurry of events has settled.
+        if let Some(t0) = resize_pending {
+            if t0.elapsed() >= Duration::from_millis(80) {
+                resize_pending = None;
+                rebuild_tab(
+                    &mut tabs[active_tab],
+                    &args,
+                    terminal.size()?.width,
+                    theme_gen,
+                    graphics,
+                );
+                search.update_matches(&tabs[active_tab].lowered);
+                dirty = true;
+            }
+        }
+
         let tab = &tabs[active_tab];
         let total_lines = tab.ratatui_lines.len();
-        let max_scroll = (total_lines as u16).saturating_sub(viewport_height);
+        let max_scroll = total_lines.saturating_sub(viewport_height as usize);
 
         if dirty {
             terminal.draw(|frame| {
@@ -325,7 +378,7 @@ fn run_inner(
                     frame,
                     top_bar_area,
                     &tab.filename,
-                    tab.scroll_offset as usize,
+                    tab.scroll_offset,
                     total_lines,
                     viewport_height as usize,
                     &t,
@@ -361,19 +414,36 @@ fn run_inner(
                 // SlicedImage self-clips to doc_area, so partially-scrolled images
                 // (position.y negative or past the bottom) render correctly.
                 for img in &tab.images {
-                    let y = img.line_index as i32 - tab.scroll_offset as i32;
+                    let y = img.line_index as i64 - tab.scroll_offset as i64;
                     // Skip images fully above or below the viewport.
-                    if y + img.rows as i32 <= 0 || y >= doc_area.height as i32 {
+                    if y + img.rows as i64 <= 0 || y >= doc_area.height as i64 {
                         continue;
                     }
-                    let pos = ratatui_image::sliced::SignedPosition::from((
-                        img.col_offset as i16,
-                        y as i16,
-                    ));
-                    frame.render_widget(
-                        ratatui_image::sliced::SlicedImage::new(&img.protocol, pos),
-                        doc_area,
-                    );
+                    match &img.protocol {
+                        Some(proto) => {
+                            let pos = ratatui_image::sliced::SignedPosition::from((
+                                img.col_offset as i16,
+                                y as i16,
+                            ));
+                            frame.render_widget(
+                                ratatui_image::sliced::SlicedImage::new(proto, pos),
+                                doc_area,
+                            );
+                        }
+                        None if (0..doc_area.height as i64).contains(&y) => {
+                            // Encode failed: say so in the reserved space — a
+                            // silent blank gap reads as a rendering bug.
+                            frame.buffer_mut().set_string(
+                                doc_area.x + img.col_offset,
+                                doc_area.y + y as u16,
+                                "🖼 (image could not be encoded for this terminal)",
+                                Style::default()
+                                    .fg(theme::hex_to_color(&t.colors.link_url))
+                                    .add_modifier(Modifier::ITALIC),
+                            );
+                        }
+                        None => {}
+                    }
                 }
 
                 // Theme picker overlay
@@ -513,7 +583,7 @@ fn run_inner(
             // dismisses them (vim/less convention) rather than quitting.
             if action == Action::ExitApp && !search.matches.is_empty() {
                 search.deactivate();
-                let current_offset = tabs[active_tab].scroll_offset as usize;
+                let current_offset = tabs[active_tab].scroll_offset;
                 tabs[active_tab].toc.update_selection(current_offset);
                 continue;
             }
@@ -539,26 +609,26 @@ fn run_inner(
                     search.update_matches(&tabs[active_tab].lowered);
                     // Auto-jump to first match
                     if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        tabs[active_tab].scroll_offset = line.min(max_scroll);
                     }
                 }
                 Action::SearchBackspace => {
                     search.pop_char();
                     search.update_matches(&tabs[active_tab].lowered);
                     if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        tabs[active_tab].scroll_offset = line.min(max_scroll);
                     }
                 }
                 Action::SearchNext => {
                     search.next_match();
                     if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        tabs[active_tab].scroll_offset = line.min(max_scroll);
                     }
                 }
                 Action::SearchPrev => {
                     search.prev_match();
                     if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                        tabs[active_tab].scroll_offset = line.min(max_scroll);
                     }
                 }
 
@@ -566,24 +636,30 @@ fn run_inner(
                 Action::ScrollDown(n) => {
                     tabs[active_tab].scroll_offset = tabs[active_tab]
                         .scroll_offset
-                        .saturating_add(n)
+                        .saturating_add(n as usize)
                         .min(max_scroll);
                 }
                 Action::ScrollUp(n) => {
-                    tabs[active_tab].scroll_offset =
-                        tabs[active_tab].scroll_offset.saturating_sub(n);
+                    // Clamp before subtracting: a stale offset past the end
+                    // (post-resize) must recover on the first upward scroll.
+                    tabs[active_tab].scroll_offset = tabs[active_tab]
+                        .scroll_offset
+                        .min(max_scroll)
+                        .saturating_sub(n as usize);
                 }
                 Action::PageDown => {
-                    let jump = viewport_height.saturating_sub(2); // keep 2 lines overlap
+                    let jump = (viewport_height as usize).saturating_sub(2); // keep 2 lines overlap
                     tabs[active_tab].scroll_offset = tabs[active_tab]
                         .scroll_offset
                         .saturating_add(jump)
                         .min(max_scroll);
                 }
                 Action::PageUp => {
-                    let jump = viewport_height.saturating_sub(2);
-                    tabs[active_tab].scroll_offset =
-                        tabs[active_tab].scroll_offset.saturating_sub(jump);
+                    let jump = (viewport_height as usize).saturating_sub(2);
+                    tabs[active_tab].scroll_offset = tabs[active_tab]
+                        .scroll_offset
+                        .min(max_scroll)
+                        .saturating_sub(jump);
                 }
                 Action::Home => tabs[active_tab].scroll_offset = 0,
                 Action::End => tabs[active_tab].scroll_offset = max_scroll,
@@ -599,6 +675,7 @@ fn run_inner(
                             theme_gen,
                             graphics,
                         );
+                        search.update_matches(&tabs[active_tab].lowered);
                     }
                 }
                 Action::SlidePrev => {
@@ -611,11 +688,21 @@ fn run_inner(
                             theme_gen,
                             graphics,
                         );
+                        search.update_matches(&tabs[active_tab].lowered);
                     }
                 }
 
                 // TOC
-                Action::ToggleToc => tabs[active_tab].toc.toggle(),
+                Action::ToggleToc => {
+                    tabs[active_tab].toc.toggle();
+                    rebuild_tab(
+                        &mut tabs[active_tab],
+                        &args,
+                        terminal.size()?.width,
+                        theme_gen,
+                        graphics,
+                    );
+                }
 
                 // Help overlay
                 Action::Help => {
@@ -629,9 +716,9 @@ fn run_inner(
 
                 // Link-hint mode: label every link in the viewport.
                 Action::LinkMode => {
-                    let offset = tabs[active_tab].scroll_offset as usize;
-                    let end = (offset + viewport_height as usize)
-                        .min(tabs[active_tab].styled_lines.len());
+                    let len = tabs[active_tab].styled_lines.len();
+                    let offset = tabs[active_tab].scroll_offset.min(len);
+                    let end = (offset + viewport_height as usize).min(len);
                     link_hints = collect_link_hints(&tabs[active_tab].styled_lines[offset..end]);
                 }
 
@@ -641,10 +728,10 @@ fn run_inner(
                     if !search.matches.is_empty() {
                         search.next_match();
                         if let Some(line) = search.current_line() {
-                            tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                            tabs[active_tab].scroll_offset = line.min(max_scroll);
                         }
                     } else {
-                        let current = tabs[active_tab].scroll_offset as usize;
+                        let current = tabs[active_tab].scroll_offset;
                         if let Some(next) = tabs[active_tab]
                             .toc
                             .headings
@@ -652,7 +739,7 @@ fn run_inner(
                             .find(|h| h.line_index > current + 1)
                         {
                             tabs[active_tab].scroll_offset =
-                                (next.line_index.saturating_sub(1) as u16).min(max_scroll);
+                                next.line_index.saturating_sub(1).min(max_scroll);
                         }
                     }
                 }
@@ -660,10 +747,10 @@ fn run_inner(
                     if !search.matches.is_empty() {
                         search.prev_match();
                         if let Some(line) = search.current_line() {
-                            tabs[active_tab].scroll_offset = (line as u16).min(max_scroll);
+                            tabs[active_tab].scroll_offset = line.min(max_scroll);
                         }
                     } else {
-                        let current = tabs[active_tab].scroll_offset as usize;
+                        let current = tabs[active_tab].scroll_offset;
                         if let Some(prev) = tabs[active_tab]
                             .toc
                             .headings
@@ -672,7 +759,7 @@ fn run_inner(
                             .find(|h| h.line_index + 1 < current)
                         {
                             tabs[active_tab].scroll_offset =
-                                (prev.line_index.saturating_sub(1) as u16).min(max_scroll);
+                                prev.line_index.saturating_sub(1).min(max_scroll);
                         }
                     }
                 }
@@ -690,6 +777,7 @@ fn run_inner(
                         theme_gen,
                         graphics,
                     );
+                    search.update_matches(&tabs[active_tab].lowered);
                 }
                 Action::PrevTab if tabs.len() > 1 => {
                     active_tab = if active_tab == 0 {
@@ -704,11 +792,12 @@ fn run_inner(
                         theme_gen,
                         graphics,
                     );
+                    search.update_matches(&tabs[active_tab].lowered);
                 }
 
                 // Follow relative link
                 Action::FollowLink => {
-                    let offset = tabs[active_tab].scroll_offset as usize;
+                    let offset = tabs[active_tab].scroll_offset;
                     let mut found_link = None;
                     for i in offset..=(offset + 5).min(total_lines.saturating_sub(1)) {
                         if let Some(line) = tabs[active_tab].styled_lines.get(i) {
@@ -745,7 +834,7 @@ fn run_inner(
                                 src,
                                 target.to_str().unwrap_or(&link_path),
                                 &args,
-                                terminal.size()?.width,
+                                effective_width(terminal.size()?.width, args.toc),
                                 theme_gen,
                                 graphics,
                             );
@@ -765,11 +854,13 @@ fn run_inner(
                                 src,
                                 &entry.filename,
                                 &args,
-                                terminal.size()?.width,
+                                effective_width(terminal.size()?.width, args.toc),
                                 theme_gen,
                                 graphics,
                             );
-                            new_tab.scroll_offset = entry.scroll_offset;
+                            new_tab.scroll_offset = entry
+                                .scroll_offset
+                                .min(new_tab.ratatui_lines.len().saturating_sub(1));
                             tabs[active_tab] = new_tab;
                         }
                     }
@@ -785,31 +876,28 @@ fn run_inner(
                                 src,
                                 &entry.filename,
                                 &args,
-                                terminal.size()?.width,
+                                effective_width(terminal.size()?.width, args.toc),
                                 theme_gen,
                                 graphics,
                             );
-                            new_tab.scroll_offset = entry.scroll_offset;
+                            new_tab.scroll_offset = entry
+                                .scroll_offset
+                                .min(new_tab.ratatui_lines.len().saturating_sub(1));
                             tabs[active_tab] = new_tab;
                         }
                     }
                 }
 
                 Action::Resize(_, _) => {
-                    // Rebuild only the visible tab; background tabs rebuild
-                    // lazily when switched to (their built_width won't match).
-                    rebuild_tab(
-                        &mut tabs[active_tab],
-                        &args,
-                        terminal.size()?.width,
-                        theme_gen,
-                        graphics,
-                    );
+                    // Debounced: dragging a terminal edge fires dozens of
+                    // resize events, and every rebuild re-encodes all images.
+                    // The actual rebuild happens above once events go quiet.
+                    resize_pending = Some(std::time::Instant::now());
                 }
                 _ => {}
             }
 
-            let current_offset = tabs[active_tab].scroll_offset as usize;
+            let current_offset = tabs[active_tab].scroll_offset;
             tabs[active_tab].toc.update_selection(current_offset);
         }
     }
@@ -882,7 +970,7 @@ fn open_link(
         return;
     };
     if let Ok(src) = std::fs::read_to_string(&target) {
-        let width = terminal.size().map(|s| s.width).unwrap_or(80);
+        let width = effective_width(terminal.size().map(|s| s.width).unwrap_or(80), args.toc);
         tabs[active_tab] = build_tab(
             src,
             target.to_str().unwrap_or(url),
@@ -897,6 +985,19 @@ fn open_link(
 /// Rebuild one tab for the current width/theme, preserving scroll and TOC
 /// visibility. Only the tab the user is looking at is rebuilt eagerly; the
 /// rest are refreshed lazily the next time they're switched to.
+/// The width the document is actually laid out in: the TOC pane (when open
+/// on a wide-enough terminal, mirroring the draw-time gate) takes its columns
+/// out of the budget. Toggling the TOC previously kept the full-width layout
+/// and truncated every line at draw time.
+fn effective_width(full: u16, toc_visible: bool) -> u16 {
+    const TOC_PANE: u16 = 30;
+    if toc_visible && full > 40 {
+        full.saturating_sub(TOC_PANE)
+    } else {
+        full
+    }
+}
+
 fn rebuild_tab(
     tab: &mut Tab,
     args: &Args,
@@ -908,8 +1009,11 @@ fn rebuild_tab(
     let filename = tab.filename.clone();
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
-    *tab = build_tab(source, &filename, args, term_width, gen, graphics);
-    tab.scroll_offset = scroll;
+    let width = effective_width(term_width, toc_visible);
+    *tab = build_tab(source, &filename, args, width, gen, graphics);
+    // Clamp: the new layout may have far fewer lines (e.g. after widening) —
+    // an unclamped stale offset blanked the viewport and panicked link-mode.
+    tab.scroll_offset = scroll.min(tab.ratatui_lines.len().saturating_sub(1));
     tab.toc.visible = toc_visible;
 }
 
@@ -921,7 +1025,7 @@ fn ensure_tab_current(
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    if tab.built_width != term_width || tab.built_gen != gen {
+    if tab.built_width != effective_width(term_width, tab.toc.visible) || tab.built_gen != gen {
         rebuild_tab(tab, args, term_width, gen, graphics);
     }
 }
@@ -978,25 +1082,32 @@ fn build_tab(
     // Turn reserved image specs into renderable placements (graphics mode only).
     let images: Vec<ImagePlacement> = image_specs
         .into_iter()
-        .filter_map(|spec| {
-            let proto = graphics.build((*spec.image).clone(), spec.cols, spec.rows)?;
-            Some(ImagePlacement {
+        .map(|spec| {
+            let proto = graphics.build((*spec.image).clone(), spec.cols, spec.rows);
+            ImagePlacement {
                 line_index: spec.line_index,
                 col_offset: spec.col_offset,
                 rows: spec.rows,
                 protocol: proto,
-            })
+            }
         })
         .collect();
     let ratatui_lines = render::styled_lines_to_ratatui(&styled_lines, &args.theme);
+    // Per-span, joined with a separator no typed query can contain, and
+    // lowercased char-by-char — the same algorithm the highlighter uses. A
+    // query that straddled a span boundary used to count as a match that
+    // nothing highlighted; now count and highlight agree by construction.
     let lowered: Vec<String> = styled_lines
         .iter()
         .map(|line| {
-            line.spans
-                .iter()
-                .map(|s| s.text.as_str())
-                .collect::<String>()
-                .to_lowercase()
+            let mut joined = String::new();
+            for (i, span) in line.spans.iter().enumerate() {
+                if i > 0 {
+                    joined.push('\u{1}');
+                }
+                joined.extend(span.text.chars().flat_map(char::to_lowercase));
+            }
+            joined
         })
         .collect();
 

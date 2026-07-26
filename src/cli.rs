@@ -67,9 +67,9 @@ pub struct Cli {
     #[arg(long)]
     pub frontmatter: bool,
 
-    /// Line spacing: compact, normal, relaxed
-    #[arg(long, default_value = "normal")]
-    pub spacing: String,
+    /// Line spacing: compact, normal, relaxed [default: normal]
+    #[arg(long)]
+    pub spacing: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -212,11 +212,22 @@ pub fn run() -> Result<()> {
     }
 
     let width = resolve_width(&cli.width, &user_config);
-    let spacing = match cli.spacing.as_str() {
+    // CLI flag wins; otherwise the config file's key; otherwise the default.
+    let spacing_choice = cli
+        .spacing
+        .clone()
+        .or_else(|| user_config.as_ref().and_then(|c| c.spacing.clone()))
+        .unwrap_or_else(|| "normal".to_string());
+    let spacing = match spacing_choice.as_str() {
         "compact" => Spacing::Compact,
         "relaxed" => Spacing::Relaxed,
         _ => Spacing::Normal,
     };
+    let cfg_flag = |get: fn(&config::Config) -> Option<bool>| {
+        user_config.as_ref().and_then(get).unwrap_or(false)
+    };
+    let toc = cli.toc || cfg_flag(|c| c.toc);
+    let frontmatter = cli.frontmatter || cfg_flag(|c| c.frontmatter);
 
     let theme = if cli.theme == "auto" {
         user_config
@@ -234,7 +245,7 @@ pub fn run() -> Result<()> {
         slides: cli.slides,
         plain: cli.plain,
         watch: cli.watch,
-        toc: cli.toc,
+        toc,
         images: if cli.no_images {
             crate::image::ImageMode::Off
         } else if cli.remote_images {
@@ -244,7 +255,7 @@ pub fn run() -> Result<()> {
         },
         image_protocol: crate::graphics::ProtocolChoice::parse(&cli.image_protocol)
             .unwrap_or(crate::graphics::ProtocolChoice::Auto),
-        frontmatter: cli.frontmatter,
+        frontmatter,
         spacing,
         mouse_capture: user_config
             .as_ref()
@@ -270,6 +281,15 @@ pub fn run() -> Result<()> {
     };
 
     if let Some(dir) = browse_dir {
+        // The browser is a full-screen TUI: refuse to launch it under --plain
+        // or into a pipe (previously `ink --plain docs/ > out.md` pushed raw
+        // escape sequences and raw-mode into the redirect).
+        if args.plain || !std::io::stdout().is_terminal() {
+            anyhow::bail!(
+                "'{}' is a directory — pass a markdown file (the interactive browser needs a terminal and is not available with --plain)",
+                dir.display()
+            );
+        }
         // Browser → doc → exit by default. User can press Shift-B inside the
         // doc (or set behavior.browser_loop = true in config) to return here.
         let browser_loop = user_config
@@ -287,7 +307,7 @@ pub fn run() -> Result<()> {
             file_args.inputs = vec![selected.to_string_lossy().to_string()];
             if file_args.plain {
                 let rendered = render::plain::render_plain(&source, &file_args)?;
-                print!("{rendered}");
+                write_stdout(&rendered);
                 break;
             }
             match app::run(source, file_args)? {
@@ -303,13 +323,18 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let source = read_input(&args)?;
-
     if args.plain {
-        let rendered = render::plain::render_plain(&source, &args)?;
+        // Render every input (cat-style concatenation), not just the first.
+        let sources = read_all_inputs(&args)?;
+        let mut rendered = String::new();
+        for source in &sources {
+            rendered.push_str(&render::plain::render_plain(source, &args)?);
+        }
         emit_plain(&rendered, cli.no_pager);
         return Ok(());
     }
+
+    let source = read_input(&args)?;
 
     app::run(source, args)?;
 
@@ -328,14 +353,14 @@ fn emit_plain(rendered: &str, no_pager: bool) {
     let long_enough = rendered.lines().count() > term_height as usize;
 
     if no_pager || !stdout_tty || !long_enough {
-        print!("{rendered}");
+        write_stdout(rendered);
         return;
     }
 
     let pager = std::env::var("PAGER").unwrap_or_else(|_| "less -R".to_string());
     let mut parts = pager.split_whitespace();
     let Some(program) = parts.next() else {
-        print!("{rendered}");
+        write_stdout(rendered);
         return;
     };
     let mut cmd = std::process::Command::new(program);
@@ -354,8 +379,39 @@ fn emit_plain(rendered: &str, no_pager: bool) {
             }
             let _ = child.wait();
         }
-        Err(_) => print!("{rendered}"),
+        Err(_) => write_stdout(rendered),
     }
+}
+
+/// Write to stdout without panicking when the reader has gone away. A closed
+/// pipe (`ink --plain … | head`, fzf previews, git textconv) is a normal way
+/// for output to end: exit 0 quietly instead of `print!`'s broken-pipe panic.
+fn write_stdout(s: &str) {
+    use std::io::Write;
+    let mut out = std::io::stdout().lock();
+    let res = out.write_all(s.as_bytes()).and_then(|_| out.flush());
+    if let Err(e) = res {
+        if e.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+    }
+}
+
+/// Read every input for --plain: all named files/URLs, or stdin when none.
+fn read_all_inputs(args: &Args) -> Result<Vec<String>> {
+    if args.inputs.is_empty() {
+        return Ok(vec![read_input(args)?]);
+    }
+    args.inputs
+        .iter()
+        .map(|input| {
+            if input.starts_with("http://") || input.starts_with("https://") {
+                crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
+            } else {
+                read_file(input)
+            }
+        })
+        .collect()
 }
 
 /// Read a file as UTF-8, falling back to a lossy decode (with a stderr note)
