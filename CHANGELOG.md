@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.7 — 2026-07-26
 
 ### Added
 - **`ink doctor`** — an image-rendering diagnostic report: ink version, platform, terminal identity (session IDs redacted), the live graphics-protocol negotiation (what the terminal claimed vs. what ink will use, with overrides called out), and SVG/PNG decoder self-tests. `ink doctor --save ink-doctor.txt` writes the report to a file. Terminal graphics support varies wildly between emulators; when images misbehave, this output usually pinpoints the cause immediately.
