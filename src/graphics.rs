@@ -80,13 +80,8 @@ impl Graphics {
         };
         if let Some(pt) = forced {
             picker.set_protocol_type(pt);
-        } else if picker.protocol_type() == ProtocolType::Kitty && is_iterm() {
-            // iTerm2 (3.5+) answers the kitty graphics query, but its kitty
-            // implementation lacks the unicode-placeholder mechanism the
-            // sliced kitty renderer depends on — images silently paint
-            // nothing. Its native inline-image protocol works, so prefer it
-            // whenever we're actually running under iTerm.
-            picker.set_protocol_type(ProtocolType::Iterm2);
+        } else {
+            picker.set_protocol_type(auto_protocol(picker.protocol_type(), is_iterm()));
         }
 
         let graphical = picker.protocol_type() != ProtocolType::Halfblocks;
@@ -124,11 +119,37 @@ impl Graphics {
     }
 }
 
+/// What the query said vs. what we should actually use, when the user hasn't
+/// forced a protocol.
+///
+/// iTerm2 (3.5+) answers the kitty graphics query, so detection reports
+/// kitty — but iTerm2's kitty implementation lacks the unicode-placeholder
+/// mechanism the sliced kitty renderer depends on, so every image paints as
+/// a silent blank block. Its native inline-image protocol works, so prefer
+/// that whenever we're actually running under iTerm. Every other detection
+/// result is passed through untouched.
+fn auto_protocol(detected: ProtocolType, iterm: bool) -> ProtocolType {
+    if detected == ProtocolType::Kitty && iterm {
+        ProtocolType::Iterm2
+    } else {
+        detected
+    }
+}
+
 /// Are we running under iTerm2 (locally or across ssh)? iTerm sets
 /// `TERM_PROGRAM` locally and propagates `LC_TERMINAL` over ssh.
 fn is_iterm() -> bool {
-    std::env::var("TERM_PROGRAM").is_ok_and(|v| v.contains("iTerm"))
-        || std::env::var("LC_TERMINAL").is_ok_and(|v| v.contains("iTerm"))
+    is_iterm_env(
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
+        std::env::var("LC_TERMINAL").ok().as_deref(),
+    )
+}
+
+/// Pure form of [`is_iterm`], so the matching is testable without mutating
+/// process-wide environment state.
+fn is_iterm_env(term_program: Option<&str>, lc_terminal: Option<&str>) -> bool {
+    term_program.is_some_and(|v| v.contains("iTerm"))
+        || lc_terminal.is_some_and(|v| v.contains("iTerm"))
 }
 
 /// Given an image's pixel dimensions and the cell size, compute how many
@@ -181,6 +202,44 @@ mod tests {
         assert_eq!(c2, 40);
         // Zero-dimension guard.
         assert_eq!(cell_dimensions(0, 0, (10, 20), 80, 30), (1, 1));
+    }
+
+    // Regression: iTerm2 3.5+ answers the kitty query, and rendering kitty
+    // there produced blank images. Auto-detection must swap to iTerm2's own
+    // protocol on iTerm, and must not disturb any other outcome.
+    #[test]
+    fn auto_protocol_prefers_iterm2_over_kitty_on_iterm() {
+        assert_eq!(
+            auto_protocol(ProtocolType::Kitty, true),
+            ProtocolType::Iterm2
+        );
+        // Real kitty (not iTerm) keeps kitty.
+        assert_eq!(
+            auto_protocol(ProtocolType::Kitty, false),
+            ProtocolType::Kitty
+        );
+        // Any other detected protocol passes through, iTerm or not.
+        for iterm in [true, false] {
+            for pt in [
+                ProtocolType::Sixel,
+                ProtocolType::Iterm2,
+                ProtocolType::Halfblocks,
+            ] {
+                assert_eq!(auto_protocol(pt, iterm), pt, "{pt:?} iterm={iterm}");
+            }
+        }
+    }
+
+    #[test]
+    fn iterm_detected_from_either_env_var() {
+        // Local iTerm sets TERM_PROGRAM; over ssh it propagates LC_TERMINAL.
+        assert!(is_iterm_env(Some("iTerm.app"), None));
+        assert!(is_iterm_env(None, Some("iTerm2")));
+        assert!(is_iterm_env(Some("tmux"), Some("iTerm2")));
+        // Other terminals are left alone.
+        assert!(!is_iterm_env(Some("Apple_Terminal"), None));
+        assert!(!is_iterm_env(Some("WezTerm"), Some("wezterm")));
+        assert!(!is_iterm_env(None, None));
     }
 
     #[test]

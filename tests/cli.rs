@@ -127,3 +127,36 @@ fn no_color_strips_ansi_color() {
         .success()
         .stdout(predicate::str::contains("\x1b[38;2;").not());
 }
+
+#[test]
+fn unknown_theme_warns_on_stderr_and_still_renders() {
+    // A mistyped or broken theme falls back to dark, but must say so on
+    // stderr — silently ignoring the request left users debugging nothing.
+    ink()
+        .args([
+            "--plain",
+            "--theme",
+            "definitely-not-a-real-theme",
+            "--width",
+            "80",
+        ])
+        .arg("tests/fixtures/test.md")
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("definitely-not-a-real-theme")
+                .and(predicate::str::contains("falling back to 'dark'")),
+        )
+        .stdout(predicate::str::is_empty().not());
+}
+
+#[test]
+fn known_theme_is_quiet() {
+    // The fallback warning must not fire for a valid builtin.
+    ink()
+        .args(["--plain", "--theme", "nord", "--width", "80"])
+        .arg("tests/fixtures/test.md")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("falling back").not());
+}
