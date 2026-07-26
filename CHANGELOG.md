@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.5 — 2026-07-26
 
 A systematic bug hunt across the whole codebase: five parallel audits (Unicode/width, hand-rolled scanners, image pipeline, app state, CLI/plain) followed by fixes for everything found. 30+ fixes; every one carries a regression test.
 
