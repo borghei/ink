@@ -1,5 +1,6 @@
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
+use unicode_width::UnicodeWidthStr;
 
 /// Parse and render a mermaid diagram as styled terminal text.
 /// This is a built-in ASCII renderer for common diagram types.
@@ -182,57 +183,7 @@ fn render_flowchart(
 }
 
 fn make_node_line(label: &str, border_color: &str, text_color: &str, margin: &str) -> StyledLine {
-    let mut line = StyledLine::new();
-    push_margin(&mut line, margin);
-    line.push(StyledSpan {
-        text: "│   ".to_string(),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-    line.push(StyledSpan {
-        text: format!("  ╭{}╮", "─".repeat(label.len() + 2)),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-
-    let mut line2 = StyledLine::new();
-    push_margin(&mut line2, margin);
-    line2.push(StyledSpan {
-        text: "│   ".to_string(),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-    line2.push(StyledSpan {
-        text: "  │ ".to_string(),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-    line2.push(StyledSpan {
-        text: label.to_string(),
-        style: SpanStyle {
-            fg: Some(text_color.to_string()),
-            bold: true,
-            ..Default::default()
-        },
-    });
-    line2.push(StyledSpan {
-        text: " │".to_string(),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-
-    // We actually need to return multiple lines, but our API returns one.
-    // Let's simplify to a single-line box representation.
+    // Single-line box representation: │     [ Label ]
     let mut result = StyledLine::new();
     push_margin(&mut result, margin);
     result.push(StyledSpan {
@@ -621,7 +572,10 @@ fn make_header(
             ..Default::default()
         },
     });
-    let used = 3 + title.len() + 2; // "╭─ " + title + " ╮"
+    // Display columns, not bytes: a CJK or emoji title occupies more columns
+    // than `len()` reports characters (and multibyte text fewer), which used
+    // to skew the top border.
+    let used = 3 + title.width() + 2; // "╭─ " + title + " ╮"
     let remaining = width.saturating_sub(used);
     line.push(StyledSpan {
         text: format!("{}╮", "─".repeat(remaining)),
@@ -732,4 +686,31 @@ fn parse_sequence_line(line: &str) -> (String, String, String, String) {
         String::new(),
         String::new(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn line_width(line: &StyledLine) -> usize {
+        line.spans.iter().map(|s| s.text.as_str().width()).sum()
+    }
+
+    // The header border must be sized by the title's display columns, not its
+    // byte length: a CJK title (3 bytes but 2 columns per char) skewed the top
+    // border 10 columns off the footer.
+    #[test]
+    fn header_width_matches_footer_regardless_of_title_script() {
+        for title in ["flowchart", "日本語のパイ図", "⚠️ warning ⚠️", "Grüße"] {
+            let header = make_header(title, "#888888", "#ffffff", "", 56);
+            let footer = make_footer("#888888", "", 56);
+            assert_eq!(
+                line_width(&header),
+                56,
+                "header for {title:?} is {} cols",
+                line_width(&header)
+            );
+            assert_eq!(line_width(&header), line_width(&footer));
+        }
+    }
 }

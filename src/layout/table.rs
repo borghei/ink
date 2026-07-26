@@ -1,7 +1,8 @@
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
 use comrak::nodes::{AstNode, NodeValue};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 /// Minimum readable width for a shrunk table column.
 const MIN_COL: usize = 5;
@@ -224,7 +225,13 @@ fn render_transposed(
 }
 
 /// Pad or truncate (with an ellipsis) `s` to exactly `w` display columns.
+/// Measures grapheme clusters, never splitting inside one: per-char sums
+/// disagree with the rendered width for emoji (VS16, ZWJ sequences), which
+/// used to return labels wider than the column.
 fn fit_label(s: &str, w: usize) -> String {
+    if w == 0 {
+        return String::new();
+    }
     let sw = s.width();
     if sw == w {
         return s.to_string();
@@ -234,18 +241,18 @@ fn fit_label(s: &str, w: usize) -> String {
     }
     let mut out = String::new();
     let mut acc = 0;
-    for c in s.chars() {
-        let cw = UnicodeWidthChar::width(c).unwrap_or(1);
-        if acc + cw > w.saturating_sub(1) {
+    for g in s.graphemes(true) {
+        let gw = g.width();
+        if acc + gw > w - 1 {
             break;
         }
-        out.push(c);
-        acc += cw;
+        out.push_str(g);
+        acc += gw;
     }
     out.push('…');
-    let ow = out.width();
-    if ow < w {
-        out.push_str(&" ".repeat(w - ow));
+    acc += 1;
+    if acc < w {
+        out.push_str(&" ".repeat(w - acc));
     }
     out
 }
@@ -333,21 +340,22 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     lines
 }
 
-/// Force-break a single long word into chunks of max_width.
+/// Force-break a single long word into chunks of max_width, breaking only
+/// between grapheme clusters so the chunk widths match the rendered widths.
 fn force_break(word: &str, max_width: usize) -> Vec<String> {
     let mut parts = Vec::new();
     let mut current = String::new();
     let mut current_width = 0;
 
-    for c in word.chars() {
-        let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
-        if current_width + cw > max_width && !current.is_empty() {
+    for g in word.graphemes(true) {
+        let gw = g.width();
+        if current_width + gw > max_width && !current.is_empty() {
             parts.push(current);
             current = String::new();
             current_width = 0;
         }
-        current.push(c);
-        current_width += cw;
+        current.push_str(g);
+        current_width += gw;
     }
     if !current.is_empty() {
         parts.push(current);
@@ -506,5 +514,59 @@ fn collect_cell_text_inner<'a>(node: &'a AstNode<'a>, buf: &mut String) {
     drop(data);
     for child in node.children() {
         collect_cell_text_inner(child, buf);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `fit_label(s, w)` must return exactly `w` display columns for every
+    // input — the transposed layout aligns values on that guarantee. The
+    // emoji inputs are the regression: per-char width accounting returned a
+    // 41-column label for a 27-column slot.
+    #[test]
+    fn fit_label_is_always_exact_width() {
+        let inputs = [
+            "plain header",
+            "short",
+            "⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️⚠️",
+            "👨‍👩‍👧‍👦👨‍👩‍👧‍👦👨‍👩‍👧‍👦 family emoji header",
+            "日本語のとても長いヘッダー",
+            "",
+        ];
+        for s in inputs {
+            for w in 1..30 {
+                let fitted = fit_label(s, w);
+                assert_eq!(
+                    fitted.width(),
+                    w,
+                    "fit_label({s:?}, {w}) returned {:?} ({} cols)",
+                    fitted,
+                    fitted.width()
+                );
+            }
+        }
+        assert_eq!(fit_label("anything", 0), "");
+    }
+
+    // Truncation must never split inside a grapheme cluster: a ZWJ family
+    // emoji is all-or-nothing.
+    #[test]
+    fn fit_label_never_splits_a_cluster() {
+        let family = "👨‍👩‍👧‍👦"; // width 2, many chars
+        let s = format!("{family}{family}{family}");
+        let fitted = fit_label(&s, 3);
+        assert_eq!(fitted.width(), 3);
+        // Either a whole cluster survived or none did; no bare ZWJ fragments.
+        assert!(!fitted.contains('\u{200D}') || fitted.contains(family));
+    }
+
+    #[test]
+    fn force_break_measures_clusters() {
+        let s = "⚠️".repeat(10); // 20 columns as rendered
+        for part in force_break(&s, 4) {
+            assert!(part.width() <= 4, "chunk {part:?} is {} cols", part.width());
+        }
     }
 }

@@ -57,6 +57,10 @@ dirs = "6"
 # Unicode width calculation
 unicode-width = "0.2"
 
+# Grapheme-cluster segmentation: width math must never split inside a cluster
+# (emoji + VS16, ZWJ sequences), or per-char sums disagree with rendered width
+unicode-segmentation = "1"
+
 # Image decoding for inline image rendering
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tga", "qoi", "pnm", "hdr", "exr", "ff"] }
 

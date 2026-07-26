@@ -10,6 +10,7 @@ use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 // SyntaxSet/ThemeSet are shared singletons; see crate::highlight.
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// A rendered line of styled text, ready for display.
@@ -581,7 +582,11 @@ fn image_block_lines(
         if ctx.record_headings {
             use image::GenericImageView;
             let (iw, ih) = image_data.dimensions();
-            let max_cols = ctx.width.saturating_sub(ctx.margin).max(1) as u16;
+            // `ctx.width` is already the content width; the centering margin
+            // is applied via `col_offset` (the half-block branch below uses
+            // `ctx.width` the same way). Subtracting the margin here again
+            // shrank graphics images by the margin.
+            let max_cols = ctx.width.max(1) as u16;
             let (cols, rows) =
                 crate::graphics::cell_dimensions(iw, ih, font, max_cols, MAX_IMAGE_ROWS);
             let mut image_lines: Vec<StyledLine> = Vec::with_capacity(rows as usize + 2);
@@ -639,69 +644,114 @@ const MAX_IMAGE_ROWS: u16 = 30;
 
 /// Extract `(src, alt)` from every `<img>` tag in a raw HTML fragment.
 /// Tolerant by design: any attribute order, single/double/no quotes,
-/// self-closing or not. Tags without a `src` are skipped.
+/// self-closing or not. Tags without a `src` are skipped. Quote-aware:
+/// `src=` inside another attribute's quoted value is never mistaken for the
+/// real attribute, and a `>` inside quotes does not end the tag.
 fn extract_html_images(html: &str) -> Vec<(String, String)> {
     let lower = html.to_ascii_lowercase();
     let mut out = Vec::new();
     let mut pos = 0;
     while let Some(found) = lower[pos..].find("<img") {
         let start = pos + found;
-        let end = lower[start..]
-            .find('>')
-            .map(|e| start + e)
-            .unwrap_or(html.len());
-        let tag = &html[start..end];
-        if let Some(src) = html_attr(tag, "src") {
-            out.push((src, html_attr(tag, "alt").unwrap_or_default()));
+        let body = start + 4; // after "<img"
+                              // Require a real tag boundary so `<imgs ...>` is not an image tag.
+        let at_boundary = html[body..]
+            .chars()
+            .next()
+            .is_none_or(|c| c.is_ascii_whitespace() || c == '>' || c == '/');
+        if !at_boundary {
+            pos = body;
+            continue;
         }
-        pos = end.max(start + 4);
+        match scan_tag_attrs(&html[body..]) {
+            Some((attrs, consumed)) => {
+                let attr = |name: &str| {
+                    attrs
+                        .iter()
+                        .find(|(n, _)| n == name)
+                        .map(|(_, v)| v.clone())
+                };
+                if let Some(src) = attr("src") {
+                    out.push((src, attr("alt").unwrap_or_default()));
+                }
+                pos = body + consumed;
+            }
+            // Tag never closes: nothing trustworthy to extract.
+            None => pos = body,
+        }
     }
     out
 }
 
-/// Pull one attribute's value out of a tag. ASCII-lowercasing preserves byte
-/// offsets, so positions found in the lowered copy index the original.
-fn html_attr(tag: &str, name: &str) -> Option<String> {
-    let lower = tag.to_ascii_lowercase();
-    let bytes = tag.as_bytes();
-    let mut search = 0;
-    loop {
-        let found = lower[search..].find(name)? + search;
-        let preceded_by_space = tag[..found]
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_whitespace());
-        let mut i = found + name.len();
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        if !preceded_by_space || i >= bytes.len() || bytes[i] != b'=' {
-            search = found + name.len();
-            continue;
-        }
-        i += 1;
-        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+/// Scan an HTML tag body (everything after the tag name) into attribute
+/// `(name, value)` pairs, names ASCII-lowercased. Walks character by
+/// character: attribute name, optional `=`, value in single/double quotes
+/// (a `>` inside quotes does NOT end the tag) or unquoted. The tag ends at
+/// the first unquoted `>`. Returns the attributes and the byte offset just
+/// past that `>`, or `None` when the tag never closes.
+fn scan_tag_attrs(rest: &str) -> Option<(Vec<(String, String)>, usize)> {
+    let bytes = rest.as_bytes();
+    let mut attrs: Vec<(String, String)> = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Skip whitespace and the self-closing slash.
+        while i < bytes.len() && (bytes[i].is_ascii_whitespace() || bytes[i] == b'/') {
             i += 1;
         }
         if i >= bytes.len() {
             return None;
         }
-        let value = match bytes[i] {
-            quote @ (b'"' | b'\'') => {
-                let rest = &tag[i + 1..];
-                let close = rest.find(quote as char)?;
-                &rest[..close]
+        if bytes[i] == b'>' {
+            return Some((attrs, i + 1));
+        }
+        // Attribute name: up to whitespace, `=`, `>`, or `/`.
+        let name_start = i;
+        while i < bytes.len()
+            && !bytes[i].is_ascii_whitespace()
+            && !matches!(bytes[i], b'=' | b'>' | b'/')
+        {
+            i += 1;
+        }
+        let name = rest[name_start..i].to_ascii_lowercase();
+        // Optional `=` (whitespace allowed around it), then the value.
+        let mut j = i;
+        while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        let mut value = String::new();
+        if j < bytes.len() && bytes[j] == b'=' {
+            j += 1;
+            while j < bytes.len() && bytes[j].is_ascii_whitespace() {
+                j += 1;
             }
-            _ => {
-                let rest = &tag[i..];
-                let close = rest
-                    .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
-                    .unwrap_or(rest.len());
-                &rest[..close]
+            if j >= bytes.len() {
+                return None;
             }
-        };
-        return Some(value.to_string());
+            match bytes[j] {
+                quote @ (b'"' | b'\'') => {
+                    // Unterminated quote ⇒ the tag never closes.
+                    let close = rest[j + 1..].find(quote as char)?;
+                    value = rest[j + 1..j + 1 + close].to_string();
+                    i = j + 1 + close + 1;
+                }
+                _ => {
+                    let value_start = j;
+                    while j < bytes.len()
+                        && !bytes[j].is_ascii_whitespace()
+                        && !matches!(bytes[j], b'>' | b'/')
+                    {
+                        j += 1;
+                    }
+                    value = rest[value_start..j].to_string();
+                    i = j;
+                }
+            }
+        }
+        if !name.is_empty() {
+            attrs.push((name, value));
+        }
     }
+    None
 }
 
 /// Append the image's alt text as an italic caption line. A link-wrapped
@@ -733,6 +783,33 @@ fn push_image_caption(
     lines.push(caption);
 }
 
+/// Expand tabs to spaces at 4-column tab stops, tracking the display column
+/// per line. Terminal cells can't render `\t`; left unexpanded it breaks the
+/// code-box borders and every downstream width calculation.
+fn expand_tabs(text: &str) -> String {
+    const TAB_STOP: usize = 4;
+    let mut out = String::with_capacity(text.len());
+    let mut col = 0usize;
+    for ch in text.chars() {
+        match ch {
+            '\t' => {
+                let spaces = TAB_STOP - (col % TAB_STOP);
+                out.extend(std::iter::repeat_n(' ', spaces));
+                col += spaces;
+            }
+            '\n' => {
+                out.push('\n');
+                col = 0;
+            }
+            _ => {
+                out.push(ch);
+                col += UnicodeWidthChar::width(ch).unwrap_or(0);
+            }
+        }
+    }
+    out
+}
+
 fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     let lang = info.split_whitespace().next().unwrap_or("");
 
@@ -742,6 +819,11 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         lines.extend(mermaid_lines);
         return;
     }
+
+    // Expand tabs before highlighting and width math (tab-indented Go code
+    // otherwise misaligns the box borders and loses its indentation).
+    let literal = expand_tabs(literal);
+    let literal = literal.as_str();
 
     // Match the code box to the content width (was capped at 80, making code
     // blocks narrower than paragraphs on wide layouts).
@@ -1376,7 +1458,10 @@ fn split_text_with_urls(
                     },
                 });
 
-                remaining = &remaining[start + end..];
+                // Advance only past the link text: punctuation trimmed off the
+                // URL is not part of the link, but it is part of the sentence
+                // and must remain in the rendered output as plain text.
+                remaining = &remaining[start + url.len()..];
             }
             None => {
                 // No more URLs, push remaining text
@@ -1407,6 +1492,10 @@ fn collect_child_text<'a>(node: &'a AstNode<'a>) -> String {
 /// Hard-wrap styled code spans to a display width, preserving every character
 /// exactly (including leading indentation). Returns one span list per visual
 /// line; always at least one (possibly empty) line.
+///
+/// Walks grapheme clusters, not chars: renderers (`str::width`, ratatui)
+/// measure clusters, and per-char sums disagree for emoji with VS16 or ZWJ
+/// sequences. Never splits inside a cluster.
 fn wrap_code_spans(spans: Vec<StyledSpan>, width: usize) -> Vec<Vec<StyledSpan>> {
     let width = width.max(1);
     let mut lines: Vec<Vec<StyledSpan>> = Vec::new();
@@ -1414,9 +1503,9 @@ fn wrap_code_spans(spans: Vec<StyledSpan>, width: usize) -> Vec<Vec<StyledSpan>>
     let mut col = 0usize;
     for span in spans {
         let mut piece = String::new();
-        for ch in span.text.chars() {
-            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if col + cw > width && (col > 0 || !piece.is_empty()) {
+        for grapheme in span.text.graphemes(true) {
+            let gw = grapheme.width();
+            if col + gw > width && (col > 0 || !piece.is_empty()) {
                 if !piece.is_empty() {
                     cur.push(StyledSpan {
                         text: std::mem::take(&mut piece),
@@ -1426,8 +1515,8 @@ fn wrap_code_spans(spans: Vec<StyledSpan>, width: usize) -> Vec<Vec<StyledSpan>>
                 lines.push(std::mem::take(&mut cur));
                 col = 0;
             }
-            piece.push(ch);
-            col += cw;
+            piece.push_str(grapheme);
+            col += gw;
         }
         if !piece.is_empty() {
             cur.push(StyledSpan {
@@ -1441,20 +1530,22 @@ fn wrap_code_spans(spans: Vec<StyledSpan>, width: usize) -> Vec<Vec<StyledSpan>>
 }
 
 /// Split a string into pieces whose display width is at most `width`, breaking
-/// between characters. Used to hard-break tokens too long to wrap on a space.
+/// only between grapheme clusters (splitting inside one would change both the
+/// rendered glyphs and the measured width). Used to hard-break tokens too long
+/// to wrap on a space.
 fn split_by_width(s: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     let mut cur = String::new();
     let mut w = 0;
-    for ch in s.chars() {
-        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if w + cw > width && !cur.is_empty() {
+    for grapheme in s.graphemes(true) {
+        let gw = grapheme.width();
+        if w + gw > width && !cur.is_empty() {
             out.push(std::mem::take(&mut cur));
             w = 0;
         }
-        cur.push(ch);
-        w += cw;
+        cur.push_str(grapheme);
+        w += gw;
     }
     if !cur.is_empty() {
         out.push(cur);
@@ -1649,6 +1740,67 @@ mod tests {
                 ("2.png".to_string(), String::new()),
             ]
         );
+    }
+
+    #[test]
+    fn html_scanner_is_quote_aware() {
+        // `src=` inside another attribute's quoted value must not be read as
+        // the real attribute (the old scanner loaded `here` for this input).
+        assert_eq!(
+            extract_html_images(r#"<img alt="pass src=here to override" src="diagram.svg">"#),
+            vec![(
+                "diagram.svg".to_string(),
+                "pass src=here to override".to_string()
+            )]
+        );
+        // A `>` inside a quoted value does not end the tag.
+        assert_eq!(
+            extract_html_images(r#"<img alt="a > b" src="x.png">"#),
+            vec![("x.png".to_string(), "a > b".to_string())]
+        );
+    }
+
+    #[test]
+    fn expand_tabs_uses_four_column_stops() {
+        assert_eq!(expand_tabs("\tx"), "    x");
+        assert_eq!(expand_tabs("ab\tx"), "ab  x");
+        assert_eq!(expand_tabs("abc\tx"), "abc x");
+        assert_eq!(expand_tabs("abcd\tx"), "abcd    x");
+        // Column resets at each newline.
+        assert_eq!(expand_tabs("a\n\tb"), "a\n    b");
+    }
+
+    #[test]
+    fn split_by_width_measures_grapheme_clusters() {
+        // 40 warning-sign emoji: 1 column per char but 2 per cluster — the
+        // per-char accounting packed 76 columns into a 40-column budget.
+        let s = "⚠️".repeat(40);
+        let parts = split_by_width(&s, 40);
+        for p in &parts {
+            assert!(p.width() <= 40, "chunk {p:?} is {} cols", p.width());
+        }
+        assert_eq!(parts.concat(), s, "no character may be lost");
+
+        // ZWJ family emoji: ~6 columns per-char but 2 per cluster; a split
+        // inside the cluster would leave dangling ZWJ fragments.
+        let fam = "👨‍👩‍👧‍👦".repeat(5);
+        for p in split_by_width(&fam, 4) {
+            assert!(p.width() <= 4);
+            assert_eq!(
+                p.chars().filter(|c| *c == '\u{200D}').count() % 3,
+                0,
+                "split inside a ZWJ cluster: {p:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_code_spans_measures_grapheme_clusters() {
+        let spans = vec![span(&"⚠️".repeat(30), false)];
+        for visual in wrap_code_spans(spans, 36) {
+            let w: usize = visual.iter().map(|s| s.text.width()).sum();
+            assert!(w <= 36, "visual line is {w} cols");
+        }
     }
 
     #[test]
