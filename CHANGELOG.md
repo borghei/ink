@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.6 — 2026-07-26
 
 ### Fixed
 - **Images render on iTerm2 again.** iTerm2 3.5+ answers the kitty graphics query, so protocol auto-detection picked kitty — but iTerm2's kitty implementation lacks the unicode-placeholder mechanism the renderer relies on, so every image painted as a silent blank block (found by verifying pixels on a real desktop, not in CI). When running under iTerm (`TERM_PROGRAM`/`LC_TERMINAL`), auto-detection now prefers iTerm2's native inline-image protocol, which works. An explicit `--image-protocol kitty` still forces kitty. Also added `examples/probe_graphics.rs` to print what the terminal negotiation picks.
