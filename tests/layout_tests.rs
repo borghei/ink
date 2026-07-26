@@ -207,7 +207,15 @@ fn absolute_path_image_renders_as_halfblocks() {
     let svg_path = img_dir.path().join("sample_from_wikipedia.svg");
     std::fs::write(&svg_path, svg).unwrap();
 
-    let source = format!("![]({})\n", svg_path.display());
+    // Forward slashes even on Windows: a raw `C:\…\Temp\.tmpXXXX\…` path is
+    // mangled by the markdown parser before it ever reaches the image loader,
+    // because `\.` is a valid CommonMark escape and the separator is eaten.
+    // `C:/…` is equally absolute to `Path`, and is what a Windows author has
+    // to write anyway.
+    let source = format!(
+        "![]({})\n",
+        svg_path.display().to_string().replace('\\', "/")
+    );
     let arena = Arena::new();
     let root = parse_document(&arena, &source, &parser::options());
     let theme = resolve_theme("dark");
