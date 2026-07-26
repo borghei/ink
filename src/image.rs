@@ -18,12 +18,33 @@ const SVG_RASTER_MAX_PX: u32 = 4096;
 
 /// Cache of decoded images so a resize / theme-change / watch reload re-uses
 /// the decode instead of reading and decoding the file again. Keyed by a
-/// stable identity: canonical path + mtime for local files, URL for remote.
-type ImageCache = HashMap<String, Arc<DynamicImage>>;
+/// stable identity computed *without touching content* (metadata at most):
+/// canonical path + mtime for local files, URL for remote, a hash of the URI
+/// text for `data:` sources. Failures are cached too — otherwise every
+/// relayout would retry each doomed load (with `--remote-images`, a fresh
+/// blocking network fetch per failed image per resize tick). A fixed local
+/// file busts its negative entry naturally via the mtime in the key; remote
+/// failures persist for the session (deliberate: each retry would block the
+/// render loop on the network again).
+type CachedLoad = Result<Arc<DynamicImage>, ImageUnavailable>;
+type ImageCache = HashMap<String, CachedLoad>;
+
+/// Bound on cached entries. When an insert would exceed it, the whole map is
+/// cleared first — crude generational eviction. Watch-mode mtime changes mint
+/// new keys and strand old decodes (an SVG entry can run ~4 MB), so some
+/// bound is needed, but an LRU is overkill for a TUI viewing a handful of
+/// documents: re-decoding one screenful after a rare purge is cheap.
+const IMAGE_CACHE_CAP: usize = 64;
 
 fn cache() -> &'static Mutex<ImageCache> {
     static CACHE: OnceLock<Mutex<ImageCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Test-only view of the cache size, for the eviction regression test.
+#[cfg(test)]
+fn cache_len() -> usize {
+    cache().lock().map(|c| c.len()).unwrap_or(0)
 }
 
 /// Load and decode an image (via the cache), ready for half-block rendering.
@@ -37,30 +58,41 @@ pub fn load_decoded(
     mode: ImageMode,
     svg_color: Option<&str>,
 ) -> Result<Arc<DynamicImage>, ImageUnavailable> {
-    let (mut key, bytes, resource_dir) = load_bytes_with_key(src, base_dir, mode)?;
-    let svg = is_svg(src, &bytes);
-    if svg {
-        // The rasterization bakes the currentColor in, so a theme change must
-        // miss the cache and re-rasterize.
-        if let Some(color) = svg_color {
-            key = format!("{key}|color:{color}");
-        }
+    // Resolve the key first — no content reads, no network — so the cache
+    // answers *before* any I/O. A relayout must not re-read every image file,
+    // let alone re-download remote ones.
+    let (mut key, source) = resolve_source(src, base_dir, mode)?;
+    // The rasterization bakes currentColor in, so a theme change must miss
+    // the cache and re-rasterize. Extension-detected SVGs only: no bytes
+    // exist yet to sniff, so an extension-less SVG keeps its first theme's
+    // color until the entry is evicted — a cosmetic, rare trade for never
+    // touching content before the cache.
+    if let (Some(color), true) = (svg_color, is_svg(src, b"")) {
+        key = format!("{key}|color:{color}");
     }
-    if let Some(img) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
-        return Ok(img);
+    if let Some(cached) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
+        return cached;
     }
-    let decoded = if svg {
-        Arc::new(
-            rasterize_svg(&bytes, resource_dir.as_deref(), svg_color)
-                .ok_or(ImageUnavailable::Failed)?,
-        )
-    } else {
-        Arc::new(decode_raster(&bytes).ok_or(ImageUnavailable::Failed)?)
-    };
+    let result = fetch_and_decode(src, &source, svg_color);
     if let Ok(mut c) = cache().lock() {
-        c.insert(key, decoded.clone());
+        if c.len() >= IMAGE_CACHE_CAP && !c.contains_key(&key) {
+            c.clear(); // generational eviction — see IMAGE_CACHE_CAP
+        }
+        c.insert(key, result.clone());
     }
-    Ok(decoded)
+    result
+}
+
+/// The expensive path — read/fetch the bytes and decode them. Runs only on a
+/// cache miss; the outcome (success or failure) is what gets cached.
+fn fetch_and_decode(src: &str, source: &ImageSource<'_>, svg_color: Option<&str>) -> CachedLoad {
+    let (bytes, resource_dir) = fetch_bytes(source)?;
+    let decoded = if is_svg(src, &bytes) {
+        rasterize_svg(&bytes, resource_dir.as_deref(), svg_color)
+    } else {
+        decode_raster(&bytes)
+    };
+    decoded.map(Arc::new).ok_or(ImageUnavailable::Failed)
 }
 
 /// Decode a raster image, honoring EXIF orientation — phone photos carry
@@ -162,7 +194,7 @@ fn inject_current_color(bytes: &[u8], color: &str) -> Option<Vec<u8>> {
     }
     let text = std::str::from_utf8(bytes).ok()?;
     let start = text.find("<svg")?;
-    let end = start + text[start..].find('>')?;
+    let end = start + svg_root_tag_end(&text[start..])?;
     // Conservative: any `color=`-ish content in the root tag (including
     // style="color:…") means the author chose, so leave it alone.
     if text[start..end].contains("color") {
@@ -180,24 +212,56 @@ fn inject_current_color(bytes: &[u8], color: &str) -> Option<Vec<u8>> {
     Some(out.into_bytes())
 }
 
-/// Resolve `src`, returning a cache key, the raw bytes to decode, and (for
-/// local files) the directory that anchors the file's own relative resources.
-fn load_bytes_with_key(
-    src: &str,
+/// Index of the root tag's closing `>` — quote-aware, so a `>` inside a
+/// quoted attribute value doesn't truncate the tag.
+fn svg_root_tag_end(tag: &str) -> Option<usize> {
+    let mut quote: Option<char> = None;
+    for (i, c) in tag.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (None, '"') | (None, '\'') => quote = Some(c),
+            (None, '>') => return Some(i),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// A resolved image source: where the bytes will come from on a cache miss.
+enum ImageSource<'a> {
+    /// Remote URL (only reachable in `ImageMode::All`).
+    Remote(&'a str),
+    /// The remainder of a `data:` URI (after the scheme prefix).
+    DataUri(&'a str),
+    /// A verified regular local file (canonicalized).
+    Local(std::path::PathBuf),
+}
+
+/// Resolve `src` into a cache key and a fetchable source, without reading any
+/// content: the key comes from the URL, from the `data:` URI text, or (for
+/// local files) from canonical path + mtime via `fs::metadata` only. Cheap
+/// failures detected here (blocked remote, missing file, oversize) are
+/// returned directly and not cached.
+fn resolve_source<'a>(
+    src: &'a str,
     base_dir: Option<&Path>,
     mode: ImageMode,
-) -> Result<(String, Vec<u8>, Option<std::path::PathBuf>), ImageUnavailable> {
+) -> Result<(String, ImageSource<'a>), ImageUnavailable> {
     if src.starts_with("http://") || src.starts_with("https://") {
         if mode != ImageMode::All {
             return Err(ImageUnavailable::RemoteBlocked);
         }
-        let bytes = crate::net::fetch_untrusted_bytes(src, crate::net::IMAGE_FETCH_CAP)
-            .map_err(|_| ImageUnavailable::Failed)?;
-        return Ok((format!("url:{src}"), bytes, None));
+        return Ok((format!("url:{src}"), ImageSource::Remote(src)));
     }
     // Embedded `data:` URIs (notebook/HTML exports inline images this way).
+    // The key hashes the URI text because it can be megabytes — but never the
+    // decoded bytes: decoding is part of the work the cache exists to skip.
     if let Some(rest) = src.strip_prefix("data:") {
-        return decode_data_uri(rest).ok_or(ImageUnavailable::Failed);
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        src.hash(&mut hasher);
+        let key = format!("data:{:x}:{}", hasher.finish(), src.len());
+        return Ok((key, ImageSource::DataUri(rest)));
     }
     let base = base_dir.unwrap_or_else(|| Path::new("."));
     // Any readable local path is allowed — absolute, relative escaping the
@@ -226,15 +290,35 @@ fn load_bytes_with_key(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let key = format!("file:{}:{mtime}", path.display());
-    let bytes = std::fs::read(&path).map_err(|_| ImageUnavailable::NotFound)?;
-    let resource_dir = path.parent().map(Path::to_path_buf);
-    Ok((key, bytes, resource_dir))
+    Ok((key, ImageSource::Local(path)))
+}
+
+/// Read a source's bytes — file read, network fetch, or data-URI decode.
+/// This is the I/O the cache skips; it runs only on a miss. Also returns the
+/// directory anchoring a local file's own relative resources (SVG `<image
+/// href>`).
+fn fetch_bytes(
+    source: &ImageSource<'_>,
+) -> Result<(Vec<u8>, Option<std::path::PathBuf>), ImageUnavailable> {
+    match source {
+        ImageSource::Remote(url) => {
+            let bytes = crate::net::fetch_untrusted_bytes(url, crate::net::IMAGE_FETCH_CAP)
+                .map_err(|_| ImageUnavailable::Failed)?;
+            Ok((bytes, None))
+        }
+        ImageSource::DataUri(rest) => {
+            let bytes = decode_data_uri(rest).ok_or(ImageUnavailable::Failed)?;
+            Ok((bytes, None))
+        }
+        ImageSource::Local(path) => {
+            let bytes = std::fs::read(path).map_err(|_| ImageUnavailable::NotFound)?;
+            Ok((bytes, path.parent().map(Path::to_path_buf)))
+        }
+    }
 }
 
 /// Decode the remainder of a `data:` URI (`[<mediatype>][;base64],<payload>`).
-/// Returns the cache key and bytes; the key hashes the content because the
-/// URI text itself can be megabytes.
-fn decode_data_uri(rest: &str) -> Option<(String, Vec<u8>, Option<std::path::PathBuf>)> {
+fn decode_data_uri(rest: &str) -> Option<Vec<u8>> {
     use base64::Engine;
     let (meta, payload) = rest.split_once(',')?;
     let bytes = if meta.to_ascii_lowercase().ends_with(";base64") {
@@ -246,17 +330,7 @@ fn decode_data_uri(rest: &str) -> Option<(String, Vec<u8>, Option<std::path::Pat
             .map(String::into_bytes)
             .unwrap_or_else(|| payload.as_bytes().to_vec())
     };
-    if bytes.len() as u64 > crate::net::IMAGE_FETCH_CAP {
-        return None;
-    }
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    bytes.hash(&mut hasher);
-    Some((
-        format!("data:{:x}:{}", hasher.finish(), bytes.len()),
-        bytes,
-        None,
-    ))
+    (bytes.len() as u64 <= crate::net::IMAGE_FETCH_CAP).then_some(bytes)
 }
 
 /// Which images a document is allowed to load.
@@ -293,7 +367,8 @@ pub fn load_image(
     base_dir: Option<&Path>,
     mode: ImageMode,
 ) -> Result<Vec<u8>, ImageUnavailable> {
-    load_bytes_with_key(src, base_dir, mode).map(|(_, bytes, _)| bytes)
+    let (_, source) = resolve_source(src, base_dir, mode)?;
+    fetch_bytes(&source).map(|(bytes, _)| bytes)
 }
 
 /// Render a decoded image to styled lines using Unicode half-block characters (▄).
@@ -563,5 +638,114 @@ mod tests {
     fn invalid_svg_fails_cleanly() {
         assert!(rasterize_svg(b"<svg not really", None, None).is_none());
         assert!(rasterize_svg(b"", None, None).is_none());
+    }
+
+    /// Tests below assert on cross-call cache state, and the cache is one
+    /// process-global map shared by every parallel test thread. Serialize
+    /// them so the eviction test's clear cannot race a hit assertion.
+    static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_cache_tests() -> std::sync::MutexGuard<'static, ()> {
+        CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Restore a file's mtime so its cache key (canonical path + mtime) is
+    /// byte-identical to an earlier load's.
+    fn set_mtime(path: &Path, mtime: SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    // Regression: the cache used to be consulted only AFTER the file was
+    // read, so every relayout re-read every image from disk. Corrupting the
+    // file while keeping its mtime (same key) proves a hit does no I/O.
+    #[test]
+    fn cache_hit_serves_decode_without_rereading_the_file() {
+        let _guard = lock_cache_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cached.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([0, 128, 255, 255]))
+            .save(&path)
+            .unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let first = load_decoded(path.to_str().unwrap(), None, ImageMode::LocalOnly, None)
+            .expect("first load decodes");
+        std::fs::write(&path, b"GARBAGE, not an image").unwrap();
+        set_mtime(&path, mtime);
+        let second = load_decoded(path.to_str().unwrap(), None, ImageMode::LocalOnly, None)
+            .expect("second load must be served from cache, not the garbage on disk");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "hit must reuse the same decode"
+        );
+    }
+
+    // Regression: failures were never cached, so every relayout retried every
+    // doomed load (a blocking network fetch per resize tick under
+    // --remote-images). A failed decode must be cached under the same
+    // path+mtime key — and a changed mtime must bust the negative entry.
+    #[test]
+    fn failed_decode_is_cached_until_the_file_changes() {
+        let _guard = lock_cache_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.png");
+        std::fs::write(&path, b"definitely not an image").unwrap();
+        let mtime = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let src = path.to_str().unwrap();
+        assert_eq!(
+            load_decoded(src, None, ImageMode::LocalOnly, None).err(),
+            Some(ImageUnavailable::Failed)
+        );
+        // Fix the file but keep the mtime: the identical key must serve the
+        // cached failure — proof the retry did no fresh read or decode.
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        set_mtime(&path, mtime);
+        assert_eq!(
+            load_decoded(src, None, ImageMode::LocalOnly, None).err(),
+            Some(ImageUnavailable::Failed)
+        );
+        // Bump the mtime: new key, and the fixed file loads for real.
+        set_mtime(&path, mtime + std::time::Duration::from_secs(2));
+        assert!(load_decoded(src, None, ImageMode::LocalOnly, None).is_ok());
+    }
+
+    #[test]
+    fn missing_file_reports_not_found_consistently() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("ghost.png");
+        let src = src.to_str().unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                load_decoded(src, None, ImageMode::LocalOnly, None).err(),
+                Some(ImageUnavailable::NotFound)
+            );
+        }
+    }
+
+    // Regression: the cache had no bound, so watch reloads and long sessions
+    // grew it without limit. Loading more distinct images than the cap must
+    // leave the map at or under the cap.
+    #[test]
+    fn cache_stays_bounded_under_many_distinct_images() {
+        let _guard = lock_cache_tests();
+        for i in 0..(IMAGE_CACHE_CAP + 8) {
+            // Distinct width per iteration → distinct data-URI text → key.
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="1"></svg>"#,
+                2048 + i
+            );
+            let uri = format!("data:image/svg+xml,{svg}");
+            assert!(load_decoded(&uri, None, ImageMode::LocalOnly, None).is_ok());
+            assert!(cache_len() <= IMAGE_CACHE_CAP, "cache exceeded its cap");
+        }
+        assert!(cache_len() > 0, "eviction must not leave the cache useless");
     }
 }
