@@ -80,6 +80,13 @@ impl Graphics {
         };
         if let Some(pt) = forced {
             picker.set_protocol_type(pt);
+        } else if picker.protocol_type() == ProtocolType::Kitty && is_iterm() {
+            // iTerm2 (3.5+) answers the kitty graphics query, but its kitty
+            // implementation lacks the unicode-placeholder mechanism the
+            // sliced kitty renderer depends on — images silently paint
+            // nothing. Its native inline-image protocol works, so prefer it
+            // whenever we're actually running under iTerm.
+            picker.set_protocol_type(ProtocolType::Iterm2);
         }
 
         let graphical = picker.protocol_type() != ProtocolType::Halfblocks;
@@ -115,6 +122,13 @@ impl Graphics {
         }
         SlicedProtocol::new(picker, image, Some(Size::new(cols, rows))).ok()
     }
+}
+
+/// Are we running under iTerm2 (locally or across ssh)? iTerm sets
+/// `TERM_PROGRAM` locally and propagates `LC_TERMINAL` over ssh.
+fn is_iterm() -> bool {
+    std::env::var("TERM_PROGRAM").is_ok_and(|v| v.contains("iTerm"))
+        || std::env::var("LC_TERMINAL").is_ok_and(|v| v.contains("iTerm"))
 }
 
 /// Given an image's pixel dimensions and the cell size, compute how many
