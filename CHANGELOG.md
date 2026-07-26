@@ -2,9 +2,41 @@
 
 ## Unreleased
 
-### Fixed
-- **Transparent image regions no longer render as black boxes.** Half-block cells are opaque, so transparency has to be composited somewhere — it now blends over the theme background instead of collapsing to black. Most SVGs, logos, and badges have transparent canvases; on light themes every one of them sat in a black rectangle.
-- **SVG `currentColor` follows the theme.** Monochrome icons (octicons, simple-icons badges) resolved `currentColor` to SVG's black default — invisible on dark terminals. The theme's foreground color is now the document color; an SVG that sets its own `color` keeps it, and theme switches re-rasterize (the color is part of the image cache key).
+A systematic bug hunt across the whole codebase: five parallel audits (Unicode/width, hand-rolled scanners, image pipeline, app state, CLI/plain) followed by fixes for everything found. 30+ fixes; every one carries a regression test.
+
+### Fixed — crashes and data loss
+- **`ink --plain … | head` no longer panics on the closed pipe.** It exits 0 quietly — fzf previews and `git` textconv (the workflows the README recommends) got a broken-pipe panic and exit 101 before.
+- **A document starting with a `---` thematic break no longer loses its first section.** The frontmatter stripper matched any later `---` (even mid-`-----`); it now requires a real `---` opener, a `---`/`...` closer on its own line, and at least one YAML-ish `key:` line in between.
+- **Stale scroll offsets can no longer blank the viewport or crash link-mode.** After any re-layout (resize, nav-back into a shrunk file) the restored offset is clamped; previously widening the window after `G` left an out-of-range offset that blanked the screen, made upward scrolling appear dead, and made `f` panic on an inverted slice.
+- **Documents beyond 65,535 rendered lines are fully reachable.** Scroll state was `u16` and wrapped: `G` landed ~6% in, the rest was unreachable, and a watch reload yanked the reader to the wrong position. All line arithmetic is `usize` now.
+
+### Fixed — rendering
+- **Emoji and ZWJ clusters no longer blow the line width.** Width accounting was per-`char` while rendering is per-cluster: a row of `⚠️` rendered 76 columns into a 40-column budget, and code-block borders jutted past the box. Wrapping, code blocks, and table labels now measure grapheme clusters (`unicode-segmentation`), and clusters are never split.
+- **Tab characters in code blocks.** Tabs expand at 4-column stops; previously `--plain` counted them 1 wide (blown borders) and the TUI dropped them entirely (tab-indented Go/Makefile code lost all indentation).
+- **Transposed-table labels** with emoji fit their column exactly instead of overflowing by up to 14 columns; table cell hard-breaking had the same per-char bug.
+- **Mermaid box borders** are sized by display width, not byte length (CJK titles skewed the top border).
+- **Bare-URL trailing punctuation** stays in the text ("see https://x.test/foo." kept its period as prose instead of deleting it).
+- **Transparent image regions no longer render as black boxes.** Half-block cells are opaque, so transparency is composited over the theme background; on light themes every transparent SVG/logo sat in a black rectangle.
+- **SVG `currentColor` follows the theme.** Monochrome icons resolved to SVG's black default — invisible on dark terminals. An SVG that sets its own `color` keeps it; theme switches re-rasterize.
+- **Graphics-mode images are no longer squeezed** by subtracting the centering margin twice — `--width narrow` on a wide terminal rendered screenshots as a 1×1-cell dot.
+- **A failed graphics encode shows a notice** in the reserved rows instead of a silent 30-row blank hole.
+
+### Fixed — scanners
+- **Wikilink fence tracking no longer inverts.** A ``` shown inside a `~~~` block flipped the scanner's state: it rewrote wikilinks *inside* code samples and skipped real ones after. Fences now track their char and length per CommonMark. Double-backtick code spans (` ``…`` `) are also respected, and output no longer gains a trailing newline.
+- **HTML attribute scanning is quote-aware.** `<img alt="pass src=here …" src="diagram.png">` loaded `here`; a `>` inside a quoted value truncated the tag (dropping the image entirely) and could corrupt SVG `currentColor` injection. A real per-character attribute scanner replaces the substring matching.
+- **`--slides` no longer shows YAML frontmatter as slide 1**, and a setext `---` heading underline no longer splits the deck mid-heading.
+- **`--slides --watch`: saving the file re-splits the deck.** Previously the whole document replaced the current slide and the deck never regained its shape.
+
+### Fixed — behavior
+- **Opening the TOC re-lays out the document** for the narrower area instead of truncating ~30 columns off every line until the next resize.
+- **Search state stays consistent.** Matches recompute on tab switches and re-layouts (highlights previously pointed at another tab's line numbers; the first `q` got swallowed by a phantom search). Match counting and highlighting now use the same per-span scan and the same lowercasing, so `[1/1]` always corresponds to something visibly highlighted.
+- **Resize is debounced (80 ms).** Dragging the terminal edge fired a full re-layout — including a deep copy and re-encode of every graphics image — per event.
+- **The image cache checks the cache before doing I/O.** Every re-layout re-read every image file from disk, and with `--remote-images` re-downloaded every remote image synchronously per resize tick. Failures are cached too (no more repeating 10s network stalls), and the cache is bounded (64 entries) instead of growing without limit across theme switches and watch reloads.
+- **`ink --plain a.md b.md` renders every file**, not silently just the first.
+- **`ink --plain docs/` fails with a clear error** instead of launching the interactive browser into the pipe.
+- **Config keys `spacing`, `toc`, and `frontmatter` now apply.** They were parsed — and written by `ink config init` — but never read.
+- **CJK-aware word counts.** A Chinese document reported "Words: 1, ~1 min"; Han and kana characters now count individually.
+- `sanitize_url` no longer lets a leading-space `" javascript:…"` URL through as scheme-less.
 
 ## 0.6.4 — 2026-07-26
 
