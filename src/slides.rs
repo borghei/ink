@@ -9,6 +9,9 @@ pub fn split_slides(source: &str) -> Vec<String> {
     let mut slides: Vec<String> = Vec::new();
     let mut current: Vec<&str> = Vec::new();
     let mut fence: Option<char> = None;
+    // Whether the previous line was blank (or absent): a `---` right under
+    // text is a setext H2 underline, not a slide break.
+    let mut prev_blank = true;
 
     for line in source.lines() {
         let trimmed = line.trim_start();
@@ -18,20 +21,23 @@ pub fn split_slides(source: &str) -> Vec<String> {
                 fence = None;
             }
             current.push(line);
+            prev_blank = line.trim().is_empty();
             continue;
         }
         if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
             fence = Some(trimmed.chars().next().unwrap());
             current.push(line);
+            prev_blank = false;
             continue;
         }
 
-        if is_break(line) {
+        if is_break(line, prev_blank) {
             slides.push(current.join("\n"));
             current.clear();
         } else {
             current.push(line);
         }
+        prev_blank = line.trim().is_empty();
     }
     slides.push(current.join("\n"));
 
@@ -49,13 +55,23 @@ pub fn split_slides(source: &str) -> Vec<String> {
 }
 
 /// A thematic break used as a slide separator: a line of only `-`, `*`, or `_`
-/// (at least 3), with no other non-space content.
-fn is_break(line: &str) -> bool {
+/// (at least 3), with no other non-space content and fewer than 4 leading
+/// spaces (4+ is indented code). A dash line directly under non-blank text is
+/// a setext H2 underline, so `---` counts only after a blank (or absent)
+/// previous line.
+fn is_break(line: &str, prev_blank: bool) -> bool {
+    let indent = line.chars().take_while(|&c| c == ' ').count();
+    if indent >= 4 {
+        return false;
+    }
     let t = line.trim();
     if t.len() < 3 {
         return false;
     }
-    for marker in ['-', '*', '_'] {
+    if t.chars().all(|c| c == '-') {
+        return prev_blank;
+    }
+    for marker in ['*', '_'] {
         if t.chars().all(|c| c == marker) {
             return true;
         }
@@ -82,6 +98,44 @@ mod tests {
         let slides = split_slides(s);
         assert_eq!(slides.len(), 1);
         assert!(slides[0].contains("still slide one"));
+    }
+
+    #[test]
+    fn setext_underline_is_not_a_break() {
+        // `---` directly under text is a setext H2 underline.
+        let s = "Heading Two\n---\n\nbody\n";
+        let slides = split_slides(s);
+        assert_eq!(slides.len(), 1);
+        assert!(slides[0].contains("Heading Two"));
+        assert!(slides[0].contains("---"));
+    }
+
+    #[test]
+    fn indented_dashes_are_not_a_break() {
+        // 4+ leading spaces is indented code, not a thematic break.
+        let s = "# A\n\n    ---\n\nstill slide one\n";
+        let slides = split_slides(s);
+        assert_eq!(slides.len(), 1);
+        assert!(slides[0].contains("still slide one"));
+    }
+
+    #[test]
+    fn rule_after_blank_line_still_breaks() {
+        let s = "para\n\n---\n\nnext\n";
+        let slides = split_slides(s);
+        assert_eq!(slides.len(), 2);
+        assert!(slides[0].contains("para"));
+        assert!(slides[1].contains("next"));
+    }
+
+    #[test]
+    fn rule_on_first_line_breaks() {
+        // Absent previous line counts as blank; the empty leading slide is
+        // dropped by the existing filter.
+        let s = "---\n\nonly slide\n";
+        let slides = split_slides(s);
+        assert_eq!(slides.len(), 1);
+        assert!(slides[0].contains("only slide"));
     }
 
     #[test]

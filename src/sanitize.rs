@@ -44,6 +44,9 @@ pub fn sanitize_url(url: &str) -> Option<String> {
     {
         return None;
     }
+    // Analyze the trimmed form: surrounding whitespace must not defeat
+    // scheme detection (" javascript:x" is still a javascript: URL).
+    let url = url.trim();
     let lower = url.to_ascii_lowercase();
     if lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:")
     {
@@ -174,6 +177,12 @@ mod tests {
         assert!(sanitize_url("javascript:alert(1)").is_none());
         assert!(sanitize_url("file:///etc/passwd").is_none());
         assert!(sanitize_url("data:text/html,x").is_none());
+        // Leading whitespace must not defeat scheme detection.
+        assert!(sanitize_url(" javascript:alert(1)").is_none());
+        assert_eq!(
+            sanitize_url(" https://example.com ").as_deref(),
+            Some("https://example.com")
+        );
         assert!(sanitize_url("https://x.com/\x1b\\\x1b]0;t\x07").is_none());
         assert!(sanitize_url("https://x.com/\x07").is_none());
     }
