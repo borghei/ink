@@ -79,6 +79,146 @@ https://example.com/a/really/long/url/that/keeps/going/way/past/any/reasonable/w
     }
 }
 
+/// 40 warning-sign emoji (VS16 clusters: 1 column per char, 2 per cluster)
+/// must stay within a 40-column budget — per-char width accounting rendered
+/// 76 columns here.
+#[test]
+fn emoji_paragraph_fits_width() {
+    let source = format!("{}\n", "⚠️".repeat(40));
+    let lines = layout(&source, 40);
+    for line in &lines {
+        assert!(
+            line_width(line) <= 40,
+            "line {} > 40: {:?}",
+            line_width(line),
+            line.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+        );
+    }
+    // Nothing may be dropped: all 40 emoji survive the wrap.
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert_eq!(all_text.matches('⚠').count(), 40);
+}
+
+/// Emoji inside a fenced code block: every box line (borders included) must be
+/// exactly the border width so the closing `│` aligns.
+#[test]
+fn emoji_code_block_borders_align() {
+    let source = format!("```\n{}\n```\n", "⚠️".repeat(30));
+    let lines = layout(&source, 40);
+    let box_lines: Vec<&ink_md::layout::StyledLine> = lines
+        .iter()
+        .filter(|l| l.spans.iter().any(|s| s.text.contains(['│', '╭', '╰'])))
+        .collect();
+    assert!(box_lines.len() >= 3, "expected a full code box");
+    for line in box_lines {
+        assert_eq!(
+            line_width(line),
+            40,
+            "misaligned box line: {:?}",
+            line.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+        );
+    }
+}
+
+/// Tab-indented code (the Go convention) must expand to spaces at 4-column
+/// stops: visible indentation, aligned box borders, no raw `\t` in the output.
+#[test]
+fn tabs_in_code_blocks_expand_to_spaces() {
+    let source = "```go\nfunc main() {\n\tfmt.Println(\"hi\")\n}\n```\n";
+    let lines = layout(source, 60);
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(!all_text.contains('\t'), "tabs must be expanded");
+    assert!(
+        all_text.contains("    fmt.Println"),
+        "indentation must stay visible: {all_text:?}"
+    );
+    for line in lines
+        .iter()
+        .filter(|l| l.spans.iter().any(|s| s.text.contains(['│', '╭', '╰'])))
+    {
+        assert_eq!(
+            line_width(line),
+            60,
+            "misaligned box line: {:?}",
+            line.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+        );
+    }
+}
+
+/// Punctuation trimmed off the end of a bare URL is not part of the link, but
+/// it is part of the sentence — it must remain in the rendered text.
+#[test]
+fn url_trailing_punctuation_stays_in_text() {
+    let lines = layout("Visit https://example.com/foo. Done\n", 80);
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(
+        all_text.contains("https://example.com/foo. Done"),
+        "trailing '.' was deleted from the text: {all_text:?}"
+    );
+    let link = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.style.link_url.is_some())
+        .expect("bare URL should become a link");
+    assert_eq!(
+        link.style.link_url.as_deref(),
+        Some("https://example.com/foo")
+    );
+    assert_eq!(link.text, "https://example.com/foo");
+}
+
+/// Graphics-mode images size to the full content width: `ctx.width` is
+/// already the content width and the centering margin is applied through
+/// `col_offset`, so subtracting the margin again shrank every image.
+#[test]
+fn graphics_image_spans_full_content_width() {
+    let dir = tempfile::tempdir().unwrap();
+    let wide_svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="40">
+  <rect width="800" height="40" fill="lime" /></svg>"##;
+    std::fs::write(dir.path().join("wide.svg"), wide_svg).unwrap();
+    let arena = Arena::new();
+    let root = parse_document(&arena, "![wide](wide.svg)\n", &parser::options());
+    let theme = resolve_theme("dark");
+    let result = layout_document(
+        root,
+        &theme,
+        40,
+        Spacing::Normal,
+        10, // centering margin
+        Some(dir.path()),
+        ink_md::image::ImageMode::LocalOnly,
+        Some((8, 16)), // graphics mode, 8x16 px cells
+    );
+    assert_eq!(result.images.len(), 1);
+    let spec = &result.images[0];
+    assert_eq!(spec.col_offset, 10, "margin arrives via col_offset");
+    assert_eq!(
+        spec.cols, 40,
+        "a wide image must fill the content width, not width - margin"
+    );
+}
+
 #[test]
 fn heading_text_present() {
     let lines = layout("# Alpha Heading\n\nbody\n", 80);
