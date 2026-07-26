@@ -61,8 +61,55 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
 
-  release:
+  # Package the Linux binaries as .deb/.rpm so apt/dnf users get a real
+  # install (binary in PATH, clean uninstall) instead of a bare binary. Runs
+  # before `release` so SHA256SUMS covers the packages too.
+  packages:
     needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Install nfpm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo goreleaser/nfpm --json tagName -q .tagName)
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/${tag}/nfpm_${tag#v}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+
+      - name: Build deb and rpm packages
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          for pair in "amd64:ink-linux-amd64" "arm64:ink-linux-arm64"; do
+            ARCH="${pair%%:*}"
+            BINARY="${pair##*:}"
+            # nfpm does not expand env vars in `contents.src`, so stage the
+            # arch-specific artifact under the fixed name nfpm.yaml expects.
+            cp "$BINARY" ink
+            chmod +x ink
+            for fmt in deb rpm; do
+              VERSION="$VERSION" ARCH="$ARCH" \
+                nfpm package -f packaging/nfpm.yaml -p "$fmt"
+            done
+          done
+          rm -f ink
+          ls -l ink-md*
+
+      - name: Upload package artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: |
+            ink-md*.deb
+            ink-md*.rpm
+
+  release:
+    needs: [build, packages]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -79,6 +126,27 @@ jobs:
             ink-*
             SHA256SUMS
           generate_release_notes: true
+
+  # Publish the crate so `cargo install ink-md` (and mise's cargo backend)
+  # track releases instead of going stale (issue #4: crates.io sat at 0.2.1
+  # while binaries reached 0.6.x). Skips cleanly when the token secret is
+  # absent; never fails the release — the binaries have already published.
+  crates:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Publish to crates.io
+        continue-on-error: true
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: |
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo "No CRATES_IO_TOKEN secret — skipping crates.io publish."
+            exit 0
+          fi
+          cargo publish
 
   # Bump the Homebrew tap formula in the same run. Chaining via `needs` (rather
   # than a `release: published` trigger on homebrew.yml) is deliberate: releases

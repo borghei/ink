@@ -1,6 +1,6 @@
 [package]
 name = "ink-md"
-version = "0.6.3"
+version = "0.6.4"
 edition = "2021"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
 description = "The most advanced terminal markdown reader"
@@ -85,3 +85,22 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# cargo-binstall: fetch the prebuilt release binary instead of compiling.
+[package.metadata.binstall]
+pkg-fmt = "bin"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-amd64"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-arm64"
+
+[package.metadata.binstall.overrides.x86_64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-macos-amd64"
+
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-macos-arm64"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-windows-amd64.exe"

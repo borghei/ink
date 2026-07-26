@@ -37,7 +37,24 @@ brew install ink
 ### Cargo
 
 ```bash
-cargo install ink-md
+cargo install ink-md        # build from source
+cargo binstall ink-md       # or grab the prebuilt binary (needs cargo-binstall)
+```
+
+### mise
+
+```bash
+mise use -g cargo:ink-md    # via crates.io
+mise use -g ubi:borghei/ink # or straight from GitHub releases
+```
+
+### Debian / Ubuntu (.deb) and Fedora / openSUSE (.rpm)
+
+Download from the [releases page](https://github.com/borghei/ink/releases), then:
+
+```bash
+sudo apt install ./ink-md_*_amd64.deb    # Debian/Ubuntu
+sudo dnf install ./ink-md-*.x86_64.rpm   # Fedora/openSUSE
 ```
 
 ### Scoop (Windows)
@@ -49,7 +66,7 @@ scoop install ink
 
 ### Pre-built binaries
 
-Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases). Available for Linux (amd64, arm64), macOS (amd64, arm64), and Windows (amd64).
+Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases). Available for Linux (amd64, arm64), macOS (amd64, arm64), and Windows (amd64); `SHA256SUMS` is published alongside.
 
 ### From source
 

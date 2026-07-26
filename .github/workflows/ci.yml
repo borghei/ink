@@ -40,6 +40,44 @@ jobs:
           components: rustfmt
       - run: cargo fmt --check
 
+  # The nfpm config is otherwise only exercised at tag time, where a mistake
+  # breaks a release instead of a PR. Build all four packages from a stub
+  # binary and install/remove the deb to prove the layout still works.
+  packaging:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install nfpm
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --repo goreleaser/nfpm --json tagName -q .tagName)
+          curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/${tag}/nfpm_${tag#v}_amd64.deb" -o /tmp/nfpm.deb
+          sudo dpkg -i /tmp/nfpm.deb
+
+      - name: Build deb and rpm for both arches
+        run: |
+          set -euo pipefail
+          printf '#!/bin/sh\necho stub\n' > ink
+          chmod +x ink
+          for arch in amd64 arm64; do
+            for fmt in deb rpm; do
+              VERSION=0.0.0 ARCH="$arch" nfpm package -f packaging/nfpm.yaml -p "$fmt"
+            done
+          done
+          rm -f ink
+          count=$(ls ink-md*.deb ink-md*.rpm | wc -l)
+          [ "$count" -eq 4 ] || { echo "expected 4 packages, got $count"; exit 1; }
+
+      - name: Install and remove the deb
+        run: |
+          set -euo pipefail
+          sudo dpkg -i ink-md_0.0.0_amd64.deb
+          command -v ink
+          dpkg -L ink-md
+          sudo dpkg -r ink-md
+
   audit:
     runs-on: ubuntu-latest
     permissions:

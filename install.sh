@@ -5,7 +5,8 @@
 set -e
 
 REPO="borghei/ink"
-INSTALL_DIR="/usr/local/bin"
+# Override with e.g. INK_INSTALL_DIR="$HOME/.local/bin" to skip the sudo step.
+INSTALL_DIR="${INK_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture
 OS="$(uname -s)"

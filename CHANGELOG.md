@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.4 — 2026-07-26
+
+Packaging only — the renderer is byte-for-byte 0.6.3.
+
+### Packaging ([#4](https://github.com/borghei/ink/issues/4))
+- **`.deb` and `.rpm` packages** (amd64 + arm64) are now built and attached to every release, covered by `SHA256SUMS` — `sudo apt install ./ink-md_*.deb` / `sudo dnf install ./ink-md-*.rpm`. They install `ink` to `/usr/bin` and uninstall cleanly.
+- **crates.io is published automatically on release** (it had been stale at 0.2.1 while binaries reached 0.6.x), so `cargo install ink-md` and `mise use cargo:ink-md` track releases again.
+- **`cargo binstall ink-md`** now fetches the prebuilt binary instead of compiling.
+- **`install.sh` accepts `INK_INSTALL_DIR`** — set `INK_INSTALL_DIR="$HOME/.local/bin"` to install without `sudo`.
+- README documents all install paths, including `mise` (`cargo:` and `ubi:` backends).
+
 ## 0.6.3 — 2026-07-26
 
 Also carries the 0.6.2 robustness fixes below: 0.6.2 was tagged in the source

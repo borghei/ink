@@ -1,0 +1,31 @@
+# nfpm config — builds the .deb/.rpm release packages (see release.yml).
+# Package name is ink-md (matching the crate) because Debian already ships an
+# unrelated `ink` (printer ink levels); the installed binary is still `ink`.
+name: ink-md
+arch: "${ARCH}"
+platform: linux
+version: "${VERSION}"
+section: utils
+priority: optional
+maintainer: "Amin Borghei <borghei.mohammadamin@gmail.com>"
+description: |
+  The most advanced terminal markdown reader.
+  Renders markdown in the terminal with themes, inline images
+  (Kitty/iTerm2/Sixel graphics or Unicode half-blocks), syntax-highlighted
+  code, tables, search, a table of contents, and a file browser.
+vendor: "Amin Borghei"
+homepage: "https://github.com/borghei/ink"
+license: "Freeware"
+contents:
+  # nfpm expands env vars in scalar fields like `arch`/`version`, but NOT in
+  # `contents.src` — that is treated as a literal glob. So the workflow copies
+  # the per-arch artifact (ink-linux-amd64 / ink-linux-arm64) to this fixed
+  # name before packaging instead of templating the source path here.
+  - src: "./ink"
+    dst: /usr/bin/ink
+    file_info:
+      mode: 0755
+  - src: ./LICENSE
+    dst: /usr/share/doc/ink-md/LICENSE
+  - src: ./README.md
+    dst: /usr/share/doc/ink-md/README.md
