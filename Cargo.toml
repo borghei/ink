@@ -71,6 +71,10 @@ resvg = { version = "0.47", default-features = false, features = ["text", "syste
 # data: URI images embedded in documents (notebook/HTML exports)
 base64 = "0.22"
 
+# gunzip .svgz so currentColor theming can edit the SVG text (usvg would
+# decompress internally, but only after we've lost the chance to inject)
+flate2 = "1"
+
 # Cross-platform file watching for --watch (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows)
 notify = "8"
 

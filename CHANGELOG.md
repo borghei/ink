@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`.svgz` gets `currentColor` theming too** — the gzip layer is now decompressed (with a decompression-bomb cap) before the theme color is injected, so gzipped monochrome icons follow the theme like plain `.svg`.
+- **A broken or unknown `--theme` warns on stderr** ("falling back to 'dark'") instead of silently ignoring the request.
+- **Percent-encoded binary `data:` URIs decode** — the payload decoder is byte-level now, so a percent-encoded PNG works, not just UTF-8 SVG text.
+
+### Docs
+- README documents the security model (untrusted-input handling, why local image paths are safe to read, remote images opt-in) and warns Windows authors that markdown eats `\.` in paths like `C:\pics\.cache\x.png` — use forward slashes.
+
 ## 0.6.5 — 2026-07-26
 
 A systematic bug hunt across the whole codebase: five parallel audits (Unicode/width, hand-rolled scanners, image pipeline, app state, CLI/plain) followed by fixes for everything found. 30+ fixes; every one carries a regression test.

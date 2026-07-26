@@ -86,3 +86,44 @@ fn svg_embedding_svg_renders() {
     let p = img.get_pixel(w / 2, h / 2);
     assert_eq!((p[0], p[1], p[2], p[3]), (255, 0, 0, 255));
 }
+
+// Gzipped .svgz gets currentColor theming too (the injector needs to see the
+// markup, so the gzip layer is decompressed first).
+#[test]
+fn svgz_gets_current_color_theming() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">
+         <rect width="10" height="10" fill="currentColor"/></svg>"#;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(svg.as_bytes()).unwrap();
+    std::fs::write(dir.path().join("z.svgz"), enc.finish().unwrap()).unwrap();
+    let img = load_decoded(
+        "z.svgz",
+        Some(dir.path()),
+        ImageMode::LocalOnly,
+        Some("#e0e0e0"),
+    )
+    .expect("svgz loads");
+    let (w, h) = img.dimensions();
+    let p = img.get_pixel(w / 2, h / 2);
+    assert_eq!(
+        (p[0], p[1], p[2]),
+        (0xe0, 0xe0, 0xe0),
+        "svgz follows theme fg"
+    );
+}
+
+// Percent-encoded data URIs may carry binary payloads (a raw PNG), which are
+// not valid UTF-8 — decoding must be byte-level.
+#[test]
+fn percent_encoded_binary_data_uri_loads() {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 8, 7, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let encoded: String = png.iter().map(|b| format!("%{b:02X}")).collect();
+    let uri = format!("data:image/png,{encoded}");
+    let img = load_decoded(&uri, None, ImageMode::LocalOnly, None).expect("binary data uri");
+    assert_eq!(img.dimensions(), (2, 2));
+}

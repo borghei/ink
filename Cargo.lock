@@ -1532,6 +1532,7 @@ dependencies = [
  "comrak",
  "crossterm 0.28.1",
  "dirs",
+ "flate2",
  "image",
  "insta",
  "notify",

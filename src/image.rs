@@ -151,6 +151,14 @@ fn rasterize_svg(
 ) -> Option<DynamicImage> {
     use resvg::{tiny_skia, usvg};
 
+    // Gzipped .svgz must be decompressed before the color injection can see
+    // the markup (usvg would gunzip internally, but too late for us).
+    let gunzipped = if bytes.starts_with(&[0x1f, 0x8b]) {
+        gunzip_capped(bytes)
+    } else {
+        None
+    };
+    let bytes = gunzipped.as_deref().unwrap_or(bytes);
     let injected = current_color.and_then(|c| inject_current_color(bytes, c));
     let bytes = injected.as_deref().unwrap_or(bytes);
     let opt = usvg::Options {
@@ -210,6 +218,17 @@ fn inject_current_color(bytes: &[u8], color: &str) -> Option<Vec<u8>> {
     out.push_str(&format!(" color=\"{color}\""));
     out.push_str(&text[insert_at..]);
     Some(out.into_bytes())
+}
+
+/// Decompress gzip input with a hard output cap (decompression-bomb guard:
+/// a tiny .svgz must not expand into gigabytes).
+fn gunzip_capped(bytes: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Read;
+    const GUNZIP_CAP: u64 = 64 * 1024 * 1024;
+    let mut out = Vec::new();
+    let mut reader = flate2::read::GzDecoder::new(bytes).take(GUNZIP_CAP + 1);
+    reader.read_to_end(&mut out).ok()?;
+    (out.len() as u64 <= GUNZIP_CAP).then_some(out)
 }
 
 /// Index of the root tag's closing `>` — quote-aware, so a `>` inside a
@@ -317,6 +336,28 @@ fn fetch_bytes(
     }
 }
 
+/// Byte-level `%XX` decoding for data-URI payloads — unlike path decoding,
+/// the result may legitimately be binary (a percent-encoded PNG), so this
+/// never round-trips through UTF-8. Malformed escapes pass through.
+fn percent_decode_bytes(s: &str) -> Vec<u8> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    out
+}
+
 /// Decode the remainder of a `data:` URI (`[<mediatype>][;base64],<payload>`).
 fn decode_data_uri(rest: &str) -> Option<Vec<u8>> {
     use base64::Engine;
@@ -326,9 +367,7 @@ fn decode_data_uri(rest: &str) -> Option<Vec<u8>> {
             .decode(payload.trim().as_bytes())
             .ok()?
     } else {
-        crate::sanitize::percent_decode(payload)
-            .map(String::into_bytes)
-            .unwrap_or_else(|| payload.as_bytes().to_vec())
+        percent_decode_bytes(payload)
     };
     (bytes.len() as u64 <= crate::net::IMAGE_FETCH_CAP).then_some(bytes)
 }

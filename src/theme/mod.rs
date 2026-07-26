@@ -95,6 +95,18 @@ pub struct ThemeColors {
 }
 
 /// Resolve a theme by name. Checks built-in themes first, then user config dir.
+/// A broken or unknown theme falls back to `dark`, but silently doing so
+/// left users debugging "why does my theme do nothing". Warn once per
+/// process, on stderr, before the TUI owns the terminal (resolve_theme is
+/// called on every draw, so once matters).
+fn warn_theme_fallback_once(name: &str, reason: &str) {
+    use std::sync::Once;
+    static WARNED: Once = Once::new();
+    WARNED.call_once(|| {
+        eprintln!("ink: theme '{name}' could not be loaded ({reason}), falling back to 'dark'");
+    });
+}
+
 pub fn resolve_theme(name: &str) -> Theme {
     if name == "auto" {
         let is_dark = detect::is_dark_background();
@@ -122,11 +134,15 @@ pub fn resolve_theme(name: &str) -> Theme {
                     .join("themes")
                     .join(format!("{name}.toml"));
                 if theme_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&theme_path) {
-                        if let Ok(theme) = toml::from_str(&content) {
-                            return theme;
-                        }
+                    match std::fs::read_to_string(&theme_path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|c| toml::from_str(&c).map_err(|e| e.to_string()))
+                    {
+                        Ok(theme) => return theme,
+                        Err(e) => warn_theme_fallback_once(name, &e),
                     }
+                } else {
+                    warn_theme_fallback_once(name, "no such builtin or theme file");
                 }
             }
             // Fallback to dark

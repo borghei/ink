@@ -355,6 +355,21 @@ Subcommands:
 | Themes | 8 | 2 | 0 | 0 |
 | Single binary | Yes | Yes | Yes | No |
 
+## Security model
+
+ink treats every document as untrusted input: control bytes and escape
+sequences are stripped before anything reaches the terminal, link schemes are
+restricted to `http`/`https`/`mailto`, and remote image fetching is **off by
+default** (`--remote-images` opts in). Local images referenced by a document
+— absolute paths included — are read and rendered, but only ever as pixels:
+image bytes must decode as an image and are never shown as text, so a hostile
+document cannot use an image tag to put file *contents* on screen.
+
+**Note for Windows authors:** markdown treats `\` as an escape character, so
+a path like `C:\pics\.cache\x.png` loses its separators in any CommonMark
+renderer. Write image paths with forward slashes (`C:/pics/.cache/x.png`) —
+they work everywhere, including on Windows.
+
 ## Contributing
 
 Contributions are welcome. Check out [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

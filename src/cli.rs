@@ -238,6 +238,10 @@ pub fn run() -> Result<()> {
         cli.theme.clone()
     };
 
+    // Resolve once now, while stderr still reaches the user: a broken or
+    // unknown theme warns here instead of inside the alternate screen.
+    let _ = theme::resolve_theme(&theme);
+
     let args = Args {
         inputs: cli.input.clone(),
         theme,
