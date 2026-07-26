@@ -127,23 +127,21 @@ pub fn resolve_theme(name: &str) -> Theme {
         "gruvbox" => builtin::gruvbox(),
         "solarized" => builtin::solarized(),
         _ => {
-            // Try loading from user config directory
-            if let Some(config_dir) = dirs::config_dir() {
-                let theme_path = config_dir
-                    .join("ink")
-                    .join("themes")
-                    .join(format!("{name}.toml"));
-                if theme_path.exists() {
-                    match std::fs::read_to_string(&theme_path)
-                        .map_err(|e| e.to_string())
-                        .and_then(|c| toml::from_str(&c).map_err(|e| e.to_string()))
-                    {
-                        Ok(theme) => return theme,
-                        Err(e) => warn_theme_fallback_once(name, &e),
-                    }
-                } else {
-                    warn_theme_fallback_once(name, "no such builtin or theme file");
-                }
+            // Try loading from the user config directory. Note the warning is
+            // emitted on every path out of here, including "this platform has
+            // no config dir" — a mistyped theme must never fail silently.
+            let theme_path = dirs::config_dir()
+                .map(|d| d.join("ink").join("themes").join(format!("{name}.toml")))
+                .filter(|p| p.exists());
+            match theme_path {
+                Some(path) => match std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|c| toml::from_str(&c).map_err(|e| e.to_string()))
+                {
+                    Ok(theme) => return theme,
+                    Err(e) => warn_theme_fallback_once(name, &e),
+                },
+                None => warn_theme_fallback_once(name, "no such builtin or theme file"),
             }
             // Fallback to dark
             builtin::dark()
