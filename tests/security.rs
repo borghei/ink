@@ -85,14 +85,32 @@ fn image_paths_may_be_read_but_never_surface_as_text() {
     // the screen — always as pixels, never as text. A hostile document
     // pointing an image at a text file gets a clean failure, not the contents.
     use ink_md::image::{load_decoded, ImageMode, ImageUnavailable};
-    let dir = tempfile::tempdir().unwrap();
+    let doc_dir = tempfile::tempdir().unwrap();
+    let elsewhere = tempfile::tempdir().unwrap();
+    // A readable text file outside the document's directory, named by absolute
+    // path — exactly what a hostile document would point an image at. (Not a
+    // fixed system path like /etc/hosts: that does not exist on Windows, where
+    // the miss would look like this assertion passing for the wrong reason.)
+    let secret = elsewhere.path().join("secret.txt");
+    std::fs::write(&secret, "TOP-SECRET-CONTENTS").unwrap();
     assert_eq!(
-        load_decoded("/etc/hosts", Some(dir.path()), ImageMode::LocalOnly).err(),
-        Some(ImageUnavailable::Failed)
+        load_decoded(
+            secret.to_str().unwrap(),
+            Some(doc_dir.path()),
+            ImageMode::LocalOnly
+        )
+        .err(),
+        Some(ImageUnavailable::Failed),
+        "a text file must fail to decode, so its contents never reach the screen"
     );
     // A directory target fails cleanly too.
     assert_eq!(
-        load_decoded("/etc", Some(dir.path()), ImageMode::LocalOnly).err(),
+        load_decoded(
+            elsewhere.path().to_str().unwrap(),
+            Some(doc_dir.path()),
+            ImageMode::LocalOnly
+        )
+        .err(),
         Some(ImageUnavailable::NotFound)
     );
 }
