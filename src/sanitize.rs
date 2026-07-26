@@ -223,9 +223,17 @@ mod tests {
         let resolved =
             resolve_local(base, "pic.png#gh-light-mode-only").expect("fragment stripped");
         assert!(resolved.ends_with("pic.png"));
-        // A file literally named with the suffix wins over stripping.
-        std::fs::write(base.join("odd.png?v=2"), "x").unwrap();
-        let resolved = resolve_local(base, "odd.png?v=2").unwrap();
-        assert!(resolved.ends_with("odd.png?v=2"));
+        // A file literally named with the suffix wins over stripping. '#' is
+        // a legal filename character everywhere; '?' is not — Win32 rejects it
+        // outright, so that half of the check only runs off Windows.
+        std::fs::write(base.join("odd.png#v2"), "x").unwrap();
+        let resolved = resolve_local(base, "odd.png#v2").unwrap();
+        assert!(resolved.ends_with("odd.png#v2"));
+        #[cfg(not(windows))]
+        {
+            std::fs::write(base.join("odd.png?v=2"), "x").unwrap();
+            let resolved = resolve_local(base, "odd.png?v=2").unwrap();
+            assert!(resolved.ends_with("odd.png?v=2"));
+        }
     }
 }
