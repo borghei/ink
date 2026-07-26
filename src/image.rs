@@ -27,17 +27,33 @@ fn cache() -> &'static Mutex<ImageCache> {
 }
 
 /// Load and decode an image (via the cache), ready for half-block rendering.
+///
+/// `svg_color` is the theme's foreground color: SVG `currentColor` resolves
+/// to it, so monochrome icons (octicons, simple-icons badges) follow the
+/// theme instead of defaulting to black — invisible on dark terminals.
 pub fn load_decoded(
     src: &str,
     base_dir: Option<&Path>,
     mode: ImageMode,
+    svg_color: Option<&str>,
 ) -> Result<Arc<DynamicImage>, ImageUnavailable> {
-    let (key, bytes, resource_dir) = load_bytes_with_key(src, base_dir, mode)?;
+    let (mut key, bytes, resource_dir) = load_bytes_with_key(src, base_dir, mode)?;
+    let svg = is_svg(src, &bytes);
+    if svg {
+        // The rasterization bakes the currentColor in, so a theme change must
+        // miss the cache and re-rasterize.
+        if let Some(color) = svg_color {
+            key = format!("{key}|color:{color}");
+        }
+    }
     if let Some(img) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
         return Ok(img);
     }
-    let decoded = if is_svg(src, &bytes) {
-        Arc::new(rasterize_svg(&bytes, resource_dir.as_deref()).ok_or(ImageUnavailable::Failed)?)
+    let decoded = if svg {
+        Arc::new(
+            rasterize_svg(&bytes, resource_dir.as_deref(), svg_color)
+                .ok_or(ImageUnavailable::Failed)?,
+        )
     } else {
         Arc::new(decode_raster(&bytes).ok_or(ImageUnavailable::Failed)?)
     };
@@ -93,10 +109,18 @@ fn svg_fontdb() -> Arc<resvg::usvg::fontdb::Database> {
 
 /// Rasterize an SVG document to a pixel image via resvg. Returns `None` on
 /// parse failure or degenerate dimensions. `resources_dir` anchors relative
-/// `<image href>` references (for local files, the SVG's own directory).
-fn rasterize_svg(bytes: &[u8], resources_dir: Option<&Path>) -> Option<DynamicImage> {
+/// `<image href>` references (for local files, the SVG's own directory);
+/// `current_color` becomes the document's `color`, so `currentColor` fills
+/// and strokes follow the theme.
+fn rasterize_svg(
+    bytes: &[u8],
+    resources_dir: Option<&Path>,
+    current_color: Option<&str>,
+) -> Option<DynamicImage> {
     use resvg::{tiny_skia, usvg};
 
+    let injected = current_color.and_then(|c| inject_current_color(bytes, c));
+    let bytes = injected.as_deref().unwrap_or(bytes);
     let opt = usvg::Options {
         fontdb: svg_fontdb(),
         resources_dir: resources_dir.map(Path::to_path_buf),
@@ -126,6 +150,34 @@ fn rasterize_svg(bytes: &[u8], resources_dir: Option<&Path>) -> Option<DynamicIm
     Some(DynamicImage::ImageRgba8(image::RgbaImage::from_raw(
         w, h, rgba,
     )?))
+}
+
+/// Set the SVG root's `color` presentation attribute so `currentColor`
+/// resolves to the theme foreground. Skipped when the document sets its own
+/// `color`, when the color string isn't a plain hex value (it is spliced
+/// into markup), or for non-UTF-8 input (gzipped `.svgz`).
+fn inject_current_color(bytes: &[u8], color: &str) -> Option<Vec<u8>> {
+    if !color.chars().all(|c| c == '#' || c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let text = std::str::from_utf8(bytes).ok()?;
+    let start = text.find("<svg")?;
+    let end = start + text[start..].find('>')?;
+    // Conservative: any `color=`-ish content in the root tag (including
+    // style="color:…") means the author chose, so leave it alone.
+    if text[start..end].contains("color") {
+        return None;
+    }
+    let insert_at = if text[..end].ends_with('/') {
+        end - 1
+    } else {
+        end
+    };
+    let mut out = String::with_capacity(text.len() + 24);
+    out.push_str(&text[..insert_at]);
+    out.push_str(&format!(" color=\"{color}\""));
+    out.push_str(&text[insert_at..]);
+    Some(out.into_bytes())
 }
 
 /// Resolve `src`, returning a cache key, the raw bytes to decode, and (for
@@ -250,13 +302,24 @@ pub fn load_image(
 /// Each character cell represents 2 vertical pixels: the top pixel uses the background
 /// color and the bottom pixel uses the foreground color of the `▄` character.
 ///
+/// Cells are opaque, so transparency must be composited here: each pixel is
+/// alpha-blended over `bg` (the theme background). Without this, transparent
+/// regions — most SVGs, logos, badges — render as solid black boxes.
+///
 /// Returns `None` if the image has zero dimensions.
 pub fn render_halfblock(
     img: &DynamicImage,
     max_width: usize,
     margin: usize,
+    bg: (u8, u8, u8),
 ) -> Option<Vec<StyledLine>> {
     use image::GenericImageView;
+
+    let blend = |p: image::Rgba<u8>| -> (u8, u8, u8) {
+        let a = p[3] as u32;
+        let over = |c: u8, b: u8| ((c as u32 * a + b as u32 * (255 - a)) / 255) as u8;
+        (over(p[0], bg.0), over(p[1], bg.1), over(p[2], bg.2))
+    };
 
     let (w, h) = img.dimensions();
 
@@ -296,21 +359,19 @@ pub fn render_halfblock(
         }
 
         for x in 0..target_w {
-            let top = resized.get_pixel(x, y);
+            let top = blend(resized.get_pixel(x, y));
             let bottom = if y + 1 < target_h {
-                resized.get_pixel(x, y + 1)
+                blend(resized.get_pixel(x, y + 1))
             } else {
-                image::Rgba([0, 0, 0, 255])
+                // Padding row past the image edge: pure background.
+                bg
             };
 
             line.push(StyledSpan {
                 text: "▄".to_string(),
                 style: SpanStyle {
-                    fg: Some(format!(
-                        "#{:02x}{:02x}{:02x}",
-                        bottom[0], bottom[1], bottom[2]
-                    )),
-                    bg: Some(format!("#{:02x}{:02x}{:02x}", top[0], top[1], top[2])),
+                    fg: Some(format!("#{:02x}{:02x}{:02x}", bottom.0, bottom.1, bottom.2)),
+                    bg: Some(format!("#{:02x}{:02x}{:02x}", top.0, top.1, top.2)),
                     ..Default::default()
                 },
             });
@@ -353,7 +414,7 @@ mod tests {
 
     #[test]
     fn svg_rasterizes_scaled_up_with_lime_rect() {
-        let img = rasterize_svg(SAMPLE_SVG.as_bytes(), None).expect("svg should rasterize");
+        let img = rasterize_svg(SAMPLE_SVG.as_bytes(), None, None).expect("svg should rasterize");
         // 120x120 doc scaled up to the raster target, aspect preserved.
         let (w, h) = img.dimensions();
         assert_eq!((w, h), (1024, 1024));
@@ -370,7 +431,7 @@ mod tests {
     fn svg_loads_end_to_end_through_load_decoded() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("pic.svg"), SAMPLE_SVG).unwrap();
-        let img = load_decoded("pic.svg", Some(dir.path()), ImageMode::LocalOnly)
+        let img = load_decoded("pic.svg", Some(dir.path()), ImageMode::LocalOnly, None)
             .expect("load_decoded should rasterize svg");
         assert!(img.dimensions().0 > 0);
     }
@@ -389,6 +450,7 @@ mod tests {
             svg_path.to_str().unwrap(),
             Some(doc_dir.path()),
             ImageMode::LocalOnly,
+            None,
         )
         .expect("absolute image path should load");
         assert!(img.dimensions().0 > 0);
@@ -403,6 +465,7 @@ mod tests {
             "../pic.svg",
             Some(&dir.path().join("docs")),
             ImageMode::LocalOnly,
+            None,
         )
         .expect("parent-relative image path should load");
         assert!(img.dimensions().0 > 0);
@@ -413,13 +476,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("my pic.svg"), SAMPLE_SVG).unwrap();
         // Markdown destinations percent-encode spaces.
-        assert!(load_decoded("my%20pic.svg", Some(dir.path()), ImageMode::LocalOnly).is_ok());
+        assert!(load_decoded("my%20pic.svg", Some(dir.path()), ImageMode::LocalOnly, None).is_ok());
         // file:// URLs resolve as local paths (percent-encoded, like real file URLs).
         let url = format!("file://{}/my%20pic.svg", dir.path().display());
-        assert!(load_decoded(&url, Some(dir.path()), ImageMode::LocalOnly).is_ok());
+        assert!(load_decoded(&url, Some(dir.path()), ImageMode::LocalOnly, None).is_ok());
         // Missing files report NotFound, not a generic failure.
         assert_eq!(
-            load_decoded("nope.svg", Some(dir.path()), ImageMode::LocalOnly).err(),
+            load_decoded("nope.svg", Some(dir.path()), ImageMode::LocalOnly, None).err(),
             Some(ImageUnavailable::NotFound)
         );
     }
@@ -429,7 +492,7 @@ mod tests {
         use base64::Engine;
         let b64 = base64::engine::general_purpose::STANDARD.encode(SAMPLE_SVG);
         let uri = format!("data:image/svg+xml;base64,{b64}");
-        let img = load_decoded(&uri, None, ImageMode::LocalOnly).expect("base64 data uri");
+        let img = load_decoded(&uri, None, ImageMode::LocalOnly, None).expect("base64 data uri");
         assert!(img.dimensions().0 > 0);
         // Percent-encoded (non-base64) payloads work too.
         let encoded: String = SAMPLE_SVG
@@ -441,11 +504,17 @@ mod tests {
             })
             .collect();
         let uri = format!("data:image/svg+xml,{encoded}");
-        let img = load_decoded(&uri, None, ImageMode::LocalOnly).expect("plain data uri");
+        let img = load_decoded(&uri, None, ImageMode::LocalOnly, None).expect("plain data uri");
         assert!(img.dimensions().0 > 0);
         // Garbage payloads fail cleanly.
         assert_eq!(
-            load_decoded("data:image/png;base64,!!!", None, ImageMode::LocalOnly).err(),
+            load_decoded(
+                "data:image/png;base64,!!!",
+                None,
+                ImageMode::LocalOnly,
+                None
+            )
+            .err(),
             Some(ImageUnavailable::Failed)
         );
     }
@@ -461,6 +530,7 @@ mod tests {
             path.to_str().unwrap(),
             Some(dir.path()),
             ImageMode::LocalOnly,
+            None,
         )
         .expect("png decodes");
         assert_eq!(img.dimensions(), (3, 2));
@@ -476,7 +546,7 @@ mod tests {
   <image href="side.png" x="0" y="0" width="8" height="8"/>
 </svg>"#;
         std::fs::write(dir.path().join("embed.svg"), svg).unwrap();
-        let img = load_decoded("embed.svg", Some(dir.path()), ImageMode::LocalOnly)
+        let img = load_decoded("embed.svg", Some(dir.path()), ImageMode::LocalOnly, None)
             .expect("svg with embedded raster");
         // The referenced PNG's red pixels must appear — blank output means the
         // raster-images feature or resources_dir anchoring regressed.
@@ -491,7 +561,7 @@ mod tests {
 
     #[test]
     fn invalid_svg_fails_cleanly() {
-        assert!(rasterize_svg(b"<svg not really", None).is_none());
-        assert!(rasterize_svg(b"", None).is_none());
+        assert!(rasterize_svg(b"<svg not really", None, None).is_none());
+        assert!(rasterize_svg(b"", None, None).is_none());
     }
 }

@@ -552,26 +552,28 @@ fn image_block_lines(
         });
         vec![line]
     };
-    let image_data = match crate::image::load_decoded(url, ctx.base_dir, ctx.images) {
-        Ok(data) => data,
-        Err(crate::image::ImageUnavailable::RemoteBlocked) => {
-            return placeholder("remote image — pass --remote-images to load".into());
-        }
-        Err(crate::image::ImageUnavailable::NotFound) => {
-            return placeholder(if alt.is_empty() {
-                "image not found".into()
-            } else {
-                format!("image not found: {url}")
-            });
-        }
-        Err(crate::image::ImageUnavailable::Failed) => {
-            return placeholder(if alt.is_empty() {
-                "cannot decode image".into()
-            } else {
-                format!("cannot decode image: {url}")
-            });
-        }
-    };
+    let image_data =
+        match crate::image::load_decoded(url, ctx.base_dir, ctx.images, Some(&ctx.theme.colors.fg))
+        {
+            Ok(data) => data,
+            Err(crate::image::ImageUnavailable::RemoteBlocked) => {
+                return placeholder("remote image — pass --remote-images to load".into());
+            }
+            Err(crate::image::ImageUnavailable::NotFound) => {
+                return placeholder(if alt.is_empty() {
+                    "image not found".into()
+                } else {
+                    format!("image not found: {url}")
+                });
+            }
+            Err(crate::image::ImageUnavailable::Failed) => {
+                return placeholder(if alt.is_empty() {
+                    "cannot decode image".into()
+                } else {
+                    format!("cannot decode image: {url}")
+                });
+            }
+        };
 
     // Graphics mode (top-level only, like heading indices): reserve blank rows
     // sized to the image and record a spec for the draw loop to paint.
@@ -602,12 +604,34 @@ fn image_block_lines(
         // fall through to half-blocks.
     }
 
-    let Some(mut image_lines) = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)
-    else {
+    let Some(mut image_lines) = crate::image::render_halfblock(
+        &image_data,
+        ctx.width,
+        ctx.margin,
+        image_backdrop(ctx.theme),
+    ) else {
         return placeholder("cannot decode image".into());
     };
     push_image_caption(alt, link, ctx, &mut image_lines);
     image_lines
+}
+
+/// The color transparent image regions composite over: the theme's own
+/// background, or black/white matched to the theme's darkness when the theme
+/// leaves the terminal background untouched. Half-block cells are opaque, so
+/// somebody has to pick the "behind the image" color.
+fn image_backdrop(theme: &Theme) -> (u8, u8, u8) {
+    if let Some(bg) = &theme.colors.bg {
+        return crate::theme::hex_to_rgb(bg);
+    }
+    let (r, g, b) = crate::theme::hex_to_rgb(&theme.colors.fg);
+    let luminance = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+    // Light foreground → dark theme → composite over black; else white.
+    if luminance > 128.0 {
+        (0, 0, 0)
+    } else {
+        (255, 255, 255)
+    }
 }
 
 /// Maximum rows a graphics-protocol image may occupy in the text flow.

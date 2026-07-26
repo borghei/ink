@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Transparent image regions no longer render as black boxes.** Half-block cells are opaque, so transparency has to be composited somewhere — it now blends over the theme background instead of collapsing to black. Most SVGs, logos, and badges have transparent canvases; on light themes every one of them sat in a black rectangle.
+- **SVG `currentColor` follows the theme.** Monochrome icons (octicons, simple-icons badges) resolved `currentColor` to SVG's black default — invisible on dark terminals. The theme's foreground color is now the document color; an SVG that sets its own `color` keeps it, and theme switches re-rasterize (the color is part of the image cache key).
+
 ## 0.6.4 — 2026-07-26
 
 Packaging only — the renderer is byte-for-byte 0.6.3.

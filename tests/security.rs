@@ -97,7 +97,8 @@ fn image_paths_may_be_read_but_never_surface_as_text() {
         load_decoded(
             secret.to_str().unwrap(),
             Some(doc_dir.path()),
-            ImageMode::LocalOnly
+            ImageMode::LocalOnly,
+            None
         )
         .err(),
         Some(ImageUnavailable::Failed),
@@ -108,7 +109,8 @@ fn image_paths_may_be_read_but_never_surface_as_text() {
         load_decoded(
             elsewhere.path().to_str().unwrap(),
             Some(doc_dir.path()),
-            ImageMode::LocalOnly
+            ImageMode::LocalOnly,
+            None
         )
         .err(),
         Some(ImageUnavailable::NotFound)
