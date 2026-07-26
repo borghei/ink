@@ -95,6 +95,16 @@ fn fetch_and_decode(src: &str, source: &ImageSource<'_>, svg_color: Option<&str>
     decoded.map(Arc::new).ok_or(ImageUnavailable::Failed)
 }
 
+/// `ink doctor` self-test: does the SVG rasterizer work on this build?
+pub fn self_test_rasterize(svg: &[u8]) -> bool {
+    rasterize_svg(svg, None, None).is_some()
+}
+
+/// `ink doctor` self-test: does the raster decoder work on this build?
+pub fn self_test_decode(bytes: &[u8]) -> bool {
+    decode_raster(bytes).is_some()
+}
+
 /// Decode a raster image, honoring EXIF orientation — phone photos carry
 /// their rotation as metadata, and ignoring it renders them sideways.
 fn decode_raster(bytes: &[u8]) -> Option<DynamicImage> {

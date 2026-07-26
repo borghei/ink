@@ -355,6 +355,15 @@ Subcommands:
 | Themes | 8 | 2 | 0 | 0 |
 | Single binary | Yes | Yes | Yes | No |
 
+## Troubleshooting images
+
+Terminal graphics support varies wildly. If an image is blank, garbled, or missing:
+
+1. **Try the universal renderer:** `ink --image-protocol halfblocks file.md`. If the image appears as coarse colored blocks, decoding is fine — the problem is your terminal's pixel graphics protocol.
+2. **Try a specific protocol:** `--image-protocol iterm2` (iTerm2, WezTerm, VS Code, Warp and friends) or `--image-protocol sixel`. Some terminals advertise protocols they only partially implement — auto-detection already works around the known cases (e.g. iTerm2 claiming kitty support), but new terminal versions ship new quirks.
+3. **Collect a diagnostic report:** run `ink doctor` in the affected terminal — it prints your terminal identity, what the graphics negotiation chose, and decoder self-tests. `ink doctor --save ink-doctor.txt` writes it to a file.
+4. **Send it to us:** open an [image rendering issue](https://github.com/borghei/ink/issues/new?template=image-rendering.yml) with the report attached. That output usually pinpoints the problem immediately.
+
 ## Security model
 
 ink treats every document as untrusted input: control bytes and escape

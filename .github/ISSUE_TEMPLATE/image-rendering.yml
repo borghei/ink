@@ -1,0 +1,50 @@
+name: "Image rendering problem"
+description: "An image is blank, garbled, missing, or wrong in the terminal"
+title: "[images] "
+labels: ["bug", "images"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report! Terminal graphics support varies wildly between
+        terminals — the report below usually pinpoints the problem immediately.
+
+        **Before filing:** try `ink --image-protocol halfblocks <your file>`.
+        If images appear as coarse blocks, the document is fine and your
+        terminal's graphics protocol is what we need to look at.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: "`ink doctor` output"
+      description: "Run `ink doctor` in the affected terminal (or `ink doctor --save ink-doctor.txt` and attach the file). Paste everything."
+      render: text
+    validations:
+      required: true
+  - type: input
+    id: terminal
+    attributes:
+      label: Terminal and version
+      placeholder: "e.g. iTerm2 3.5.11, kitty 0.47.1, WezTerm 20240203, tmux 3.4 inside Ghostty"
+    validations:
+      required: true
+  - type: dropdown
+    id: halfblocks
+    attributes:
+      label: Does `--image-protocol halfblocks` show the image?
+      options:
+        - "Yes — blocks show, real pixels don't"
+        - "No — nothing shows in any mode"
+        - "Didn't try"
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Markdown that reproduces it
+      description: "The image reference from your document (and the image file itself if shareable)."
+      render: markdown
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot
+      description: "What you actually see. Drag & drop an image here."

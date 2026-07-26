@@ -160,3 +160,34 @@ fn known_theme_is_quiet() {
         .success()
         .stderr(predicate::str::contains("falling back").not());
 }
+
+#[test]
+fn doctor_reports_without_a_tty() {
+    // In a test harness stdout is a pipe: the protocol query must be skipped
+    // gracefully while the env report and decoder self-tests still run.
+    let output = assert_cmd::Command::cargo_bin("ink")
+        .unwrap()
+        .arg("doctor")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("[environment]"), "env section: {text}");
+    assert!(text.contains("skipped"), "query must be skipped off-tty");
+    assert!(text.contains("svg rasterize        = OK"), "svg self-test");
+    assert!(text.contains("png decode           = OK"), "png self-test");
+}
+
+#[test]
+fn doctor_save_writes_report_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("report.txt");
+    assert_cmd::Command::cargo_bin("ink")
+        .unwrap()
+        .args(["doctor", "--save"])
+        .arg(&path)
+        .assert()
+        .success();
+    let saved = std::fs::read_to_string(&path).unwrap();
+    assert!(saved.contains("ink doctor — image rendering diagnostics"));
+}

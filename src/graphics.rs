@@ -152,6 +152,12 @@ fn is_iterm_env(term_program: Option<&str>, lc_terminal: Option<&str>) -> bool {
         || lc_terminal.is_some_and(|v| v.contains("iTerm"))
 }
 
+/// What `Auto` detection would resolve `detected` to on this system — the
+/// `ink doctor` report shows both values so protocol overrides are visible.
+pub fn auto_protocol_for_report(detected: ProtocolType) -> ProtocolType {
+    auto_protocol(detected, is_iterm())
+}
+
 /// Given an image's pixel dimensions and the cell size, compute how many
 /// terminal cells (cols × rows) it should occupy, fitted to `max_cols` and a
 /// row cap, preserving aspect ratio.

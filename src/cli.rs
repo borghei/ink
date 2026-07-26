@@ -105,6 +105,13 @@ pub enum Commands {
     },
     /// Generate a man page (troff, to stdout)
     Man,
+    /// Print an image-rendering diagnostic report (terminal identity,
+    /// graphics-protocol negotiation, decoder self-tests)
+    Doctor {
+        /// Also write the report to this file (attach it to a GitHub issue)
+        #[arg(long, value_name = "PATH")]
+        save: Option<std::path::PathBuf>,
+    },
     /// Configuration helpers
     Config {
         #[command(subcommand)]
@@ -178,6 +185,9 @@ pub fn run() -> Result<()> {
             Commands::ShellSetup { shell } => {
                 print_shell_setup(shell);
                 Ok(())
+            }
+            Commands::Doctor { save } => {
+                return crate::doctor::run(save.as_deref());
             }
             Commands::Keybindings => {
                 print_keybindings();

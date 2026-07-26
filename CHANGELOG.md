@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **`ink doctor`** — an image-rendering diagnostic report: ink version, platform, terminal identity (session IDs redacted), the live graphics-protocol negotiation (what the terminal claimed vs. what ink will use, with overrides called out), and SVG/PNG decoder self-tests. `ink doctor --save ink-doctor.txt` writes the report to a file. Terminal graphics support varies wildly between emulators; when images misbehave, this output usually pinpoints the cause immediately.
+- **"Image rendering problem" GitHub issue form** that asks for the `ink doctor` output, the terminal + version, and the `--image-protocol halfblocks` result — the three facts that diagnose nearly every image report.
+- **README "Troubleshooting images" section** with the 4-step ladder: half-blocks test → protocol override → `ink doctor` → file the issue.
+
+### Removed
+- Stale in-repo `packaging/scoop/ink.json` seed (pinned at 0.2.1 with a placeholder hash); the live Scoop manifest is the `borghei/scoop-bucket` repo.
+
 ## 0.6.6 — 2026-07-26
 
 ### Fixed
