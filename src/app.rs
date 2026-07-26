@@ -729,12 +729,10 @@ fn run_inner(
                         let base = std::path::Path::new(&tabs[active_tab].filename)
                             .parent()
                             .unwrap_or(std::path::Path::new("."));
-                        // Contain link targets: stay inside the current doc's
-                        // directory tree or the directory ink was launched in.
-                        let cwd = std::env::current_dir().unwrap_or_default();
-                        let Some(target) =
-                            crate::sanitize::resolve_within(base, &[base, &cwd], &link_path)
-                        else {
+                        // Same trust model as images: following a link renders
+                        // a local .md file to the local user, so any readable
+                        // path is fair game (absolute included).
+                        let Some(target) = crate::sanitize::resolve_local(base, &link_path) else {
                             continue;
                         };
                         if let Ok(src) = std::fs::read_to_string(&target) {
@@ -847,7 +845,7 @@ fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
 }
 
 /// Act on a chosen link: open web/mail URLs in the default handler; follow a
-/// relative `.md` link in-place (with containment + nav history).
+/// local `.md` link in-place (any readable path, same trust model as images).
 #[allow(clippy::too_many_arguments)]
 fn open_link(
     url: &str,
@@ -870,7 +868,9 @@ fn open_link(
             return;
         }
     }
-    // Relative markdown link: follow in-place if it stays in-tree.
+    // Local markdown link: follow in-place. Same trust model as images —
+    // rendering a local .md file to the local user, so any readable path is
+    // fair game (absolute included).
     if !(url.ends_with(".md") || url.ends_with(".markdown")) {
         return;
     }
@@ -878,8 +878,7 @@ fn open_link(
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let cwd = std::env::current_dir().unwrap_or_default();
-    let Some(target) = crate::sanitize::resolve_within(&base, &[&base, &cwd], url) else {
+    let Some(target) = crate::sanitize::resolve_local(&base, url) else {
         return;
     };
     if let Ok(src) = std::fs::read_to_string(&target) {

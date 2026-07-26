@@ -69,31 +69,75 @@ pub fn sanitize_url(url: &str) -> Option<String> {
     Some(url.to_string())
 }
 
-/// Resolve `target` relative to `base` and require the result to stay inside
-/// one of `roots` (after symlink resolution). Absolute targets are rejected.
+/// Resolve a local path referenced by a document (image source or `.md` link
+/// target). Absolute paths load as-is; relative paths resolve against `base`,
+/// the document's own directory — including `../` escapes (issue #3: real
+/// documents reference files anywhere on disk, and rendering a local file to
+/// the local user's screen discloses nothing to anyone else). Markdown
+/// destinations are often percent-encoded (`my%20notes.md`), so when the
+/// literal path does not exist the decoded form is tried as a fallback —
+/// literal first, so a file actually named with `%` still wins.
 ///
-/// Returns the canonicalized path only when containment holds.
-pub fn resolve_within(base: &Path, roots: &[&Path], target: &str) -> Option<PathBuf> {
-    let target_path = Path::new(target);
-    if target_path.is_absolute() || has_windows_prefix(target) {
-        return None;
-    }
-    let joined = base.join(target_path);
-    let canonical = joined.canonicalize().ok()?;
-    let allowed = roots.iter().any(|root| {
-        root.canonicalize()
-            .map(|r| canonical.starts_with(&r))
-            .unwrap_or(false)
-    });
-    allowed.then_some(canonical)
+/// Returns the canonicalized path of an existing filesystem entry, or `None`.
+pub fn resolve_local(base: &Path, target: &str) -> Option<PathBuf> {
+    resolve_variants(base, target).or_else(|| {
+        // GitHub-style suffixes (`pic.png?raw=true`, `pic.png#gh-light-mode`)
+        // — stripped only as a fallback, since '?' and '#' are legal in
+        // filenames and a literal match must win.
+        let stripped = target.split(['?', '#']).next().unwrap_or(target);
+        (stripped != target)
+            .then(|| resolve_variants(base, stripped))
+            .flatten()
+    })
 }
 
-/// Windows-style absolute targets (`C:\...`, `\\server\share`) that
-/// `Path::is_absolute` does not flag on Unix.
-fn has_windows_prefix(target: &str) -> bool {
-    let bytes = target.as_bytes();
-    (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-        || target.starts_with("\\\\")
+fn resolve_variants(base: &Path, target: &str) -> Option<PathBuf> {
+    try_resolve(base, target).or_else(|| {
+        percent_decode(target)
+            .as_deref()
+            .and_then(|decoded| try_resolve(base, decoded))
+    })
+}
+
+fn try_resolve(base: &Path, target: &str) -> Option<PathBuf> {
+    if target.is_empty() {
+        return None;
+    }
+    let joined = if let Some(rest) = target.strip_prefix("~/") {
+        dirs::home_dir()?.join(rest)
+    } else {
+        let path = Path::new(target);
+        if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            base.join(path)
+        }
+    };
+    joined.canonicalize().ok()
+}
+
+/// Decode `%XX` escapes. Returns `None` when there is nothing to decode or
+/// the decoded bytes are not valid UTF-8; malformed escapes pass through.
+pub(crate) fn percent_decode(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+            if let (Some(hi), Some(lo)) = (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                out.push(hi * 16 + lo);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).ok()
 }
 
 #[cfg(test)]
@@ -135,14 +179,53 @@ mod tests {
     }
 
     #[test]
-    fn resolve_within_contains() {
+    fn resolve_local_paths() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path();
+        std::fs::create_dir(base.join("docs")).unwrap();
         std::fs::write(base.join("ok.md"), "x").unwrap();
-        assert!(resolve_within(base, &[base], "ok.md").is_some());
-        assert!(resolve_within(base, &[base], "../ok.md").is_none());
-        assert!(resolve_within(base, &[base], "/etc/hosts").is_none());
-        assert!(resolve_within(base, &[base], "C:\\windows").is_none());
-        assert!(resolve_within(base, &[base], "missing.md").is_none());
+        // Relative to base.
+        assert!(resolve_local(base, "ok.md").is_some());
+        // Parent-relative escapes the base dir and is allowed.
+        assert!(resolve_local(&base.join("docs"), "../ok.md").is_some());
+        // Absolute paths are allowed.
+        assert!(resolve_local(base, base.join("ok.md").to_str().unwrap()).is_some());
+        // Nonexistent targets resolve to nothing.
+        assert!(resolve_local(base, "missing.md").is_none());
+        assert!(resolve_local(base, "").is_none());
+    }
+
+    #[test]
+    fn resolve_local_percent_decodes_as_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::write(base.join("my notes.md"), "x").unwrap();
+        // Markdown destinations encode spaces; the decoded form is found.
+        let resolved = resolve_local(base, "my%20notes.md").expect("decoded fallback");
+        assert!(resolved.ends_with("my notes.md"));
+        // A file literally named with the escape wins over the decoded form.
+        std::fs::write(base.join("a%20b.md"), "x").unwrap();
+        std::fs::write(base.join("a b.md"), "x").unwrap();
+        let resolved = resolve_local(base, "a%20b.md").unwrap();
+        assert!(resolved.ends_with("a%20b.md"));
+        // Malformed escapes pass through undecoded.
+        assert!(resolve_local(base, "%zz.md").is_none());
+    }
+
+    #[test]
+    fn resolve_local_strips_query_and_fragment_as_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::write(base.join("pic.png"), "x").unwrap();
+        // GitHub-habit suffixes resolve to the underlying file.
+        let resolved = resolve_local(base, "pic.png?raw=true").expect("query stripped");
+        assert!(resolved.ends_with("pic.png"));
+        let resolved =
+            resolve_local(base, "pic.png#gh-light-mode-only").expect("fragment stripped");
+        assert!(resolved.ends_with("pic.png"));
+        // A file literally named with the suffix wins over stripping.
+        std::fs::write(base.join("odd.png?v=2"), "x").unwrap();
+        let resolved = resolve_local(base, "odd.png?v=2").unwrap();
+        assert!(resolved.ends_with("odd.png?v=2"));
     }
 }

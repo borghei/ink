@@ -32,19 +32,35 @@ pub fn load_decoded(
     base_dir: Option<&Path>,
     mode: ImageMode,
 ) -> Result<Arc<DynamicImage>, ImageUnavailable> {
-    let (key, bytes) = load_bytes_with_key(src, base_dir, mode)?;
+    let (key, bytes, resource_dir) = load_bytes_with_key(src, base_dir, mode)?;
     if let Some(img) = cache().lock().ok().and_then(|c| c.get(&key).cloned()) {
         return Ok(img);
     }
     let decoded = if is_svg(src, &bytes) {
-        Arc::new(rasterize_svg(&bytes).ok_or(ImageUnavailable::Failed)?)
+        Arc::new(rasterize_svg(&bytes, resource_dir.as_deref()).ok_or(ImageUnavailable::Failed)?)
     } else {
-        Arc::new(image::load_from_memory(&bytes).map_err(|_| ImageUnavailable::Failed)?)
+        Arc::new(decode_raster(&bytes).ok_or(ImageUnavailable::Failed)?)
     };
     if let Ok(mut c) = cache().lock() {
         c.insert(key, decoded.clone());
     }
     Ok(decoded)
+}
+
+/// Decode a raster image, honoring EXIF orientation — phone photos carry
+/// their rotation as metadata, and ignoring it renders them sideways.
+fn decode_raster(bytes: &[u8]) -> Option<DynamicImage> {
+    use image::ImageDecoder;
+    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?;
+    let mut decoder = reader.into_decoder().ok()?;
+    let orientation = decoder.orientation().ok();
+    let mut img = DynamicImage::from_decoder(decoder).ok()?;
+    if let Some(o) = orientation {
+        img.apply_orientation(o);
+    }
+    Some(img)
 }
 
 /// Is this an SVG? The `image` crate only decodes raster formats, so SVGs
@@ -76,12 +92,14 @@ fn svg_fontdb() -> Arc<resvg::usvg::fontdb::Database> {
 }
 
 /// Rasterize an SVG document to a pixel image via resvg. Returns `None` on
-/// parse failure or degenerate dimensions.
-fn rasterize_svg(bytes: &[u8]) -> Option<DynamicImage> {
+/// parse failure or degenerate dimensions. `resources_dir` anchors relative
+/// `<image href>` references (for local files, the SVG's own directory).
+fn rasterize_svg(bytes: &[u8], resources_dir: Option<&Path>) -> Option<DynamicImage> {
     use resvg::{tiny_skia, usvg};
 
     let opt = usvg::Options {
         fontdb: svg_fontdb(),
+        resources_dir: resources_dir.map(Path::to_path_buf),
         ..usvg::Options::default()
     };
     let tree = usvg::Tree::from_data(bytes, &opt).ok()?;
@@ -110,25 +128,43 @@ fn rasterize_svg(bytes: &[u8]) -> Option<DynamicImage> {
     )?))
 }
 
-/// Resolve `src`, returning a cache key plus the raw bytes to decode.
+/// Resolve `src`, returning a cache key, the raw bytes to decode, and (for
+/// local files) the directory that anchors the file's own relative resources.
 fn load_bytes_with_key(
     src: &str,
     base_dir: Option<&Path>,
     mode: ImageMode,
-) -> Result<(String, Vec<u8>), ImageUnavailable> {
+) -> Result<(String, Vec<u8>, Option<std::path::PathBuf>), ImageUnavailable> {
     if src.starts_with("http://") || src.starts_with("https://") {
         if mode != ImageMode::All {
             return Err(ImageUnavailable::RemoteBlocked);
         }
         let bytes = crate::net::fetch_untrusted_bytes(src, crate::net::IMAGE_FETCH_CAP)
             .map_err(|_| ImageUnavailable::Failed)?;
-        return Ok((format!("url:{src}"), bytes));
+        return Ok((format!("url:{src}"), bytes, None));
+    }
+    // Embedded `data:` URIs (notebook/HTML exports inline images this way).
+    if let Some(rest) = src.strip_prefix("data:") {
+        return decode_data_uri(rest).ok_or(ImageUnavailable::Failed);
     }
     let base = base_dir.unwrap_or_else(|| Path::new("."));
-    let path =
-        crate::sanitize::resolve_within(base, &[base], src).ok_or(ImageUnavailable::Failed)?;
-    let meta = std::fs::metadata(&path).map_err(|_| ImageUnavailable::Failed)?;
-    if !meta.is_file() || meta.len() > crate::net::IMAGE_FETCH_CAP {
+    // Any readable local path is allowed — absolute, relative escaping the
+    // document's directory, or a `file://` URL (issue #3: real documents say
+    // `![](/tmp/chart.svg)`, and kitty's own icat displays them). This is
+    // display-only and safe: the bytes must decode as an image and only ever
+    // reach the screen as pixels, so a hostile document cannot surface file
+    // *contents* as text, and remote fetches (the only exfiltration channel)
+    // stay opt-in via --remote-images.
+    let src = src
+        .strip_prefix("file://")
+        .map(|rest| rest.strip_prefix("localhost").unwrap_or(rest))
+        .unwrap_or(src);
+    let path = crate::sanitize::resolve_local(base, src).ok_or(ImageUnavailable::NotFound)?;
+    let meta = std::fs::metadata(&path).map_err(|_| ImageUnavailable::NotFound)?;
+    if !meta.is_file() {
+        return Err(ImageUnavailable::NotFound);
+    }
+    if meta.len() > crate::net::IMAGE_FETCH_CAP {
         return Err(ImageUnavailable::Failed);
     }
     let mtime = meta
@@ -138,8 +174,37 @@ fn load_bytes_with_key(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let key = format!("file:{}:{mtime}", path.display());
-    let bytes = std::fs::read(&path).map_err(|_| ImageUnavailable::Failed)?;
-    Ok((key, bytes))
+    let bytes = std::fs::read(&path).map_err(|_| ImageUnavailable::NotFound)?;
+    let resource_dir = path.parent().map(Path::to_path_buf);
+    Ok((key, bytes, resource_dir))
+}
+
+/// Decode the remainder of a `data:` URI (`[<mediatype>][;base64],<payload>`).
+/// Returns the cache key and bytes; the key hashes the content because the
+/// URI text itself can be megabytes.
+fn decode_data_uri(rest: &str) -> Option<(String, Vec<u8>, Option<std::path::PathBuf>)> {
+    use base64::Engine;
+    let (meta, payload) = rest.split_once(',')?;
+    let bytes = if meta.to_ascii_lowercase().ends_with(";base64") {
+        base64::engine::general_purpose::STANDARD
+            .decode(payload.trim().as_bytes())
+            .ok()?
+    } else {
+        crate::sanitize::percent_decode(payload)
+            .map(String::into_bytes)
+            .unwrap_or_else(|| payload.as_bytes().to_vec())
+    };
+    if bytes.len() as u64 > crate::net::IMAGE_FETCH_CAP {
+        return None;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    Some((
+        format!("data:{:x}:{}", hasher.finish(), bytes.len()),
+        bytes,
+        None,
+    ))
 }
 
 /// Which images a document is allowed to load.
@@ -159,22 +224,24 @@ pub enum ImageMode {
 pub enum ImageUnavailable {
     /// Remote image while remote fetching is disabled.
     RemoteBlocked,
-    /// Missing file, escaping path, oversized, network or decode error.
+    /// The local path does not exist or is not a readable file.
+    NotFound,
+    /// Oversized, network, or decode failure.
     Failed,
 }
 
 /// Load image data from a file path or URL.
 ///
-/// Relative paths resolve against `base_dir` and must stay inside it
-/// (symlinks resolved); absolute paths are rejected — a hostile document
-/// must not read arbitrary files. Local reads and remote fetches are both
+/// Relative paths resolve against `base_dir`; absolute paths load as-is.
+/// The bytes are only ever rendered as pixels, never as text, so reading
+/// any local path is safe. Local reads and remote fetches are both
 /// size-capped.
 pub fn load_image(
     src: &str,
     base_dir: Option<&Path>,
     mode: ImageMode,
 ) -> Result<Vec<u8>, ImageUnavailable> {
-    load_bytes_with_key(src, base_dir, mode).map(|(_, bytes)| bytes)
+    load_bytes_with_key(src, base_dir, mode).map(|(_, bytes, _)| bytes)
 }
 
 /// Render a decoded image to styled lines using Unicode half-block characters (▄).
@@ -286,7 +353,7 @@ mod tests {
 
     #[test]
     fn svg_rasterizes_scaled_up_with_lime_rect() {
-        let img = rasterize_svg(SAMPLE_SVG.as_bytes()).expect("svg should rasterize");
+        let img = rasterize_svg(SAMPLE_SVG.as_bytes(), None).expect("svg should rasterize");
         // 120x120 doc scaled up to the raster target, aspect preserved.
         let (w, h) = img.dimensions();
         assert_eq!((w, h), (1024, 1024));
@@ -308,9 +375,123 @@ mod tests {
         assert!(img.dimensions().0 > 0);
     }
 
+    // Issue #3 reopened: the reporter's document references the SVG by
+    // absolute path (`![](/tmp/sample_from_wikipedia.svg)`), which the old
+    // containment check rejected before the decoder ever ran — so the SVG fix
+    // appeared broken, and PNGs by absolute path failed the same way.
+    #[test]
+    fn absolute_path_outside_base_dir_loads() {
+        let img_dir = tempfile::tempdir().unwrap();
+        let doc_dir = tempfile::tempdir().unwrap();
+        let svg_path = img_dir.path().join("sample_from_wikipedia.svg");
+        std::fs::write(&svg_path, SAMPLE_SVG).unwrap();
+        let img = load_decoded(
+            svg_path.to_str().unwrap(),
+            Some(doc_dir.path()),
+            ImageMode::LocalOnly,
+        )
+        .expect("absolute image path should load");
+        assert!(img.dimensions().0 > 0);
+    }
+
+    #[test]
+    fn relative_path_escaping_base_dir_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("pic.svg"), SAMPLE_SVG).unwrap();
+        let img = load_decoded(
+            "../pic.svg",
+            Some(&dir.path().join("docs")),
+            ImageMode::LocalOnly,
+        )
+        .expect("parent-relative image path should load");
+        assert!(img.dimensions().0 > 0);
+    }
+
+    #[test]
+    fn percent_encoded_and_file_url_sources_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("my pic.svg"), SAMPLE_SVG).unwrap();
+        // Markdown destinations percent-encode spaces.
+        assert!(load_decoded("my%20pic.svg", Some(dir.path()), ImageMode::LocalOnly).is_ok());
+        // file:// URLs resolve as local paths (percent-encoded, like real file URLs).
+        let url = format!("file://{}/my%20pic.svg", dir.path().display());
+        assert!(load_decoded(&url, Some(dir.path()), ImageMode::LocalOnly).is_ok());
+        // Missing files report NotFound, not a generic failure.
+        assert_eq!(
+            load_decoded("nope.svg", Some(dir.path()), ImageMode::LocalOnly).err(),
+            Some(ImageUnavailable::NotFound)
+        );
+    }
+
+    #[test]
+    fn data_uri_images_load() {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(SAMPLE_SVG);
+        let uri = format!("data:image/svg+xml;base64,{b64}");
+        let img = load_decoded(&uri, None, ImageMode::LocalOnly).expect("base64 data uri");
+        assert!(img.dimensions().0 > 0);
+        // Percent-encoded (non-base64) payloads work too.
+        let encoded: String = SAMPLE_SVG
+            .chars()
+            .map(|c| match c {
+                '#' => "%23".to_string(),
+                '\n' => "%0A".to_string(),
+                c => c.to_string(),
+            })
+            .collect();
+        let uri = format!("data:image/svg+xml,{encoded}");
+        let img = load_decoded(&uri, None, ImageMode::LocalOnly).expect("plain data uri");
+        assert!(img.dimensions().0 > 0);
+        // Garbage payloads fail cleanly.
+        assert_eq!(
+            load_decoded("data:image/png;base64,!!!", None, ImageMode::LocalOnly).err(),
+            Some(ImageUnavailable::Failed)
+        );
+    }
+
+    #[test]
+    fn raster_decode_still_works_through_orientation_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dot.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([255, 0, 0, 255]))
+            .save(&path)
+            .unwrap();
+        let img = load_decoded(
+            path.to_str().unwrap(),
+            Some(dir.path()),
+            ImageMode::LocalOnly,
+        )
+        .expect("png decodes");
+        assert_eq!(img.dimensions(), (3, 2));
+    }
+
+    #[test]
+    fn svg_with_embedded_raster_image_renders() {
+        let dir = tempfile::tempdir().unwrap();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([255, 0, 0, 255]))
+            .save(dir.path().join("side.png"))
+            .unwrap();
+        let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8">
+  <image href="side.png" x="0" y="0" width="8" height="8"/>
+</svg>"#;
+        std::fs::write(dir.path().join("embed.svg"), svg).unwrap();
+        let img = load_decoded("embed.svg", Some(dir.path()), ImageMode::LocalOnly)
+            .expect("svg with embedded raster");
+        // The referenced PNG's red pixels must appear — blank output means the
+        // raster-images feature or resources_dir anchoring regressed.
+        let (w, h) = img.dimensions();
+        let p = img.get_pixel(w / 2, h / 2);
+        assert_eq!(
+            (p[0], p[3]),
+            (255, 255),
+            "center pixel should be opaque red"
+        );
+    }
+
     #[test]
     fn invalid_svg_fails_cleanly() {
-        assert!(rasterize_svg(b"<svg not really").is_none());
-        assert!(rasterize_svg(b"").is_none());
+        assert!(rasterize_svg(b"<svg not really", None).is_none());
+        assert!(rasterize_svg(b"", None).is_none());
     }
 }

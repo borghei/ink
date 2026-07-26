@@ -293,8 +293,21 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         NodeValue::HtmlBlock(hb) => {
             let literal = hb.literal.clone();
             drop(data);
-            // Raw HTML is shown as dim text; wrap it so long tags/URLs (e.g. an
-            // `<img src="…long…">`) stay within the width instead of overflowing.
+            // `<img>` tags render as real images (READMEs use raw HTML for
+            // sized/centered logos); the surrounding markup is dropped.
+            if ctx.images != ImageMode::Off {
+                let html_images = extract_html_images(&literal);
+                if !html_images.is_empty() {
+                    for (src, alt) in &html_images {
+                        let block = image_block_lines(src, alt, None, ctx, lines.len());
+                        lines.extend(block);
+                    }
+                    add_spacing(ctx, lines);
+                    return;
+                }
+            }
+            // Other raw HTML is shown as dim text; wrap it so long tags/URLs
+            // stay within the width instead of overflowing.
             for line_text in literal.lines() {
                 if line_text.trim().is_empty() {
                     continue;
@@ -435,7 +448,61 @@ fn layout_paragraph<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut 
     add_spacing(ctx, lines);
 }
 
-/// If the paragraph contains only a single image, render it as a block: in
+/// An image a paragraph can render as a block: source, alt text, and the
+/// link destination when the image is wrapped in one (`[![alt](img)](url)`
+/// badges/linked screenshots).
+struct BlockImage {
+    url: String,
+    alt: String,
+    link: Option<String>,
+}
+
+/// Collect the paragraph's images when the paragraph is images and nothing
+/// else — a single one, several in a row (galleries), or link-wrapped —
+/// separated only by whitespace/breaks. Returns `None` when images mix with
+/// text (those stay inline).
+fn collect_block_images<'a>(node: &'a AstNode<'a>) -> Option<Vec<BlockImage>> {
+    let mut images = Vec::new();
+    for child in node.children() {
+        let data = child.data.borrow();
+        match data.value {
+            NodeValue::Image(ref img) => {
+                let url = img.url.clone();
+                drop(data);
+                images.push(BlockImage {
+                    url,
+                    alt: collect_child_text(child),
+                    link: None,
+                });
+            }
+            NodeValue::Link(ref l) => {
+                let link = l.url.clone();
+                drop(data);
+                let inner: Vec<_> = child.children().collect();
+                if inner.len() != 1 {
+                    return None;
+                }
+                let inner_data = inner[0].data.borrow();
+                let NodeValue::Image(ref img) = inner_data.value else {
+                    return None;
+                };
+                let url = img.url.clone();
+                drop(inner_data);
+                images.push(BlockImage {
+                    url,
+                    alt: collect_child_text(inner[0]),
+                    link: Some(link),
+                });
+            }
+            NodeValue::SoftBreak | NodeValue::LineBreak => {}
+            NodeValue::Text(ref t) if t.trim().is_empty() => {}
+            _ => return None,
+        }
+    }
+    (!images.is_empty()).then_some(images)
+}
+
+/// If the paragraph contains only images, render each as a block: in
 /// graphics mode, reserve blank rows and record an `ImageSpec` (the draw loop
 /// paints the pixels); otherwise render Unicode half-blocks. `start_line` is
 /// the index the returned lines will occupy in the document.
@@ -444,40 +511,66 @@ fn try_render_image_block<'a>(
     ctx: &LayoutContext,
     start_line: usize,
 ) -> Option<Vec<StyledLine>> {
-    let children: Vec<_> = node.children().collect();
-    if children.len() != 1 {
-        return None;
+    let images = collect_block_images(node)?;
+    let mut lines: Vec<StyledLine> = Vec::new();
+    for img in &images {
+        let block = image_block_lines(
+            &img.url,
+            &img.alt,
+            img.link.as_deref(),
+            ctx,
+            start_line + lines.len(),
+        );
+        lines.extend(block);
     }
+    Some(lines)
+}
 
-    let child = children[0];
-    let data = child.data.borrow();
-    let url = if let NodeValue::Image(ref img) = data.value {
-        img.url.clone()
-    } else {
-        return None;
+/// Render one image as block-level lines: pixels (graphics protocol or
+/// half-blocks) plus caption, or a placeholder line that states why the
+/// image could not be shown — a silently degraded image is indistinguishable
+/// from a rendering bug (issue #3).
+fn image_block_lines(
+    url: &str,
+    alt: &str,
+    link: Option<&str>,
+    ctx: &LayoutContext,
+    start_line: usize,
+) -> Vec<StyledLine> {
+    let placeholder = |detail: String| {
+        let alt_display = if alt.is_empty() { url } else { alt };
+        let mut line = StyledLine::new();
+        ctx.add_margin(&mut line);
+        line.push(StyledSpan {
+            text: format!("🖼 {alt_display} ({detail})"),
+            style: SpanStyle {
+                fg: Some(ctx.theme.colors.link_url.clone()),
+                italic: true,
+                link_url: link.map(str::to_string),
+                ..Default::default()
+            },
+        });
+        vec![line]
     };
-    drop(data);
-
-    let alt = collect_child_text(child);
-
-    // Try to load and render the image
-    let image_data = match crate::image::load_decoded(&url, ctx.base_dir, ctx.images) {
+    let image_data = match crate::image::load_decoded(url, ctx.base_dir, ctx.images) {
         Ok(data) => data,
         Err(crate::image::ImageUnavailable::RemoteBlocked) => {
-            let alt_display = if alt.is_empty() { &url } else { &alt };
-            let mut line = StyledLine::new();
-            ctx.add_margin(&mut line);
-            line.push(StyledSpan {
-                text: format!("🖼 {alt_display} (remote image — pass --remote-images to load)"),
-                style: SpanStyle {
-                    fg: Some(ctx.theme.colors.link_url.clone()),
-                    italic: true,
-                    ..Default::default()
-                },
-            });
-            return Some(vec![line]);
+            return placeholder("remote image — pass --remote-images to load".into());
         }
-        Err(crate::image::ImageUnavailable::Failed) => return None,
+        Err(crate::image::ImageUnavailable::NotFound) => {
+            return placeholder(if alt.is_empty() {
+                "image not found".into()
+            } else {
+                format!("image not found: {url}")
+            });
+        }
+        Err(crate::image::ImageUnavailable::Failed) => {
+            return placeholder(if alt.is_empty() {
+                "cannot decode image".into()
+            } else {
+                format!("cannot decode image: {url}")
+            });
+        }
     };
 
     // Graphics mode (top-level only, like heading indices): reserve blank rows
@@ -502,33 +595,114 @@ fn try_render_image_block<'a>(
                 rows,
                 image: image_data,
             });
-            push_image_caption(&alt, ctx, &mut image_lines);
-            return Some(image_lines);
+            push_image_caption(alt, link, ctx, &mut image_lines);
+            return image_lines;
         }
         // Nested (blockquote/list) graphics images aren't positioned reliably;
         // fall through to half-blocks.
     }
 
-    let mut image_lines = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)?;
-    push_image_caption(&alt, ctx, &mut image_lines);
-    Some(image_lines)
+    let Some(mut image_lines) = crate::image::render_halfblock(&image_data, ctx.width, ctx.margin)
+    else {
+        return placeholder("cannot decode image".into());
+    };
+    push_image_caption(alt, link, ctx, &mut image_lines);
+    image_lines
 }
 
 /// Maximum rows a graphics-protocol image may occupy in the text flow.
 const MAX_IMAGE_ROWS: u16 = 30;
 
-/// Append the image's alt text as an italic caption line, if any.
-fn push_image_caption(alt: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
-    if alt.is_empty() {
-        return;
+/// Extract `(src, alt)` from every `<img>` tag in a raw HTML fragment.
+/// Tolerant by design: any attribute order, single/double/no quotes,
+/// self-closing or not. Tags without a `src` are skipped.
+fn extract_html_images(html: &str) -> Vec<(String, String)> {
+    let lower = html.to_ascii_lowercase();
+    let mut out = Vec::new();
+    let mut pos = 0;
+    while let Some(found) = lower[pos..].find("<img") {
+        let start = pos + found;
+        let end = lower[start..]
+            .find('>')
+            .map(|e| start + e)
+            .unwrap_or(html.len());
+        let tag = &html[start..end];
+        if let Some(src) = html_attr(tag, "src") {
+            out.push((src, html_attr(tag, "alt").unwrap_or_default()));
+        }
+        pos = end.max(start + 4);
     }
+    out
+}
+
+/// Pull one attribute's value out of a tag. ASCII-lowercasing preserves byte
+/// offsets, so positions found in the lowered copy index the original.
+fn html_attr(tag: &str, name: &str) -> Option<String> {
+    let lower = tag.to_ascii_lowercase();
+    let bytes = tag.as_bytes();
+    let mut search = 0;
+    loop {
+        let found = lower[search..].find(name)? + search;
+        let preceded_by_space = tag[..found]
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_whitespace());
+        let mut i = found + name.len();
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if !preceded_by_space || i >= bytes.len() || bytes[i] != b'=' {
+            search = found + name.len();
+            continue;
+        }
+        i += 1;
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        if i >= bytes.len() {
+            return None;
+        }
+        let value = match bytes[i] {
+            quote @ (b'"' | b'\'') => {
+                let rest = &tag[i + 1..];
+                let close = rest.find(quote as char)?;
+                &rest[..close]
+            }
+            _ => {
+                let rest = &tag[i..];
+                let close = rest
+                    .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                    .unwrap_or(rest.len());
+                &rest[..close]
+            }
+        };
+        return Some(value.to_string());
+    }
+}
+
+/// Append the image's alt text as an italic caption line. A link-wrapped
+/// image carries its destination on the caption so hint-mode/opening still
+/// reach it (the pixels themselves aren't clickable); with a link but no alt,
+/// the destination is the caption.
+fn push_image_caption(
+    alt: &str,
+    link: Option<&str>,
+    ctx: &LayoutContext,
+    lines: &mut Vec<StyledLine>,
+) {
+    let text = match (alt.is_empty(), link) {
+        (false, _) => alt.to_string(),
+        (true, Some(url)) => url.to_string(),
+        (true, None) => return,
+    };
     let mut caption = StyledLine::new();
     ctx.add_margin(&mut caption);
     caption.push(StyledSpan {
-        text: format!("  {alt}"),
+        text: format!("  {text}"),
         style: SpanStyle {
             fg: Some(ctx.theme.colors.link_url.clone()),
             italic: true,
+            link_url: link.map(str::to_string),
             ..Default::default()
         },
     });
@@ -1105,6 +1279,19 @@ fn collect_inlines<'a>(
                 // Honor common inline tags; drop the rest instead of emitting
                 // raw markup. <br> becomes a break handled by wrapping later;
                 // here we just skip structural tags and keep nothing visible.
+                // A mid-text <img> can't render as a pixel block, but it must
+                // stay visible — show the standard inline placeholder.
+                if let Some((src, alt)) = extract_html_images(html).into_iter().next() {
+                    let label = if alt.is_empty() { src } else { alt };
+                    spans.push(StyledSpan {
+                        text: format!("🖼 {label}"),
+                        style: SpanStyle {
+                            fg: Some(ctx.theme.colors.link.clone()),
+                            ..parent_style.clone()
+                        },
+                    });
+                    continue;
+                }
                 let tag = html.trim().to_ascii_lowercase();
                 if tag == "<br>" || tag == "<br/>" || tag == "<br />" {
                     spans.push(StyledSpan {
@@ -1404,6 +1591,56 @@ mod tests {
 
     fn line_text(line: &StyledLine) -> String {
         line.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    // The `<img>` scanner is deliberately tolerant (any attribute order,
+    // single/double/no quotes, self-closing or not); each tolerance is
+    // asserted here, since real READMEs use all of them.
+    #[test]
+    fn extracts_html_images_in_every_quoting_style() {
+        // Double quotes, alt before src, extra attributes, self-closing.
+        assert_eq!(
+            extract_html_images(r#"<img alt="Logo" width="200" src="a.png" />"#),
+            vec![("a.png".to_string(), "Logo".to_string())]
+        );
+        // Single quotes and no quotes at all.
+        assert_eq!(
+            extract_html_images("<img src='b.png' alt='Chart'>"),
+            vec![("b.png".to_string(), "Chart".to_string())]
+        );
+        assert_eq!(
+            extract_html_images("<img src=c.png alt=Plain>"),
+            vec![("c.png".to_string(), "Plain".to_string())]
+        );
+        // Uppercase tag/attribute names, and a missing alt.
+        assert_eq!(
+            extract_html_images(r#"<IMG SRC="d.png">"#),
+            vec![("d.png".to_string(), String::new())]
+        );
+        // Several images in one fragment, e.g. a badge row.
+        assert_eq!(
+            extract_html_images(r#"<p><img src="1.png"><img src="2.png"></p>"#),
+            vec![
+                ("1.png".to_string(), String::new()),
+                ("2.png".to_string(), String::new()),
+            ]
+        );
+    }
+
+    #[test]
+    fn html_image_scanner_rejects_lookalikes() {
+        // `srcset`/`data-src` must not be mistaken for `src`: the first has a
+        // different name, the second is not preceded by whitespace.
+        assert_eq!(
+            extract_html_images(r#"<img srcset="wide.png 2x" src="real.png">"#),
+            vec![("real.png".to_string(), String::new())]
+        );
+        assert!(extract_html_images(r#"<img data-src="lazy.png">"#).is_empty());
+        // A tag with no src yields nothing, and an unterminated tag does not
+        // hang or panic.
+        assert!(extract_html_images("<img>").is_empty());
+        assert!(extract_html_images(r#"<img src="unterminated.png"#).is_empty());
+        assert!(extract_html_images("<p>no images here</p>").is_empty());
     }
 
     #[test]

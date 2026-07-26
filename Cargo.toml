@@ -1,6 +1,6 @@
 [package]
 name = "ink-md"
-version = "0.6.2"
+version = "0.6.3"
 edition = "2021"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
 description = "The most advanced terminal markdown reader"
@@ -60,8 +60,12 @@ unicode-width = "0.2"
 # Image decoding for inline image rendering
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tga", "qoi", "pnm", "hdr", "exr", "ff"] }
 
-# SVG rasterization (vector → pixels) for inline SVG images
-resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts", "memmap-fonts"] }
+# SVG rasterization (vector → pixels) for inline SVG images; raster-images
+# renders <image> elements embedded in SVGs (otherwise they come out blank)
+resvg = { version = "0.47", default-features = false, features = ["text", "system-fonts", "memmap-fonts", "raster-images"] }
+
+# data: URI images embedded in documents (notebook/HTML exports)
+base64 = "0.22"
 
 # Cross-platform file watching for --watch (FSEvents on macOS, inotify on Linux, ReadDirectoryChangesW on Windows)
 notify = "8"

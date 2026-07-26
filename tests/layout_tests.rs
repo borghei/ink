@@ -193,3 +193,172 @@ fn code_block_is_highlighted() {
         .collect();
     assert!(all_text.contains("fn main"));
 }
+
+// Issue #3 reopened: `![](/tmp/sample.svg)` — an image referenced by absolute
+// path from a document in a different directory — must render, not fall back
+// to the inline 🖼 placeholder.
+#[test]
+fn absolute_path_image_renders_as_halfblocks() {
+    let img_dir = tempfile::tempdir().unwrap();
+    let doc_dir = tempfile::tempdir().unwrap();
+    let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <rect x="14" y="23" width="200" height="50" fill="lime" stroke="black" />
+</svg>"##;
+    let svg_path = img_dir.path().join("sample_from_wikipedia.svg");
+    std::fs::write(&svg_path, svg).unwrap();
+
+    let source = format!("![]({})\n", svg_path.display());
+    let arena = Arena::new();
+    let root = parse_document(&arena, &source, &parser::options());
+    let theme = resolve_theme("dark");
+    let lines = layout_document(
+        root,
+        &theme,
+        80,
+        Spacing::Normal,
+        0,
+        Some(doc_dir.path()),
+        ink_md::image::ImageMode::LocalOnly,
+        None,
+    )
+    .lines;
+
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(
+        all_text.contains('▄'),
+        "absolute-path image should render half-blocks, got: {all_text:?}"
+    );
+    assert!(
+        !all_text.contains('🖼'),
+        "must not fall back to the placeholder"
+    );
+}
+
+// A missing local image must say so — a silent placeholder is
+// indistinguishable from a rendering bug (how issue #3 went undiagnosed).
+#[test]
+fn missing_image_placeholder_states_the_reason() {
+    let doc_dir = tempfile::tempdir().unwrap();
+    let arena = Arena::new();
+    let root = parse_document(&arena, "![](nope.png)\n", &parser::options());
+    let theme = resolve_theme("dark");
+    let lines = layout_document(
+        root,
+        &theme,
+        80,
+        Spacing::Normal,
+        0,
+        Some(doc_dir.path()),
+        ink_md::image::ImageMode::LocalOnly,
+        None,
+    )
+    .lines;
+    let all_text: String = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect();
+    assert!(
+        all_text.contains("image not found"),
+        "placeholder should explain the failure, got: {all_text:?}"
+    );
+}
+
+/// Layout `source` with images enabled (LocalOnly) against `base_dir`,
+/// returning the concatenated text of all lines.
+fn layout_images_text(source: &str, base_dir: &std::path::Path) -> String {
+    let arena = Arena::new();
+    let root = parse_document(&arena, source, &parser::options());
+    let theme = resolve_theme("dark");
+    let lines = layout_document(
+        root,
+        &theme,
+        80,
+        Spacing::Normal,
+        0,
+        Some(base_dir),
+        ink_md::image::ImageMode::LocalOnly,
+        None,
+    )
+    .lines;
+    lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .map(|s| s.text.as_str())
+        .collect()
+}
+
+const LIME_SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120">
+  <rect x="14" y="23" width="200" height="50" fill="lime" stroke="black" /></svg>"##;
+
+// `[![alt](img)](target)` — the linked-image/badge pattern must render the
+// image as a block, not degrade to an inline placeholder.
+#[test]
+fn linked_image_renders_as_block() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("shot.svg"), LIME_SVG).unwrap();
+    let text = layout_images_text(
+        "[![screenshot](shot.svg)](https://example.com)\n",
+        dir.path(),
+    );
+    assert!(
+        text.contains('▄'),
+        "linked image should render pixels: {text:?}"
+    );
+    assert!(
+        text.contains("screenshot"),
+        "caption should carry the alt text"
+    );
+    assert!(!text.contains('🖼'));
+}
+
+// Several images in one paragraph (a gallery) all render as blocks.
+#[test]
+fn multiple_images_in_paragraph_all_render() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.svg"), LIME_SVG).unwrap();
+    std::fs::write(dir.path().join("b.svg"), LIME_SVG).unwrap();
+    let text = layout_images_text("![first](a.svg) ![second](b.svg)\n", dir.path());
+    assert!(
+        text.contains("first") && text.contains("second"),
+        "both captions: {text:?}"
+    );
+    assert!(text.contains('▄'));
+    assert!(!text.contains('🖼'));
+}
+
+// Raw HTML <img> blocks (the README way to size/center a logo) render as
+// real images; the markup itself is not shown.
+#[test]
+fn html_img_block_renders_as_image() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("logo.svg"), LIME_SVG).unwrap();
+    let text = layout_images_text(
+        "<p align=\"center\">\n  <img src=\"logo.svg\" alt=\"Logo\" width=\"200\">\n</p>\n",
+        dir.path(),
+    );
+    assert!(
+        text.contains('▄'),
+        "html img should render pixels: {text:?}"
+    );
+    assert!(text.contains("Logo"), "caption from alt attribute");
+    assert!(!text.contains("<img"), "raw markup must not be shown");
+}
+
+// A mid-text inline <img> stays visible as a placeholder instead of vanishing.
+#[test]
+fn inline_html_img_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let text = layout_images_text(
+        "Look at <img src=\"pic.png\" alt=\"the chart\"> here.\n",
+        dir.path(),
+    );
+    assert!(
+        text.contains("🖼 the chart"),
+        "inline img placeholder: {text:?}"
+    );
+}

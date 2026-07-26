@@ -79,23 +79,21 @@ fn c1_control_bytes_stripped() {
 }
 
 #[test]
-fn absolute_and_traversal_image_paths_do_not_read_files() {
-    // Points at a real file that exists on the test machine; if containment
-    // failed it would be read and decoded (and likely fail to decode, but the
-    // point is load_image must refuse before touching it).
-    use ink_md::image::{load_image, ImageMode, ImageUnavailable};
+fn image_paths_may_be_read_but_never_surface_as_text() {
+    // Any local path may be *read* (issue #3: documents legitimately reference
+    // images by absolute path), but the bytes must decode as an image to reach
+    // the screen — always as pixels, never as text. A hostile document
+    // pointing an image at a text file gets a clean failure, not the contents.
+    use ink_md::image::{load_decoded, ImageMode, ImageUnavailable};
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        load_image("/etc/hosts", Some(dir.path()), ImageMode::LocalOnly),
-        Err(ImageUnavailable::Failed)
+        load_decoded("/etc/hosts", Some(dir.path()), ImageMode::LocalOnly).err(),
+        Some(ImageUnavailable::Failed)
     );
+    // A directory target fails cleanly too.
     assert_eq!(
-        load_image(
-            "../../../../etc/hosts",
-            Some(dir.path()),
-            ImageMode::LocalOnly
-        ),
-        Err(ImageUnavailable::Failed)
+        load_decoded("/etc", Some(dir.path()), ImageMode::LocalOnly).err(),
+        Some(ImageUnavailable::NotFound)
     );
 }
 

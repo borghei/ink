@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.6.3 — 2026-07-26
+
+Also carries the 0.6.2 robustness fixes below: 0.6.2 was tagged in the source
+tree but never published, so this is the first build to ship them.
+
+### Fixed
+- **Images referenced by absolute path now render** ([#3](https://github.com/borghei/ink/issues/3) follow-up). The 0.6.1 SVG fix never got a chance to run for the reported document: `![](/tmp/sample.svg)` is an absolute path, and the image loader rejected every absolute path (and every relative path escaping the document's directory) before reading a single byte — which is also why a PNG referenced the same way didn't show. Local images now load from any readable path, like kitty's `icat`. This is display-only and safe: image bytes must decode and only ever reach the screen as pixels, never as text, and remote fetching stays opt-in via `--remote-images`.
+- **The same root cause, fixed everywhere it appeared:**
+  - Percent-encoded destinations resolve: `![](my%20pic.png)` finds `my pic.png` (the encoding Obsidian/Notion exports and standard markdown produce). Applies to images and followed links; a file literally named with `%` still wins.
+  - `file://` image URLs load as local paths instead of silently failing.
+  - Following a `.md` link works for absolute and out-of-tree paths, matching the image policy.
+- **Failed images now say why.** A missing file shows `🖼 … (image not found)`, an undecodable one `(cannot decode image)`, instead of a bare placeholder indistinguishable from a rendering bug — the reason #3 took two rounds to diagnose.
+
+### Added
+- **Linked images render.** `[![alt](shot.png)](https://…)` — the badge/linked-screenshot pattern — now renders the image as a block; the caption carries the link so hint-mode and open still reach it.
+- **Image galleries render.** A paragraph holding several images in a row renders each one, instead of degrading all of them to inline placeholders.
+- **Raw HTML `<img>` renders.** `<p align="center"><img src="logo.png" …></p>` — the README way to size/center a logo — now shows the image (alt text as caption) instead of dim raw markup. A mid-sentence inline `<img>` shows the standard `🖼` placeholder instead of vanishing.
+- **`data:` URI images render.** Base64 or percent-encoded payloads, as produced by notebook and HTML exports.
+- **`~/pics/x.png` resolves** to the home directory, for images and followed links.
+- **`pic.png?raw=true` / `pic.png#gh-light-mode-only` resolve.** GitHub-habit query/fragment suffixes are stripped as a fallback; a file literally named with the suffix still wins.
+- **EXIF orientation is honored.** Phone photos no longer render sideways.
+- **SVGs with embedded raster images render** (resvg's `raster-images` feature was off, leaving `<image href="…">` elements blank; relative hrefs now resolve against the SVG's own directory).
+
 ## 0.6.2 — 2026-07-24
 
 ### Fixed (robustness)
