@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.7.0 — 2026-08-14
+
+### Added
+- **Text selection and clipboard copy.** ink captures the mouse for wheel-scroll, which meant the terminal's own selection was unavailable; it now does the job itself:
+  - `v` starts a character-wise selection, `V` a line-wise one. `h j k l`/arrows, `w`/`b`, `0`/`$`, `g`/`G`, and `Ctrl+d`/`Ctrl+u` move the cursor end, the view follows it, `y` copies, `Esc` cancels. Selection edges are measured in terminal cells and snap to grapheme boundaries, so a wide CJK glyph or a ZWJ emoji is never cut in half.
+  - Mouse drag selects and copies on release; double-click takes the word under the pointer, triple-click the line.
+  - `c` labels every code block on screen and copies the one you pick — the block's raw source, with none of the box borders, syntax escapes, or margin that surround it on screen.
+  - `Y` copies the markdown source of the section you are reading, down to the next heading of the same or higher level. Inside link-hint mode (`f`), `Y` flips the labels from "open this link" to "copy this URL".
+  - Copies go out over **OSC 52** (works across SSH, wrapped for tmux) *and* through a native helper (`pbcopy`, `wl-copy`, `xclip`, `xsel`, `clip.exe`) when one is on `PATH`. No new dependencies. `[behavior] clipboard = "auto" | "osc52" | "native" | "off"` narrows or disables it.
+  - New action IDs `select_mode`, `select_line_mode`, `copy_code`, and `copy_section` are rebindable like any other; visual-mode motions themselves are a fixed table, as with search and slides.
+  - Themes gained `selection_bg` / `selection_fg`. Both are optional — a theme file written before this release still loads and derives a legible selection from its existing colors.
+
+### Fixed
+- **Heading text is stripped of terminal control bytes where it is recorded**, not only where it is drawn as a line. A heading carrying an ESC byte reached the TOC sidebar unfiltered before; it now goes through the same sanitizer as body text, which also covers the new "copied section" status line. Fence info strings get the same treatment.
+
 ## 0.6.7 — 2026-07-26
 
 ### Added

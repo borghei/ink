@@ -13,6 +13,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 - Supports wikilink syntax: [[page]] and [[page|display text]]
 - Renders inline/block math ($...$, $$...$$) in code style and resolves :emoji: shortcodes
 - Interactive TUI with multi-tab support, in-document search (n/N to cycle matches), keyboard link opening (press f), a help overlay (?), and a table of contents sidebar
+- Text selection and clipboard copy: v/V for character- and line-wise visual selection (y copies), mouse drag with double-click word and triple-click line, c to copy a code block's raw source, Y to copy the current section's markdown; delivered over OSC 52 (works across SSH/tmux) and a native helper (pbcopy/wl-copy/xclip/xsel/clip.exe)
 - File browser mode for exploring directories of markdown files
 - 8 built-in color themes with auto dark/light detection, live theme picker that saves to config, plus custom TOML themes
 - Presentation mode (split on --- separators), navigate with arrows/space

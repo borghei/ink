@@ -14,6 +14,8 @@ pub struct TocEntry {
     pub level: u8,
     pub text: String,
     pub line_index: usize,
+    /// 1-based line in the markdown source, for copying a section's source.
+    pub source_line: usize,
 }
 
 impl TocState {
@@ -31,6 +33,7 @@ impl TocState {
                     level: h.level,
                     text: h.text.clone(),
                     line_index,
+                    source_line: h.byte_offset,
                 }
             })
             .collect();

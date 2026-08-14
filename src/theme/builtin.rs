@@ -40,6 +40,8 @@ pub fn dark() -> Theme {
             task_pending: "#565f89".to_string(),
             search_match: "#e0af68".to_string(),
             search_current: "#ff9e64".to_string(),
+            selection_bg: Some("#33467c".to_string()),
+            selection_fg: Some("#c0caf5".to_string()),
             status_bar_bg: "#16161e".to_string(),
             status_bar_fg: "#a9b1d6".to_string(),
             toc_active: "#7aa2f7".to_string(),
@@ -86,6 +88,8 @@ pub fn light() -> Theme {
             // Search: must be visible as FG on white — use warm dark tones
             search_match: "#b35000".to_string(), // burnt orange — visible on white
             search_current: "#cf222e".to_string(), // red — unmistakable current match
+            selection_bg: Some("#cfe4ff".to_string()),
+            selection_fg: Some("#24292f".to_string()),
             status_bar_bg: "#d0d7de".to_string(),
             status_bar_fg: "#24292f".to_string(),
             toc_active: "#0550ae".to_string(),
@@ -131,6 +135,8 @@ pub fn dracula() -> Theme {
             task_pending: "#6272a4".to_string(),
             search_match: "#f1fa8c".to_string(), // yellow — pops on dark dracula bg
             search_current: "#ffb86c".to_string(), // orange
+            selection_bg: Some("#44475a".to_string()),
+            selection_fg: Some("#f8f8f2".to_string()),
             status_bar_bg: "#21222c".to_string(),
             status_bar_fg: "#f8f8f2".to_string(),
             toc_active: "#bd93f9".to_string(),
@@ -176,6 +182,8 @@ pub fn catppuccin() -> Theme {
             task_pending: "#585b70".to_string(),
             search_match: "#f9e2af".to_string(), // peach — warm accent
             search_current: "#fab387".to_string(), // orange
+            selection_bg: Some("#45475a".to_string()),
+            selection_fg: Some("#cdd6f4".to_string()),
             status_bar_bg: "#11111b".to_string(),
             status_bar_fg: "#bac2de".to_string(),
             toc_active: "#89b4fa".to_string(),
@@ -221,6 +229,8 @@ pub fn nord() -> Theme {
             task_pending: "#4c566a".to_string(),
             search_match: "#ebcb8b".to_string(),   // warm yellow
             search_current: "#d08770".to_string(), // aurora orange
+            selection_bg: Some("#434c5e".to_string()),
+            selection_fg: Some("#eceff4".to_string()),
             status_bar_bg: "#3b4252".to_string(),
             status_bar_fg: "#d8dee9".to_string(),
             toc_active: "#88c0d0".to_string(),
@@ -270,6 +280,8 @@ pub fn gruvbox() -> Theme {
             task_pending: "#665c54".to_string(),
             search_match: "#fabd2f".to_string(), // gruvbox yellow
             search_current: "#fe8019".to_string(), // gruvbox orange
+            selection_bg: Some("#504945".to_string()),
+            selection_fg: Some("#ebdbb2".to_string()),
             status_bar_bg: "#1d2021".to_string(),
             status_bar_fg: "#ebdbb2".to_string(),
             toc_active: "#83a598".to_string(),
@@ -315,6 +327,8 @@ pub fn solarized() -> Theme {
             task_pending: "#586e75".to_string(),
             search_match: "#b58900".to_string(), // solarized yellow
             search_current: "#cb4b16".to_string(), // solarized orange
+            selection_bg: Some("#135b68".to_string()),
+            selection_fg: Some("#eee8d5".to_string()),
             status_bar_bg: "#073642".to_string(),
             status_bar_fg: "#839496".to_string(),
             toc_active: "#268bd2".to_string(),

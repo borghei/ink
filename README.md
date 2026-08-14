@@ -146,6 +146,31 @@ Switch between them with `Tab` and `Shift+Tab`.
 
 Press `/` to search within a document. Matches highlight inline; press Enter to lock in the search, then `n`/`N` to cycle forward and backward through results. `Esc` clears the highlights.
 
+### Select text and copy it
+
+ink captures the mouse for wheel-scroll, which used to mean giving up your terminal's own text
+selection. Now it does the job itself, and does it better — it knows where a code block starts and
+where ink's own decoration ends.
+
+- **`v`** starts a character-wise selection, **`V`** a line-wise one. Move with `h j k l`, arrows,
+  `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
+  **`y`** copies and exits; `Esc` cancels.
+- **Drag with the mouse** to select, release to copy. Double-click takes the word, triple-click the
+  line.
+- **`c`** labels every code block on screen — press its letter to copy the block's *raw* source: no
+  borders, no line numbers, no syntax-highlighting escapes.
+- **`Y`** copies the markdown source of the section you are reading (heading included, down to the
+  next heading of the same level). Inside link-hint mode (`f`), `Y` switches the labels from
+  "open this link" to "copy this URL".
+
+Copied text reaches the clipboard two ways at once: an OSC 52 escape sequence, which works over
+SSH and inside tmux, and a native helper (`pbcopy`, `wl-copy`, `xclip`, `xsel`, `clip.exe`) when one
+is installed locally. No extra dependencies, nothing to configure. Set `clipboard` in your config to
+narrow it down or turn it off.
+
+`v` and `V` copy lines the way they are drawn, ink's heading bars and code-box borders included —
+they select what you can see. Reach for `c` and `Y` when you want the source instead.
+
 ### Open links from the keyboard
 
 Press `f` to label every link on screen with a letter. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link right inside ink.
@@ -218,7 +243,10 @@ ink diff old.md new.md
 | `Ctrl+d` / `Ctrl+u` | Half-page down / up |
 | `n` / `N` | Next / previous heading (cycles search matches after a search) |
 | `/` | Search |
-| `f` | Link-hint mode (open/follow links by letter) |
+| `f` | Link-hint mode (open links by letter, `Y` to copy one instead) |
+| `v` / `V` | Select text — character-wise / line-wise (`y` copies, `Esc` cancels) |
+| `c` | Copy a code block by letter |
+| `Y` | Copy the current section as markdown |
 | `t` | Toggle table of contents |
 | `T` | Theme picker (choice is saved to config) |
 | `?` | Help overlay |
@@ -275,6 +303,13 @@ browser_loop = false
 # Set false to let your terminal handle the mouse (click-to-open links, text
 # selection) instead of ink capturing it for wheel-scroll. Default: true
 mouse_capture = true
+
+# How copied text reaches the clipboard:
+#   auto   - OSC 52 escape (crosses SSH and tmux) plus a native helper, if present
+#   osc52  - escape sequence only
+#   native - pbcopy / wl-copy / xclip / xsel / clip.exe only
+#   off    - copying is disabled
+clipboard = "auto"
 ```
 
 ### Custom themes

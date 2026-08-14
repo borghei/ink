@@ -29,6 +29,10 @@ pub const DEFAULT: Preset = &[
     ("help", &["?"]),
     ("nav_back", &["[", "alt-left"]),
     ("nav_forward", &["]", "alt-right"]),
+    ("select_mode", &["v"]),
+    ("select_line_mode", &["shift-v"]),
+    ("copy_code", &["c"]),
+    ("copy_section", &["shift-y"]),
 ];
 
 /// Vim preset is just an alias for the default.
@@ -60,6 +64,10 @@ pub const EMACS: Preset = &[
     ("help", &["?"]),
     ("nav_back", &["[", "alt-left"]),
     ("nav_forward", &["]", "alt-right"]),
+    ("select_mode", &["v"]),
+    ("select_line_mode", &["shift-v"]),
+    ("copy_code", &["c"]),
+    ("copy_section", &["shift-y"]),
 ];
 
 pub fn lookup(name: &str) -> Option<Preset> {

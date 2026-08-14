@@ -1,8 +1,10 @@
+use crate::clipboard::{self, ClipboardMode, CopyOutcome};
 use crate::input::{self, Action};
 use crate::layout;
 use crate::parser::frontmatter;
 use crate::render;
 use crate::search::SearchState;
+use crate::selection::{self, Pos, SelMode, Selection};
 use crate::stats;
 use crate::theme;
 use crate::toc::TocState;
@@ -17,14 +19,22 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 struct Tab {
     filename: String,
     #[allow(dead_code)]
     source: String,
+    /// The markdown actually parsed: frontmatter stripped, wikilinks expanded.
+    /// Heading `source_line`s index into this, so `Y` slices sections from it.
+    content: String,
     styled_lines: Vec<crate::layout::StyledLine>,
     ratatui_lines: Vec<Line<'static>>,
+    /// Per-line rendered text. Selection columns, clipboard extraction, and
+    /// hint placement all measure against these.
+    plain: Vec<String>,
+    /// Fenced code blocks and their raw source, for `c` (copy code block).
+    code_blocks: Vec<crate::layout::CodeBlockSpec>,
     /// Per-line text, lowercased once, for allocation-free search scans.
     lowered: Vec<String>,
     scroll_offset: usize,
@@ -63,6 +73,26 @@ struct NavEntry {
 struct LinkHint {
     label: char,
     url: String,
+}
+
+/// What the letters in the link-hint overlay do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HintKind {
+    /// Open the link (the `f` default).
+    Open,
+    /// Copy the URL to the clipboard (`Y` inside the overlay).
+    CopyUrl,
+}
+
+/// A labeled code block in the current viewport, for `c` (copy code block).
+struct CodeHint {
+    label: char,
+    /// Screen row (relative to the document area) to paint the label on.
+    row: u16,
+    /// Column to paint it at — the right end of the block's top border.
+    col: u16,
+    lang: String,
+    source: String,
 }
 
 /// Available themes for the theme picker.
@@ -157,6 +187,22 @@ fn run_inner(
     let mut help_open = false;
     // Active link-hint overlay: labeled links currently on screen.
     let mut link_hints: Vec<LinkHint> = Vec::new();
+    let mut hint_kind = HintKind::Open;
+    // Active code-block hint overlay.
+    let mut code_hints: Vec<CodeHint> = Vec::new();
+    // Active text selection (visual mode or an in-progress mouse drag).
+    let mut sel: Option<Selection> = None;
+    let mut visual_mode = false;
+    // A left button is down and the pointer has moved since it went down.
+    let mut dragging = false;
+    let mut drag_moved = false;
+    // (when, column, row, consecutive clicks) — crossterm reports no click
+    // count, so double/triple clicks are timed here.
+    let mut last_click: Option<(Instant, u16, u16, u8)> = None;
+    // Transient status message ("copied 84 chars") and when it was set.
+    let mut flash: Option<(String, Instant)> = None;
+    // Where the document was last drawn, for translating mouse coordinates.
+    let mut doc_rect = Rect::new(0, 0, 0, 0);
     // Bumped on every theme change so tabs know their cached layout is stale.
     let mut theme_gen: u32 = 0;
 
@@ -306,6 +352,14 @@ fn run_inner(
             }
         }
 
+        // A copy message is worth two seconds of the status bar, no longer.
+        if let Some((_, at)) = flash {
+            if at.elapsed() >= Duration::from_secs(2) {
+                flash = None;
+                dirty = true;
+            }
+        }
+
         let tab = &tabs[active_tab];
         let total_lines = tab.ratatui_lines.len();
         let max_scroll = total_lines.saturating_sub(viewport_height as usize);
@@ -399,7 +453,11 @@ fn run_inner(
                     render::render_toc(frame, toc_area, &tab.toc.headings, tab.toc.selected, &t);
                 }
 
-                // Render document (with search highlights)
+                // Remembered for the next mouse event: screen coordinates only
+                // mean something relative to where the document was drawn.
+                doc_rect = doc_area;
+
+                // Render document (with search highlights and selection)
                 render::render_document_with_search(
                     frame,
                     doc_area,
@@ -407,6 +465,8 @@ fn run_inner(
                     tab.scroll_offset,
                     total_lines,
                     &search,
+                    sel.as_ref(),
+                    &tab.plain,
                     &t,
                 );
 
@@ -464,7 +524,20 @@ fn run_inner(
                         .iter()
                         .map(|h| (h.label, h.url.clone()))
                         .collect();
-                    render::render_link_hints(frame, main_area, &hints, &t);
+                    let title = match hint_kind {
+                        HintKind::Open => {
+                            "Follow link — press a letter, Y to copy instead, Esc to cancel"
+                        }
+                        HintKind::CopyUrl => "Copy link URL — press a letter, Esc to cancel",
+                    };
+                    render::render_link_hints(frame, main_area, &hints, title, &t);
+                }
+
+                // Code-block hint labels, painted on the blocks themselves.
+                if !code_hints.is_empty() {
+                    let labels: Vec<(char, u16, u16)> =
+                        code_hints.iter().map(|h| (h.label, h.row, h.col)).collect();
+                    render::render_code_hints(frame, doc_area, &labels, &t);
                 }
 
                 // Help overlay
@@ -472,8 +545,10 @@ fn run_inner(
                     render::render_help(frame, main_area, &t);
                 }
 
-                // Bottom bar: search input OR keybindings + stats
-                if search.active {
+                // Bottom bar: copy result OR search input OR keybindings + stats
+                if let Some((ref msg, _)) = flash {
+                    render::render_flash_bar(frame, bottom_bar_area, msg, &t);
+                } else if search.active {
                     render::render_search_bar(frame, bottom_bar_area, &search, &t);
                 } else {
                     render::render_bottom_bar(
@@ -495,8 +570,10 @@ fn run_inner(
         // Handle input
         let input_mode = if search.active {
             input::InputMode::Search
-        } else if !link_hints.is_empty() {
+        } else if !link_hints.is_empty() || !code_hints.is_empty() {
             input::InputMode::LinkHint
+        } else if visual_mode {
+            input::InputMode::Visual
         } else if args.slides && !theme_picker_open && !help_open {
             input::InputMode::Slides
         } else {
@@ -514,15 +591,46 @@ fn run_inner(
                 continue;
             }
 
-            // Link-hint overlay is modal: a label opens that link, Esc cancels.
+            // Code-block hint overlay is modal: a label copies that block.
+            if !code_hints.is_empty() {
+                if let Action::LinkHint(c) = action {
+                    if let Some(hint) = code_hints.iter().find(|h| h.label == c) {
+                        let what = if hint.lang.is_empty() {
+                            "code block".to_string()
+                        } else {
+                            format!("code block ({})", hint.lang)
+                        };
+                        flash = Some((
+                            copy_text(&hint.source, args.clipboard, &what),
+                            Instant::now(),
+                        ));
+                    }
+                }
+                code_hints.clear();
+                continue;
+            }
+
+            // Link-hint overlay is modal: a label opens (or copies) that link,
+            // Y switches between the two, Esc cancels.
             if !link_hints.is_empty() {
                 match action {
+                    Action::HintCopyToggle => {
+                        hint_kind = HintKind::CopyUrl;
+                    }
                     Action::LinkHint(c) => {
                         if let Some(hint) = link_hints.iter().find(|h| h.label == c) {
-                            open_link(
-                                &hint.url, &mut tabs, active_tab, &args, terminal, theme_gen,
-                                graphics,
-                            );
+                            match hint_kind {
+                                HintKind::Open => open_link(
+                                    &hint.url, &mut tabs, active_tab, &args, terminal, theme_gen,
+                                    graphics,
+                                ),
+                                HintKind::CopyUrl => {
+                                    flash = Some((
+                                        copy_text(&hint.url, args.clipboard, "link"),
+                                        Instant::now(),
+                                    ));
+                                }
+                            }
                         }
                         link_hints.clear();
                     }
@@ -576,6 +684,85 @@ fn run_inner(
                     }
                     _ => {}
                 }
+                continue;
+            }
+
+            // Visual mode is modal: motions move the cursor end of the
+            // selection, `y` copies it, Esc/q leaves without copying.
+            if visual_mode {
+                let plain = &tabs[active_tab].plain;
+                let Some(mut cursel) = sel else {
+                    visual_mode = false;
+                    continue;
+                };
+                let cur = cursel.cursor;
+                let line_text = plain.get(cur.line).map(|t| t.as_str()).unwrap_or("");
+                let vh = viewport_height as usize;
+                let mut moved = true;
+                match action {
+                    Action::Yank => {
+                        let text = cursel.extract(plain);
+                        let what = format!("{} chars", text.chars().count());
+                        flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
+                        visual_mode = false;
+                        sel = None;
+                        continue;
+                    }
+                    Action::SelCancel | Action::ExitApp => {
+                        visual_mode = false;
+                        sel = None;
+                        continue;
+                    }
+                    Action::SelectMode => cursel.mode = SelMode::Char,
+                    Action::SelectLineMode => {
+                        cursel.mode = if cursel.mode == SelMode::Line {
+                            SelMode::Char
+                        } else {
+                            SelMode::Line
+                        }
+                    }
+                    Action::SelDown(n) => cursel.cursor.line = cur.line.saturating_add(n as usize),
+                    Action::SelUp(n) => cursel.cursor.line = cur.line.saturating_sub(n as usize),
+                    Action::SelLeft(n) => cursel.cursor.col = cur.col.saturating_sub(n as usize),
+                    Action::SelRight(n) => cursel.cursor.col = cur.col.saturating_add(n as usize),
+                    Action::SelWordNext => {
+                        cursel.cursor.col = selection::next_word_col(line_text, cur.col)
+                    }
+                    Action::SelWordPrev => {
+                        cursel.cursor.col = selection::prev_word_col(line_text, cur.col)
+                    }
+                    Action::SelLineStart => cursel.cursor.col = 0,
+                    Action::SelLineEnd => {
+                        cursel.cursor.col = selection::line_width(line_text).saturating_sub(1)
+                    }
+                    Action::SelDocStart => cursel.cursor = Pos::new(0, 0),
+                    Action::SelDocEnd => {
+                        cursel.cursor = Pos::new(plain.len().saturating_sub(1), 0);
+                    }
+                    Action::SelPageDown => {
+                        cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1)
+                    }
+                    Action::SelPageUp => {
+                        cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1)
+                    }
+                    Action::Resize(_, _) => {
+                        resize_pending = Some(std::time::Instant::now());
+                        moved = false;
+                    }
+                    _ => moved = false,
+                }
+                if moved {
+                    cursel.cursor = selection::clamp(cursel.cursor, plain);
+                    // Keep the moving end of the selection on screen.
+                    let scroll = &mut tabs[active_tab].scroll_offset;
+                    if cursel.cursor.line < *scroll {
+                        *scroll = cursel.cursor.line;
+                    } else if cursel.cursor.line >= *scroll + vh {
+                        *scroll = cursel.cursor.line + 1 - vh;
+                    }
+                    *scroll = (*scroll).min(max_scroll);
+                }
+                sel = Some(cursel);
                 continue;
             }
 
@@ -888,6 +1075,134 @@ fn run_inner(
                     }
                 }
 
+                // Selection & clipboard
+                Action::SelectMode | Action::SelectLineMode => {
+                    let mode = if action == Action::SelectLineMode {
+                        SelMode::Line
+                    } else {
+                        SelMode::Char
+                    };
+                    // Normal mode has no caret to inherit, so the selection
+                    // starts on the first line of the viewport that has text —
+                    // anchoring on the blank spacing above a heading looks
+                    // broken.
+                    let tab = &tabs[active_tab];
+                    let start = tab.scroll_offset.min(tab.plain.len().saturating_sub(1));
+                    let end = (start + viewport_height as usize).min(tab.plain.len());
+                    let line = (start..end)
+                        .find(|i| !tab.plain[*i].trim().is_empty())
+                        .unwrap_or(start);
+                    let col = tab
+                        .plain
+                        .get(line)
+                        .map_or(0, |t| selection::content_start_col(t));
+                    sel = Some(Selection::new(Pos::new(line, col), mode));
+                    visual_mode = true;
+                }
+
+                // Code-block hints: label every block touching the viewport.
+                Action::CopyCode => {
+                    let tab = &tabs[active_tab];
+                    let top = tab.scroll_offset;
+                    let bottom = top + viewport_height as usize;
+                    code_hints = tab
+                        .code_blocks
+                        .iter()
+                        .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
+                        .zip('a'..='z')
+                        .map(|(b, label)| {
+                            // A block scrolled off the top keeps its label on
+                            // the first visible row.
+                            let row = b.line_index.max(top) - top;
+                            let width = tab
+                                .plain
+                                .get(b.line_index)
+                                .map_or(0, |t| selection::line_width(t));
+                            CodeHint {
+                                label,
+                                row: row as u16,
+                                col: width.saturating_sub(4) as u16,
+                                lang: b.lang.clone(),
+                                source: b.source.clone(),
+                            }
+                        })
+                        .collect();
+                    if code_hints.is_empty() {
+                        flash = Some(("no code blocks on screen".to_string(), Instant::now()));
+                    }
+                }
+
+                // Copy the section the viewport starts in, as markdown source.
+                Action::CopySection => {
+                    let tab = &tabs[active_tab];
+                    let (text, what) = section_source(tab, viewport_height as usize);
+                    flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
+                }
+
+                // Mouse selection. Only reachable when ink holds the mouse;
+                // with `mouse_capture = false` these events never arrive and
+                // the terminal's own selection keeps working.
+                Action::MouseDown(col, row) => {
+                    if let Some(pos) = screen_to_doc(doc_rect, &tabs[active_tab], col, row) {
+                        let clicks = match last_click {
+                            Some((at, c, r, n))
+                                if c == col
+                                    && r == row
+                                    && at.elapsed() < Duration::from_millis(400) =>
+                            {
+                                n % 3 + 1
+                            }
+                            _ => 1,
+                        };
+                        last_click = Some((Instant::now(), col, row, clicks));
+                        let plain = &tabs[active_tab].plain;
+                        let line_text = plain.get(pos.line).map(|t| t.as_str()).unwrap_or("");
+                        sel = Some(match clicks {
+                            2 => {
+                                let (from, to) = selection::word_bounds(line_text, pos.col);
+                                Selection {
+                                    anchor: Pos::new(pos.line, from),
+                                    cursor: Pos::new(pos.line, to),
+                                    mode: SelMode::Char,
+                                }
+                            }
+                            3 => Selection::new(pos, SelMode::Line),
+                            _ => Selection::new(pos, SelMode::Char),
+                        });
+                        // A double/triple click has already selected something;
+                        // release copies it without any drag.
+                        drag_moved = clicks > 1;
+                        dragging = true;
+                        visual_mode = false;
+                    }
+                }
+                Action::MouseDrag(col, row) => {
+                    if dragging {
+                        if let Some(pos) = screen_to_doc(doc_rect, &tabs[active_tab], col, row) {
+                            if let Some(ref mut cursel) = sel {
+                                if pos != cursel.cursor {
+                                    drag_moved = true;
+                                }
+                                cursel.cursor = pos;
+                            }
+                        }
+                    }
+                }
+                Action::MouseUp(_, _) => {
+                    dragging = false;
+                    match sel {
+                        // A plain click with no drag is a dismiss, not a copy.
+                        Some(_) if !drag_moved => sel = None,
+                        Some(cursel) => {
+                            let text = cursel.extract(&tabs[active_tab].plain);
+                            let what = format!("{} chars", text.chars().count());
+                            flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
+                        }
+                        None => {}
+                    }
+                    drag_moved = false;
+                }
+
                 Action::Resize(_, _) => {
                     // Debounced: dragging a terminal edge fires dozens of
                     // resize events, and every rebuild re-encodes all images.
@@ -901,6 +1216,82 @@ fn run_inner(
             tabs[active_tab].toc.update_selection(current_offset);
         }
     }
+}
+
+/// Put `text` on the clipboard and return the message for the status bar.
+///
+/// `what` names the thing copied ("84 chars", "code block (bash)") so every
+/// copy path reports itself the same way.
+fn copy_text(text: &str, mode: ClipboardMode, what: &str) -> String {
+    match clipboard::copy(text, mode) {
+        CopyOutcome::Copied => format!("copied {what}"),
+        CopyOutcome::Disabled => "clipboard disabled in config".to_string(),
+        CopyOutcome::Empty => "nothing to copy".to_string(),
+        CopyOutcome::TooLarge => "selection too large for clipboard".to_string(),
+        CopyOutcome::Failed => "clipboard unavailable".to_string(),
+    }
+}
+
+/// Translate a screen cell to a document position, or `None` when the click
+/// landed outside the document area (top bar, TOC sidebar, status bar).
+fn screen_to_doc(area: Rect, tab: &Tab, col: u16, row: u16) -> Option<Pos> {
+    if area.width == 0
+        || col < area.x
+        || row < area.y
+        || col >= area.x + area.width
+        || row >= area.y + area.height
+    {
+        return None;
+    }
+    let line = tab.scroll_offset + (row - area.y) as usize;
+    if line >= tab.plain.len() {
+        return None;
+    }
+    // Snap to the start of the grapheme under the pointer, so clicking the
+    // right half of a wide character selects that character.
+    let col = selection::snap_col(&tab.plain[line], (col - area.x) as usize);
+    Some(Pos::new(line, col))
+}
+
+/// The markdown source of the section the viewport currently starts in, plus a
+/// label for the status bar.
+///
+/// A section runs from its heading to the next heading of the same or higher
+/// level — a `##` copies its `###` subsections along with it. A document with
+/// no headings copies whole.
+fn section_source(tab: &Tab, viewport_height: usize) -> (String, String) {
+    let headings = &tab.toc.headings;
+    let lines: Vec<&str> = tab.content.lines().collect();
+    let Some(current) = headings.get(tab.toc.selected) else {
+        return (tab.content.clone(), "document".to_string());
+    };
+    // `toc.selected` is the last heading at or above the viewport top, and
+    // falls back to the first heading when the reader is still above it. In
+    // that case the section only counts if its heading is actually on screen;
+    // otherwise there is no current section and the whole document is the
+    // honest answer.
+    if tab.toc.selected == 0
+        && current.line_index > tab.scroll_offset
+        && current.line_index >= tab.scroll_offset + viewport_height
+    {
+        return (tab.content.clone(), "document".to_string());
+    }
+    // sourcepos lines are 1-based.
+    let start = current.source_line.saturating_sub(1);
+    let end = headings
+        .iter()
+        .skip(tab.toc.selected + 1)
+        .find(|h| h.level <= current.level)
+        .map(|h| h.source_line.saturating_sub(1))
+        .unwrap_or(lines.len());
+    if start >= lines.len() {
+        return (String::new(), "nothing".to_string());
+    }
+    let body = lines[start..end.min(lines.len())]
+        .join("\n")
+        .trim_end()
+        .to_string();
+    (body, format!("section \"{}\"", current.text))
 }
 
 fn is_local_file(input: &str) -> bool {
@@ -1069,6 +1460,7 @@ fn build_tab(
         lines: styled_lines,
         headings,
         images: image_specs,
+        code_blocks,
     } = layout::layout_document(
         root,
         &theme::resolve_theme(&args.theme),
@@ -1122,6 +1514,7 @@ fn build_tab(
             level: h.level,
             text: h.text,
             line_index: h.line_index,
+            source_line: h.source_line,
         })
         .collect();
 
@@ -1129,11 +1522,16 @@ fn build_tab(
     toc.headings = toc_entries;
     toc.visible = args.toc;
 
+    let plain = crate::selection::plain_lines(&styled_lines);
+
     Tab {
         filename: filename.to_string(),
         source,
+        content,
         styled_lines,
         ratatui_lines,
+        plain,
+        code_blocks,
         lowered,
         scroll_offset: 0,
         toc,
@@ -1142,5 +1540,131 @@ fn build_tab(
         built_width: term_width,
         built_gen: gen,
         images,
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+
+    /// A tab carrying just the fields the section/mouse helpers read.
+    fn tab(content: &str, headings: &[(u8, &str, usize, usize)], scroll: usize) -> Tab {
+        let plain: Vec<String> = content.lines().map(|l| l.to_string()).collect();
+        let mut toc = TocState::empty();
+        toc.headings = headings
+            .iter()
+            .map(
+                |(level, text, line_index, source_line)| crate::toc::TocEntry {
+                    level: *level,
+                    text: (*text).to_string(),
+                    line_index: *line_index,
+                    source_line: *source_line,
+                },
+            )
+            .collect();
+        toc.update_selection(scroll);
+        Tab {
+            filename: "t.md".into(),
+            source: content.into(),
+            content: content.into(),
+            styled_lines: Vec::new(),
+            ratatui_lines: Vec::new(),
+            plain,
+            code_blocks: Vec::new(),
+            lowered: Vec::new(),
+            scroll_offset: scroll,
+            toc,
+            word_count: 0,
+            reading_time: 0,
+            built_width: 80,
+            built_gen: 0,
+            images: Vec::new(),
+        }
+    }
+
+    const DOC: &str =
+        "# Top\n\nintro\n\n## Alpha\n\na body\n\n### Alpha sub\n\nnested\n\n## Beta\n\nb body\n";
+    // (level, text, display line, source line)
+    const HEADINGS: &[(u8, &str, usize, usize)] = &[
+        (1, "Top", 2, 1),
+        (2, "Alpha", 8, 5),
+        (3, "Alpha sub", 14, 9),
+        (2, "Beta", 20, 13),
+    ];
+
+    #[test]
+    fn a_section_runs_to_the_next_heading_of_the_same_level() {
+        // Sitting inside Alpha: its subsection comes along, Beta does not.
+        let t = tab(DOC, HEADINGS, 8);
+        let (body, label) = section_source(&t, 20);
+        assert_eq!(label, "section \"Alpha\"");
+        assert!(body.starts_with("## Alpha"));
+        assert!(
+            body.contains("### Alpha sub"),
+            "subsection must be included"
+        );
+        assert!(
+            !body.contains("## Beta"),
+            "must stop at the next same-level heading"
+        );
+    }
+
+    #[test]
+    fn a_subsection_stops_at_its_own_level() {
+        let t = tab(DOC, HEADINGS, 14);
+        let (body, label) = section_source(&t, 20);
+        assert_eq!(label, "section \"Alpha sub\"");
+        assert_eq!(body, "### Alpha sub\n\nnested");
+    }
+
+    #[test]
+    fn the_last_section_runs_to_the_end_of_the_document() {
+        let t = tab(DOC, HEADINGS, 20);
+        let (body, _) = section_source(&t, 20);
+        assert_eq!(body, "## Beta\n\nb body");
+    }
+
+    #[test]
+    fn a_document_without_headings_copies_whole() {
+        let t = tab("just prose\n\nmore prose\n", &[], 0);
+        let (body, label) = section_source(&t, 20);
+        assert_eq!(label, "document");
+        assert_eq!(body, "just prose\n\nmore prose\n");
+    }
+
+    #[test]
+    fn scrolled_past_every_heading_still_resolves_the_last_one() {
+        let t = tab(DOC, HEADINGS, 99);
+        let (_, label) = section_source(&t, 20);
+        assert_eq!(label, "section \"Beta\"");
+    }
+
+    #[test]
+    fn a_viewport_that_has_not_reached_the_first_heading_copies_the_document() {
+        // Heading at display line 40, viewport is 20 rows from the top: the
+        // reader is not in any section yet.
+        let t = tab(DOC, &[(1, "Top", 40, 1)], 0);
+        let (_, label) = section_source(&t, 20);
+        assert_eq!(label, "document");
+    }
+
+    #[test]
+    fn screen_to_doc_maps_only_inside_the_document_area() {
+        // Ten lines, scrolled to line 5 — the doc must outlast the scroll
+        // offset or every lookup is out of range for the wrong reason.
+        let doc: String = (0..10).map(|i| format!("line {i}\n")).collect();
+        let t = tab(&doc, &[], 5);
+        let area = Rect::new(4, 2, 40, 10);
+        // Top-left of the area is the first line of the current scroll window.
+        assert_eq!(screen_to_doc(area, &t, 4, 2), Some(Pos::new(5, 0)));
+        // Outside on every side.
+        assert_eq!(screen_to_doc(area, &t, 3, 2), None);
+        assert_eq!(screen_to_doc(area, &t, 4, 1), None);
+        assert_eq!(screen_to_doc(area, &t, 44, 2), None);
+        assert_eq!(screen_to_doc(area, &t, 4, 12), None);
+        // Past the end of the document (scroll 5 + row 5 = line 10 of 10).
+        assert_eq!(screen_to_doc(area, &t, 4, 7), None);
+        // A never-drawn area cannot resolve anything.
+        assert_eq!(screen_to_doc(Rect::new(0, 0, 0, 0), &t, 0, 0), None);
     }
 }

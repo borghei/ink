@@ -38,7 +38,17 @@ fn viewport_shows_slice_at_offset() {
     terminal
         .draw(|f| {
             let area = Rect::new(0, 0, 20, 10);
-            render_document_with_search(f, area, &lines, 500, lines.len(), &search, &theme);
+            render_document_with_search(
+                f,
+                area,
+                &lines,
+                500,
+                lines.len(),
+                &search,
+                None,
+                &[],
+                &theme,
+            );
         })
         .unwrap();
 
@@ -63,7 +73,17 @@ fn offset_past_end_does_not_panic() {
     terminal
         .draw(|f| {
             let area = Rect::new(0, 0, 20, 10);
-            render_document_with_search(f, area, &lines, 9999, lines.len(), &search, &theme);
+            render_document_with_search(
+                f,
+                area,
+                &lines,
+                9999,
+                lines.len(),
+                &search,
+                None,
+                &[],
+                &theme,
+            );
         })
         .unwrap();
     // No panic is the assertion.

@@ -122,6 +122,10 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "help" => Action::Help,
         "nav_back" => Action::NavBack,
         "nav_forward" => Action::NavForward,
+        "select_mode" => Action::SelectMode,
+        "select_line_mode" => Action::SelectLineMode,
+        "copy_code" => Action::CopyCode,
+        "copy_section" => Action::CopySection,
         _ => return None,
     })
 }
