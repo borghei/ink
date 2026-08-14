@@ -21,6 +21,7 @@ fn test_args() -> Args {
         frontmatter: false,
         spacing: Spacing::Normal,
         mouse_capture: true,
+        clipboard: ink_md::clipboard::ClipboardMode::Off,
     }
 }
 

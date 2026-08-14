@@ -22,6 +22,8 @@ pub struct BehaviorConfig {
     /// click-to-open (OSC 8) and text selection keep working. Default true
     /// (mouse wheel scrolls the document).
     pub mouse_capture: Option<bool>,
+    /// How copies reach the clipboard: "auto" | "osc52" | "native" | "off".
+    pub clipboard: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -146,6 +146,7 @@ pub struct Args {
     pub frontmatter: bool,
     pub spacing: Spacing,
     pub mouse_capture: bool,
+    pub clipboard: crate::clipboard::ClipboardMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -276,6 +277,17 @@ pub fn run() -> Result<()> {
             .and_then(|c| c.behavior.as_ref())
             .and_then(|b| b.mouse_capture)
             .unwrap_or(true),
+        clipboard: user_config
+            .as_ref()
+            .and_then(|c| c.behavior.as_ref())
+            .and_then(|b| b.clipboard.as_deref())
+            .map(|v| {
+                crate::clipboard::ClipboardMode::parse(v).unwrap_or_else(|| {
+                    eprintln!("ink: unknown clipboard mode '{v}', using 'auto'");
+                    crate::clipboard::ClipboardMode::Auto
+                })
+            })
+            .unwrap_or_default(),
     };
 
     // Check if input is a directory or no input with a TTY → launch file browser
@@ -505,6 +517,13 @@ const STARTER_CONFIG: &str = r#"# ink configuration
 # inside ink). Default: true.
 # mouse_capture = true
 
+# How copied text reaches the clipboard:
+#   auto   - OSC 52 escape (works over SSH) and a native helper, if present
+#   osc52  - escape sequence only
+#   native - pbcopy / wl-copy / xclip / xsel / clip.exe only
+#   off    - copying is disabled
+# clipboard = "auto"
+
 [keybindings]
 # Built-in preset: "default" (vim-flavored), "vim", or "emacs"
 # preset = "default"
@@ -610,6 +629,10 @@ fn print_keybindings() {
             Help => "help",
             NavBack => "nav_back",
             NavForward => "nav_forward",
+            SelectMode => "select_mode",
+            SelectLineMode => "select_line_mode",
+            CopyCode => "copy_code",
+            CopySection => "copy_section",
             _ => "?",
         }
         .to_string()

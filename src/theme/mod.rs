@@ -83,6 +83,12 @@ pub struct ThemeColors {
     pub task_pending: String,
     pub search_match: String,
     pub search_current: String,
+    /// Background of selected text. Optional so themes written before
+    /// selection existed still deserialize; see [`ThemeColors::selection`].
+    #[serde(default)]
+    pub selection_bg: Option<String>,
+    #[serde(default)]
+    pub selection_fg: Option<String>,
     pub status_bar_bg: String,
     pub status_bar_fg: String,
     pub toc_active: String,
@@ -92,6 +98,25 @@ pub struct ThemeColors {
     pub admonition_tip: String,
     pub admonition_important: String,
     pub admonition_caution: String,
+}
+
+impl ThemeColors {
+    /// Selection colors as `(bg, fg)`, filling in for a theme that predates
+    /// them: the search-match color already had to be legible against this
+    /// theme's background, and the background itself is the safest foreground
+    /// to print on top of it.
+    pub fn selection(&self) -> (String, String) {
+        let bg = self
+            .selection_bg
+            .clone()
+            .unwrap_or_else(|| self.search_match.clone());
+        let fg = self
+            .selection_fg
+            .clone()
+            .or_else(|| self.bg.clone())
+            .unwrap_or_else(|| self.fg.clone());
+        (bg, fg)
+    }
 }
 
 /// Resolve a theme by name. Checks built-in themes first, then user config dir.
@@ -175,6 +200,61 @@ pub fn hex_to_color(hex: &str) -> ratatui::style::Color {
     } else {
         ratatui::style::Color::Indexed(caps::rgb_to_256(r, g, b))
     }
+}
+
+/// A theme file written before selection colors existed must still load, and
+/// must still produce a legible selection. Every user theme in the wild is one
+/// of these.
+#[test]
+#[cfg(test)]
+fn user_theme_without_selection_keys() {
+    const LEGACY: &str = r##"name = "mytheme"
+
+[colors]
+bg = "#1a1b26"
+fg = "#c0caf5"
+heading1 = "#7aa2f7"
+heading2 = "#7dcfff"
+heading3 = "#bb9af7"
+heading4 = "#9ece6a"
+heading5 = "#e0af68"
+heading6 = "#f7768e"
+bold = "#e6e8f0"
+italic = "#c0caf5"
+strikethrough = "#565f89"
+code_fg = "#a9b1d6"
+code_bg = "#24283b"
+code_block_bg = "#24283b"
+link = "#7aa2f7"
+link_url = "#565f89"
+blockquote_bar = "#565f89"
+blockquote_text = "#a9b1d6"
+list_bullet = "#7aa2f7"
+list_number = "#7aa2f7"
+table_border = "#3b4261"
+table_header = "#7dcfff"
+hr = "#3b4261"
+task_done = "#9ece6a"
+task_pending = "#565f89"
+search_match = "#e0af68"
+search_current = "#ff9e64"
+status_bar_bg = "#16161e"
+status_bar_fg = "#a9b1d6"
+toc_active = "#7aa2f7"
+toc_inactive = "#565f89"
+admonition_note = "#7aa2f7"
+admonition_warning = "#e0af68"
+admonition_tip = "#9ece6a"
+admonition_important = "#bb9af7"
+admonition_caution = "#f7768e"
+"##;
+    let theme: Theme = toml::from_str(LEGACY).expect("legacy theme must still deserialize");
+    assert!(theme.colors.selection_bg.is_none());
+    let (bg, fg) = theme.colors.selection();
+    // Falls back to the search-match color, which this theme already had to
+    // make legible against its own background.
+    assert_eq!(bg, "#e0af68");
+    assert_eq!(fg, "#1a1b26");
 }
 
 #[cfg(test)]

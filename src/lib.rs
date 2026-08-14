@@ -1,6 +1,7 @@
 pub mod app;
 pub mod browser;
 pub mod cli;
+pub mod clipboard;
 pub mod config;
 pub mod doctor;
 pub mod graphics;
@@ -13,6 +14,7 @@ pub mod parser;
 pub mod render;
 pub mod sanitize;
 pub mod search;
+pub mod selection;
 pub mod slides;
 pub mod stats;
 pub mod theme;

@@ -41,6 +41,41 @@ pub enum Action {
     LinkHint(char),
     SlideNext,
     SlidePrev,
+
+    // Selection & clipboard
+    /// Enter character-wise visual mode.
+    SelectMode,
+    /// Enter (or, inside visual mode, toggle) line-wise visual mode.
+    SelectLineMode,
+    /// Copy the selection and leave visual mode.
+    Yank,
+    /// Leave visual mode without copying.
+    SelCancel,
+    /// Move the visual-mode cursor by whole lines / columns.
+    SelUp(u16),
+    SelDown(u16),
+    SelLeft(u16),
+    SelRight(u16),
+    SelWordNext,
+    SelWordPrev,
+    SelLineStart,
+    SelLineEnd,
+    SelDocStart,
+    SelDocEnd,
+    SelPageDown,
+    SelPageUp,
+    /// Label the visible code blocks for copying.
+    CopyCode,
+    /// Copy the section the viewport starts in, as markdown source.
+    CopySection,
+    /// Inside the link-hint overlay: copy the URL instead of opening it.
+    HintCopyToggle,
+
+    /// Mouse press / drag / release at a (column, row) on screen.
+    MouseDown(u16, u16),
+    MouseDrag(u16, u16),
+    MouseUp(u16, u16),
+
     None,
 }
 
@@ -55,6 +90,8 @@ pub enum InputMode {
     LinkHint,
     /// Presentation mode — arrows/space move between slides.
     Slides,
+    /// Visual selection — motions move the cursor, `y` copies.
+    Visual,
 }
 
 /// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
@@ -139,6 +176,9 @@ pub fn keymap_summary() -> Vec<(&'static str, Vec<String>)> {
         "table of contents",
         "follow link",
         "link hints",
+        "select text",
+        "copy code block",
+        "copy section",
         "theme picker",
         "tabs",
         "back / forward",
@@ -167,6 +207,9 @@ fn action_label(a: &Action) -> &'static str {
         Action::ToggleToc => "table of contents",
         Action::FollowLink => "follow link",
         Action::LinkMode => "link hints",
+        Action::SelectMode | Action::SelectLineMode => "select text",
+        Action::CopyCode => "copy code block",
+        Action::CopySection => "copy section",
         Action::ThemePicker => "theme picker",
         Action::NextTab | Action::PrevTab => "tabs",
         Action::NavBack | Action::NavForward => "back / forward",
@@ -227,6 +270,7 @@ fn map_event(event: Event, mode: InputMode) -> Action {
             InputMode::Search => map_search_key(key),
             InputMode::LinkHint => map_link_hint_key(key),
             InputMode::Slides => map_slides_key(key),
+            InputMode::Visual => map_visual_key(key),
             InputMode::Normal => map_key(key),
         },
         Event::Mouse(mouse) => map_mouse(mouse),
@@ -238,7 +282,45 @@ fn map_event(event: Event, mode: InputMode) -> Action {
 fn map_link_hint_key(key: KeyEvent) -> Action {
     match key.code {
         KeyCode::Esc => Action::CloseSearch,
+        // Labels are always lowercase, so an uppercase Y is free to mean
+        // "copy this one instead of opening it".
+        KeyCode::Char('Y') => Action::HintCopyToggle,
         KeyCode::Char(c) if c.is_ascii_alphabetic() => Action::LinkHint(c.to_ascii_lowercase()),
+        _ => Action::None,
+    }
+}
+
+/// Visual-mode keys.
+///
+/// Fixed, like Search and Slides mode: motions here are a self-contained
+/// vim-shaped table rather than the configurable keymap, and arrow keys cover
+/// anyone who does not think in `hjkl`.
+fn map_visual_key(key: KeyEvent) -> Action {
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Action::SelCancel,
+            KeyCode::Char('d') | KeyCode::Char('f') => Action::SelPageDown,
+            KeyCode::Char('u') | KeyCode::Char('b') => Action::SelPageUp,
+            _ => Action::None,
+        };
+    }
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('q') => Action::SelCancel,
+        KeyCode::Char('y') | KeyCode::Enter => Action::Yank,
+        KeyCode::Char('v') => Action::SelectMode,
+        KeyCode::Char('V') => Action::SelectLineMode,
+        KeyCode::Char('j') | KeyCode::Down => Action::SelDown(1),
+        KeyCode::Char('k') | KeyCode::Up => Action::SelUp(1),
+        KeyCode::Char('h') | KeyCode::Left => Action::SelLeft(1),
+        KeyCode::Char('l') | KeyCode::Right => Action::SelRight(1),
+        KeyCode::Char('w') | KeyCode::Char('e') => Action::SelWordNext,
+        KeyCode::Char('b') => Action::SelWordPrev,
+        KeyCode::Char('0') | KeyCode::Home => Action::SelLineStart,
+        KeyCode::Char('$') | KeyCode::End => Action::SelLineEnd,
+        KeyCode::Char('g') => Action::SelDocStart,
+        KeyCode::Char('G') => Action::SelDocEnd,
+        KeyCode::Char(' ') | KeyCode::PageDown => Action::SelPageDown,
+        KeyCode::PageUp => Action::SelPageUp,
         _ => Action::None,
     }
 }
@@ -330,9 +412,13 @@ fn normalize_event(key: KeyEvent) -> (KeyCode, KeyModifiers) {
 }
 
 fn map_mouse(mouse: MouseEvent) -> Action {
+    use crossterm::event::MouseButton;
     match mouse.kind {
         MouseEventKind::ScrollUp => Action::ScrollUp(3),
         MouseEventKind::ScrollDown => Action::ScrollDown(3),
+        MouseEventKind::Down(MouseButton::Left) => Action::MouseDown(mouse.column, mouse.row),
+        MouseEventKind::Drag(MouseButton::Left) => Action::MouseDrag(mouse.column, mouse.row),
+        MouseEventKind::Up(MouseButton::Left) => Action::MouseUp(mouse.column, mouse.row),
         _ => Action::None,
     }
 }

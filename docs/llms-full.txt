@@ -54,7 +54,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Help overlay: press ? for a popup of the active keybindings
 - Table of contents sidebar showing heading structure, tracks scroll position
 - Navigation history with back/forward ([ ] keys or Alt+Arrow)
-- Mouse wheel scrolling (can be disabled via behavior.mouse_capture so the terminal handles clicks/selection)
+- Mouse wheel scrolling, plus drag-to-select (can be disabled via behavior.mouse_capture so the terminal handles clicks/selection instead)
 - Event-driven redraw (no CPU when idle) and virtualized rendering for large documents
 - Responsive to terminal resizing; shows a message instead of breaking on very small terminals
 
@@ -106,7 +106,11 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Ctrl+d/Ctrl+u: half-page down/up
 - n/N: next/previous heading (cycles search matches after a search)
 - /: search
-- f: link-hint mode (open/follow links by letter)
+- f: link-hint mode (open/follow links by letter; Y inside the overlay copies the URL instead)
+- v/V: select text character-wise / line-wise (motions hjkl, arrows, w/b, 0/$, g/G, Ctrl+d/Ctrl+u; y copies, Esc cancels)
+- Mouse: drag selects and copies on release; double-click selects a word, triple-click a line
+- c: label the code blocks on screen and copy one's raw source by letter
+- Y: copy the current section as markdown source
 - ?: help overlay
 - t: toggle table of contents
 - T: theme picker (saved to config)
@@ -131,6 +135,7 @@ frontmatter = false
 [behavior]
 browser_loop = false   # return to browser after closing a doc
 mouse_capture = true    # set false to let the terminal handle clicks/selection
+clipboard = "auto"      # auto | osc52 | native | off — how copied text reaches the clipboard
 
 [keybindings]
 preset = "emacs"        # default | vim | emacs

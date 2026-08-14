@@ -96,6 +96,10 @@ pub struct LayoutHeading {
     pub level: u8,
     pub text: String,
     pub line_index: usize,
+    /// 1-based line in the (frontmatter-stripped) markdown source this heading
+    /// was written on. Lets `Y` copy a section's *source* rather than its
+    /// rendered form.
+    pub source_line: usize,
 }
 
 /// A block image reserved in the text flow for graphics-protocol rendering.
@@ -108,12 +112,28 @@ pub struct ImageSpec {
     pub image: std::sync::Arc<image::DynamicImage>,
 }
 
+/// A fenced code block located in the rendered output, carrying the raw source
+/// that `c` (code-hint mode) copies — the rendered rows are wrapped in box
+/// borders and syntax colors, so they are useless as clipboard content.
+#[derive(Debug, Clone)]
+pub struct CodeBlockSpec {
+    /// Display line of the block's top border.
+    pub line_index: usize,
+    /// Rows the block occupies, borders included.
+    pub rows: usize,
+    /// Fence info string's first word; empty when the fence was bare.
+    pub lang: String,
+    /// The block's literal text, tabs expanded, without a trailing newline.
+    pub source: String,
+}
+
 /// Result of laying out a document: the display lines plus the headings and
 /// their line positions.
 pub struct LayoutResult {
     pub lines: Vec<StyledLine>,
     pub headings: Vec<LayoutHeading>,
     pub images: Vec<ImageSpec>,
+    pub code_blocks: Vec<CodeBlockSpec>,
 }
 
 /// Convert a comrak AST into a flat list of styled lines for rendering.
@@ -135,6 +155,7 @@ pub fn layout_document<'a>(
     let mut lines: Vec<StyledLine> = Vec::new();
     let headings = std::cell::RefCell::new(Vec::new());
     let image_specs = std::cell::RefCell::new(Vec::new());
+    let code_blocks = std::cell::RefCell::new(Vec::new());
     let ctx = LayoutContext {
         theme,
         width: width as usize,
@@ -149,6 +170,7 @@ pub fn layout_document<'a>(
         graphics_font,
         headings: &headings,
         image_specs: &image_specs,
+        code_blocks: &code_blocks,
         record_headings: true,
     };
     layout_node(root, &ctx, &mut lines);
@@ -157,6 +179,7 @@ pub fn layout_document<'a>(
         lines,
         headings: headings.into_inner(),
         images: image_specs.into_inner(),
+        code_blocks: code_blocks.into_inner(),
     }
 }
 
@@ -193,6 +216,7 @@ struct LayoutContext<'a> {
     graphics_font: Option<(u16, u16)>,
     headings: &'a std::cell::RefCell<Vec<LayoutHeading>>,
     image_specs: &'a std::cell::RefCell<Vec<ImageSpec>>,
+    code_blocks: &'a std::cell::RefCell<Vec<CodeBlockSpec>>,
     // Only the top-level walk writes into the shared `lines`, so only it can
     // record correct absolute line indices. Nested walks (blockquotes, list
     // items) build into their own buffers, so they don't record headings.
@@ -392,12 +416,18 @@ fn layout_heading<'a>(
     };
     let prefix_w = prefix.width();
 
-    // Record the heading's exact display-line index for the TOC.
+    // Record the heading's exact display-line index for the TOC, and the
+    // source line it came from so `Y` can slice the section out of the source.
     if ctx.record_headings {
+        let source_line = node.data.borrow().sourcepos.start.line;
         ctx.headings.borrow_mut().push(LayoutHeading {
             level,
-            text: collect_child_text(node),
+            // Sanitized here, not by `sanitize_lines`: heading text reaches the
+            // screen through the TOC sidebar and the copy status line, neither
+            // of which is a `StyledLine`.
+            text: crate::sanitize::sanitize_text(&collect_child_text(node)).into_owned(),
             line_index: lines.len(),
+            source_line,
         });
     }
 
@@ -812,6 +842,7 @@ fn expand_tabs(text: &str) -> String {
 
 fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     let lang = info.split_whitespace().next().unwrap_or("");
+    let start_line = lines.len();
 
     // Mermaid diagrams get special rendering
     if lang == "mermaid" {
@@ -955,6 +986,23 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         },
     });
     lines.push(footer);
+
+    // Only the top-level walk writes into the shared `lines`, so only it knows
+    // absolute row numbers — a block nested in a list item or blockquote is
+    // laid out into a sub-buffer and simply is not offered as a copy hint.
+    if ctx.record_headings {
+        ctx.code_blocks.borrow_mut().push(CodeBlockSpec {
+            line_index: start_line,
+            rows: lines.len() - start_line,
+            // Same reasoning as heading text: the language label is shown in
+            // the copy status line, which does not pass through the layout
+            // sanitizer. `source` needs no cleaning — it only ever goes to the
+            // clipboard, base64-encoded for OSC 52 or piped to a helper's stdin.
+            lang: crate::sanitize::sanitize_text(lang).into_owned(),
+            source: literal.trim_end_matches('\n').to_string(),
+        });
+    }
+
     add_spacing(ctx, lines);
 }
 
@@ -1031,6 +1079,7 @@ fn layout_blockquote<'a>(
         images: ctx.images,
         headings: ctx.headings,
         image_specs: ctx.image_specs,
+        code_blocks: ctx.code_blocks,
         graphics_font: ctx.graphics_font,
         record_headings: false,
     };
@@ -1138,6 +1187,7 @@ fn layout_list<'a>(
         images: ctx.images,
         headings: ctx.headings,
         image_specs: ctx.image_specs,
+        code_blocks: ctx.code_blocks,
         graphics_font: ctx.graphics_font,
         record_headings: false,
     };
@@ -1840,5 +1890,127 @@ mod tests {
         let spans = vec![span("touched ", false), span("44 bpm", true)];
         let lines = wrap_spans(spans, 80, 0, 0);
         assert_eq!(line_text(&lines[0]), "touched 44 bpm");
+    }
+}
+
+/// Code-block discovery: what `c` (copy code block) is allowed to offer, and
+/// what raw text it hands to the clipboard.
+#[cfg(test)]
+mod code_blocks {
+    use super::*;
+    use comrak::{parse_document, Arena};
+
+    fn layout(src: &str) -> LayoutResult {
+        let arena = Arena::new();
+        let root = parse_document(&arena, src, &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        layout_document(
+            root,
+            &theme,
+            60,
+            Spacing::Normal,
+            0,
+            None,
+            ImageMode::Off,
+            None,
+        )
+    }
+
+    #[test]
+    fn fenced_blocks_are_recorded_with_their_language_and_raw_source() {
+        let result =
+            layout("# Title\n\n```bash\ncurl -fsSL x | sh\n```\n\ntext\n\n```\nplain\n```\n");
+        assert_eq!(result.code_blocks.len(), 2);
+
+        let bash = &result.code_blocks[0];
+        assert_eq!(bash.lang, "bash");
+        assert_eq!(bash.source, "curl -fsSL x | sh");
+        // `line_index` points at the block's top border, which is where the
+        // hint label gets painted.
+        let border: String = result.lines[bash.line_index]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(border.starts_with('╭'), "not a top border: {border:?}");
+        let bottom: String = result.lines[bash.line_index + bash.rows - 1]
+            .spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect();
+        assert!(bottom.starts_with('╰'), "not a bottom border: {bottom:?}");
+
+        let bare = &result.code_blocks[1];
+        assert_eq!(bare.lang, "");
+        assert_eq!(bare.source, "plain");
+    }
+
+    #[test]
+    fn multi_line_source_keeps_its_indentation_and_drops_the_trailing_newline() {
+        let result = layout("```rust\nfn main() {\n    println!();\n}\n```\n");
+        assert_eq!(
+            result.code_blocks[0].source,
+            "fn main() {\n    println!();\n}"
+        );
+    }
+
+    #[test]
+    fn tabs_are_expanded_so_the_copy_matches_what_was_rendered() {
+        let result = layout("```go\n\tx := 1\n```\n");
+        assert!(!result.code_blocks[0].source.contains('\t'));
+        assert!(result.code_blocks[0].source.ends_with("x := 1"));
+    }
+
+    #[test]
+    fn a_block_nested_in_a_list_is_not_offered_because_its_rows_are_unknown() {
+        // Nested walks render into a sub-buffer, so an absolute `line_index`
+        // cannot be computed for them — better to skip than to label a row
+        // that is not the block.
+        let result = layout("- item\n\n  ```bash\n  echo hi\n  ```\n");
+        assert!(result.code_blocks.is_empty());
+    }
+
+    /// The language label is printed in the status line when a block is
+    /// copied — a path that never touches `sanitize_lines`, so the escape
+    /// stripping has to happen where the spec is built.
+    #[test]
+    fn a_fence_info_string_cannot_smuggle_control_bytes_into_the_label() {
+        let result = layout("```ba\u{1b}[31msh\ncode\n```\n");
+        assert_eq!(result.code_blocks[0].lang, "ba[31msh");
+        assert!(!result.code_blocks[0].lang.contains('\u{1b}'));
+    }
+
+    #[test]
+    fn a_mermaid_fence_is_a_diagram_not_a_code_block() {
+        let result = layout("```mermaid\ngraph TD;\nA-->B;\n```\n");
+        assert!(result.code_blocks.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod heading_sanitization {
+    use super::*;
+    use comrak::{parse_document, Arena};
+
+    /// Heading text is shown in the TOC sidebar and in the "copied section"
+    /// status line, neither of which is a `StyledLine` — so it cannot rely on
+    /// `sanitize_lines` and is cleaned at the point it is recorded.
+    #[test]
+    fn heading_text_is_stripped_of_control_bytes() {
+        let arena = Arena::new();
+        let root = parse_document(&arena, "# He\u{1b}[2Jading\n", &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        let result = layout_document(
+            root,
+            &theme,
+            60,
+            Spacing::Normal,
+            0,
+            None,
+            ImageMode::Off,
+            None,
+        );
+        assert_eq!(result.headings[0].text, "He[2Jading");
+        assert!(!result.headings[0].text.contains('\u{1b}'));
     }
 }

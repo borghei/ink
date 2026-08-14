@@ -191,3 +191,13 @@ fn doctor_save_writes_report_file() {
     let saved = std::fs::read_to_string(&path).unwrap();
     assert!(saved.contains("ink doctor — image rendering diagnostics"));
 }
+
+#[test]
+fn keybindings_lists_copy_actions() {
+    ink().arg("keybindings").assert().success().stdout(
+        predicate::str::contains("select_mode")
+            .and(predicate::str::contains("select_line_mode"))
+            .and(predicate::str::contains("copy_code"))
+            .and(predicate::str::contains("copy_section")),
+    );
+}

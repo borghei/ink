@@ -2,6 +2,7 @@ pub mod plain;
 
 use crate::layout::StyledLine;
 use crate::search::SearchState;
+use crate::selection::Selection;
 use crate::theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
@@ -185,6 +186,7 @@ pub fn render_bottom_bar(
 /// display line per `Line` (the document `Paragraph` never wraps), so the
 /// slice `[scroll_offset .. scroll_offset + height]` is exactly the viewport.
 /// This bounds per-frame work to the viewport instead of the whole document.
+#[allow(clippy::too_many_arguments)]
 pub fn render_document_with_search(
     frame: &mut Frame,
     area: Rect,
@@ -192,6 +194,8 @@ pub fn render_document_with_search(
     scroll_offset: usize,
     _total_lines: usize,
     search: &SearchState,
+    selection: Option<&Selection>,
+    plain: &[String],
     t: &theme::Theme,
 ) {
     let offset = scroll_offset.min(lines.len());
@@ -224,8 +228,89 @@ pub fn render_document_with_search(
         visible.to_vec()
     };
 
+    // Selection paints last: it is the thing the user is actively pointing at,
+    // so it wins over a search highlight underneath it.
+    let rendered = match selection {
+        Some(sel) => rendered
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| {
+                let abs = offset + i;
+                let width = plain.get(abs).map(|p| crate::selection::line_width(p));
+                match (width, sel.highlight_span(abs, width.unwrap_or(0))) {
+                    (Some(_), Some((from, to))) => {
+                        let (bg, fg) = t.colors.selection();
+                        let style = Style::default()
+                            .bg(theme::hex_to_color(&bg))
+                            .fg(theme::hex_to_color(&fg));
+                        restyle_columns(&line, from, to, style)
+                    }
+                    _ => line,
+                }
+            })
+            .collect(),
+        None => rendered,
+    };
+
     // The slice already starts at the viewport top, so no Paragraph scroll.
     frame.render_widget(Paragraph::new(rendered), area);
+}
+
+/// Re-style the part of `line` covering display columns `[from, to)`.
+///
+/// Works in terminal cells rather than bytes, so a wide glyph is restyled whole
+/// or not at all — a selection edge can never split one in half.
+fn restyle_columns(line: &Line<'static>, from: usize, to: usize, style: Style) -> Line<'static> {
+    use unicode_segmentation::UnicodeSegmentation;
+    use unicode_width::UnicodeWidthStr;
+
+    let mut out: Vec<Span<'static>> = Vec::with_capacity(line.spans.len() + 2);
+    let mut col = 0usize;
+    for span in &line.spans {
+        let text = span.content.to_string();
+        // Fast path: the span lies entirely inside or entirely outside.
+        let span_w = text.width();
+        if col >= to || col + span_w <= from {
+            out.push(Span::styled(text, span.style));
+            col += span_w;
+            continue;
+        }
+
+        let mut pending = String::new();
+        let mut pending_selected = false;
+        for g in text.graphemes(true) {
+            let w = g.width().max(1);
+            let selected = col + w > from && col < to;
+            if !pending.is_empty() && selected != pending_selected {
+                let st = if pending_selected {
+                    span.style.patch(style)
+                } else {
+                    span.style
+                };
+                out.push(Span::styled(std::mem::take(&mut pending), st));
+            }
+            pending_selected = selected;
+            pending.push_str(g);
+            col += w;
+        }
+        if !pending.is_empty() {
+            let st = if pending_selected {
+                span.style.patch(style)
+            } else {
+                span.style
+            };
+            out.push(Span::styled(pending, st));
+        }
+    }
+
+    // A selection that runs past the end of the text (the newline a multi-line
+    // selection swallows) shows as one trailing cell, so the user can see the
+    // line break is included.
+    if to > col {
+        let pad = (to - col).min(1);
+        out.push(Span::styled(" ".repeat(pad), style));
+    }
+    Line::from(out)
 }
 
 /// Lowercase `s`, and map every byte of the result back to the byte offset in
@@ -449,11 +534,62 @@ pub fn render_help(frame: &mut Frame, area: Rect, t: &theme::Theme) {
     frame.render_widget(Paragraph::new(lines).block(block), popup_area);
 }
 
+/// Paint code-block hint labels directly onto the blocks' top borders.
+///
+/// Unlike the link overlay, these are not listed in a popup: a code block *is*
+/// its own label site, and putting `[a]` on the border keeps the block itself
+/// visible while you choose.
+pub fn render_code_hints(
+    frame: &mut Frame,
+    area: Rect,
+    hints: &[(char, u16, u16)],
+    t: &theme::Theme,
+) {
+    let bg = theme::hex_to_color(&t.colors.search_current);
+    let fg = t
+        .colors
+        .bg
+        .as_ref()
+        .map(|b| theme::hex_to_color(b))
+        .unwrap_or_else(|| theme::hex_to_color(&t.colors.fg));
+    let style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+
+    for (label, row, col) in hints {
+        if *row >= area.height {
+            continue;
+        }
+        let text = format!("[{label}]");
+        let x = (area.x + col).min(area.x + area.width.saturating_sub(text.len() as u16));
+        frame.buffer_mut().set_string(x, area.y + row, &text, style);
+    }
+}
+
+/// Render a transient message (a copy result) in place of the bottom bar.
+pub fn render_flash_bar(frame: &mut Frame, area: Rect, message: &str, t: &theme::Theme) {
+    let bg = theme::hex_to_color(&t.colors.status_bar_bg);
+    let accent = theme::hex_to_color(&t.colors.heading2);
+    let line = Line::from(vec![
+        Span::styled(
+            " ✓ ",
+            Style::default()
+                .fg(accent)
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(message.to_string(), Style::default().fg(accent).bg(bg)),
+    ]);
+    frame.render_widget(
+        Paragraph::new(vec![line]).style(Style::default().bg(bg)),
+        area,
+    );
+}
+
 /// Render the link-hint overlay: a centered popup listing labeled links.
 pub fn render_link_hints(
     frame: &mut Frame,
     area: Rect,
     hints: &[(char, String)],
+    title: &str,
     t: &theme::Theme,
 ) {
     let title_color = theme::hex_to_color(&t.colors.heading1);
@@ -500,7 +636,7 @@ pub fn render_link_hints(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(" Follow link — press a letter, Esc to cancel ")
+        .title(format!(" {title} "))
         .title_style(
             Style::default()
                 .fg(title_color)
@@ -621,5 +757,76 @@ mod tests {
     fn empty_query_returns_line_unchanged() {
         let out = highlight("anything", "");
         assert_eq!(spans_of(&out), vec!["anything"]);
+    }
+}
+
+#[cfg(test)]
+mod selection_paint {
+    use super::*;
+
+    fn text_of(line: &Line<'static>) -> Vec<(String, bool)> {
+        line.spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.bg.is_some()))
+            .collect()
+    }
+
+    #[test]
+    fn restyle_splits_a_span_at_the_selection_edges() {
+        let line = Line::from(vec![Span::raw("hello world")]);
+        let sel = Style::default().bg(Color::Blue);
+        let out = restyle_columns(&line, 6, 11, sel);
+        assert_eq!(
+            text_of(&out),
+            vec![("hello ".to_string(), false), ("world".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn restyle_spans_a_selection_across_several_spans() {
+        let line = Line::from(vec![
+            Span::raw("ab"),
+            Span::styled("cd", Style::default().fg(Color::Red)),
+            Span::raw("ef"),
+        ]);
+        let out = restyle_columns(&line, 1, 5, Style::default().bg(Color::Blue));
+        let selected: String = out
+            .spans
+            .iter()
+            .filter(|s| s.style.bg.is_some())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(selected, "bcde");
+    }
+
+    #[test]
+    fn restyle_never_splits_a_wide_glyph() {
+        // 世 occupies columns 0-1; a selection starting at column 1 must take
+        // the whole character rather than emit half of it.
+        let line = Line::from(vec![Span::raw("世界")]);
+        let out = restyle_columns(&line, 1, 4, Style::default().bg(Color::Blue));
+        let selected: String = out
+            .spans
+            .iter()
+            .filter(|s| s.style.bg.is_some())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(selected, "世界");
+    }
+
+    #[test]
+    fn restyle_marks_the_swallowed_newline_with_one_trailing_cell() {
+        let line = Line::from(vec![Span::raw("short")]);
+        let out = restyle_columns(&line, 0, 6, Style::default().bg(Color::Blue));
+        let last = out.spans.last().unwrap();
+        assert_eq!(last.content.as_ref(), " ");
+        assert!(last.style.bg.is_some());
+    }
+
+    #[test]
+    fn restyle_leaves_a_line_outside_the_range_untouched() {
+        let line = Line::from(vec![Span::raw("hello")]);
+        let out = restyle_columns(&line, 8, 12, Style::default().bg(Color::Blue));
+        assert_eq!(text_of(&out)[0], ("hello".to_string(), false));
     }
 }
