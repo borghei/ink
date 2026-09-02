@@ -34,6 +34,16 @@ brew trust borghei/tap   # recent Homebrew requires trusting third-party taps
 brew install ink
 ```
 
+### Conda / Pixi
+
+The community-maintained [conda-forge package](https://anaconda.org/conda-forge/ink-md) can be installed with:
+
+```bash
+conda install -c conda-forge ink-md
+# or
+pixi global install ink-md
+```
+
 ### Cargo
 
 ```bash
