@@ -258,7 +258,7 @@ ink diff old.md new.md
 
 ### Customizing keybindings
 
-Pick a preset or override individual bindings in `~/.config/ink/config.toml`:
+Pick a preset or override individual bindings in your config file (see [Configuration](#configuration)):
 
 ```toml
 [keybindings]
@@ -277,7 +277,9 @@ Run `ink keybindings` to print the active map. Run `ink config init` to drop a c
 
 ## Configuration
 
-Create `~/.config/ink/config.toml`:
+ink reads `$XDG_CONFIG_HOME/ink/config.toml` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/ink/config.toml` on Linux, `~/Library/Application Support/ink/config.toml` on macOS, and `%APPDATA%\ink\config.toml` on Windows. Run `ink config path` to print the resolved location.
+
+Create the file:
 
 ```toml
 # Default theme (dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized)
@@ -314,7 +316,7 @@ clipboard = "auto"
 
 ### Custom themes
 
-Drop a `.toml` file in `~/.config/ink/themes/` and use it by name:
+Drop a `.toml` file in the `themes/` folder next to your config file (e.g. `$XDG_CONFIG_HOME/ink/themes/` or `~/.config/ink/themes/`) and use it by name:
 
 ```bash
 ink --theme mytheme README.md
