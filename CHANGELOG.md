@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.8.0 — 2026-10-01
+
+### Added
+- **Link-hint mode shows each link's text next to its URL.** The `f` popup used to list bare URLs, which made it hard to tell which letter belonged to which link in the document. Each row now reads letter, link text, URL. Text that wraps across lines is joined back together; autolinks and `mailto:` addresses still show the URL once. The popup grows up to 100 columns to fit, and shortens the text before the URL when a row is too long. `Y` (copy URL) uses the same rows. (#8, #13)
+- **`$XDG_CONFIG_HOME` is honored on every platform.** When it is set to an absolute path, ink reads `$XDG_CONFIG_HOME/ink/config.toml` and loads custom themes from `$XDG_CONFIG_HOME/ink/themes/` — so macOS users who keep dotfiles under `~/.config` no longer need `~/Library/Application Support`. Unset, empty, or relative values fall back to the platform default, exactly as before, and an existing config in the platform folder stays in use until `$XDG_CONFIG_HOME/ink` exists, so upgrading never orphans it. `ink config path` prints whichever location is in effect. (#5, #11)
+- **Conda and Pixi install instructions**, for the community-maintained conda-forge package: `conda install -c conda-forge ink-md` or `pixi global install ink-md`. Thanks to @mariusrueve. (#9)
+
+### Fixed
+- **Linux binaries run on Ubuntu 22.04 LTS again.** Release builds had moved to a runner with glibc 2.39, so the binary, the `.deb`/`.rpm`, and Homebrew on Linux all failed on 22.04 with `GLIBC_2.39 not found`. Linux builds are now pinned to a glibc 2.35 baseline (Ubuntu 22.04, Debian 12 and newer), and the release fails if a binary ever needs a newer glibc. (#6, #10)
+
+### Security
+- **rustls 0.23.45** (RUSTSEC-2026-0285): the previous version accepted TLS 1.3 handshake messages across encryption-level boundaries. Affects remote fetching only. (#14)
+
+### Docs
+- README gained a Contributors section. (#12)
+
 ## 0.7.0 — 2026-08-14
 
 ### Added

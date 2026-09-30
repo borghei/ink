@@ -42,23 +42,36 @@ pub struct KeybindingsConfig {
 /// set to an absolute path (on every platform), otherwise `<platform>/ink`
 /// (`~/.config` on Linux, `~/Library/Application Support` on macOS,
 /// `%APPDATA%` on Windows).
+///
+/// One exception keeps upgrades safe: if `$XDG_CONFIG_HOME/ink` does not
+/// exist yet but `<platform>/ink` does, the existing directory stays in use,
+/// so a config written before ink honored the variable is not orphaned.
 pub fn config_dir() -> Option<PathBuf> {
     resolve_config_dir(
         std::env::var_os("XDG_CONFIG_HOME").as_deref(),
         dirs::config_dir(),
+        |p| p.is_dir(),
     )
 }
 
 /// Pure form of [`config_dir`], so the rule is testable without touching the
-/// process environment. Per the XDG Base Directory spec, an empty or relative
-/// `$XDG_CONFIG_HOME` is ignored.
-fn resolve_config_dir(xdg: Option<&OsStr>, platform: Option<PathBuf>) -> Option<PathBuf> {
-    let base = xdg
+/// process environment or the disk. Per the XDG Base Directory spec, an empty
+/// or relative `$XDG_CONFIG_HOME` is ignored.
+fn resolve_config_dir(
+    xdg: Option<&OsStr>,
+    platform: Option<PathBuf>,
+    exists: impl Fn(&Path) -> bool,
+) -> Option<PathBuf> {
+    let xdg = xdg
         .map(Path::new)
         .filter(|p| p.is_absolute())
-        .map(Path::to_path_buf)
-        .or(platform)?;
-    Some(base.join("ink"))
+        .map(|p| p.join("ink"));
+    let platform = platform.map(|p| p.join("ink"));
+    match (xdg, platform) {
+        (Some(x), Some(p)) if !exists(&x) && exists(&p) => Some(p),
+        (Some(x), _) => Some(x),
+        (None, p) => p,
+    }
 }
 
 /// Directory holding user theme files (`<config dir>/themes`).
@@ -116,19 +129,40 @@ mod tests {
         std::env::temp_dir().join("xdg")
     }
 
+    const NOTHING: fn(&Path) -> bool = |_| false;
+
     #[test]
     fn xdg_set_is_used() {
         let xdg = abs_xdg();
         assert_eq!(
-            resolve_config_dir(Some(xdg.as_os_str()), platform()),
+            resolve_config_dir(Some(xdg.as_os_str()), platform(), NOTHING),
             Some(xdg.join("ink"))
+        );
+    }
+
+    #[test]
+    fn xdg_wins_when_both_dirs_exist() {
+        let xdg = abs_xdg();
+        assert_eq!(
+            resolve_config_dir(Some(xdg.as_os_str()), platform(), |_| true),
+            Some(xdg.join("ink"))
+        );
+    }
+
+    #[test]
+    fn existing_platform_dir_is_kept_until_xdg_dir_exists() {
+        let xdg = abs_xdg();
+        let legacy = PathBuf::from("platform-config").join("ink");
+        assert_eq!(
+            resolve_config_dir(Some(xdg.as_os_str()), platform(), |p| p == legacy),
+            Some(legacy.clone())
         );
     }
 
     #[test]
     fn xdg_unset_falls_back_to_platform() {
         assert_eq!(
-            resolve_config_dir(None, platform()),
+            resolve_config_dir(None, platform(), NOTHING),
             Some(PathBuf::from("platform-config").join("ink"))
         );
     }
@@ -136,7 +170,7 @@ mod tests {
     #[test]
     fn xdg_empty_falls_back_to_platform() {
         assert_eq!(
-            resolve_config_dir(Some(OsStr::new("")), platform()),
+            resolve_config_dir(Some(OsStr::new("")), platform(), NOTHING),
             Some(PathBuf::from("platform-config").join("ink"))
         );
     }
@@ -144,7 +178,7 @@ mod tests {
     #[test]
     fn xdg_relative_falls_back_to_platform() {
         assert_eq!(
-            resolve_config_dir(Some(OsStr::new("relative/dir")), platform()),
+            resolve_config_dir(Some(OsStr::new("relative/dir")), platform(), NOTHING),
             Some(PathBuf::from("platform-config").join("ink"))
         );
     }
@@ -153,9 +187,9 @@ mod tests {
     fn xdg_used_without_platform_dir() {
         let xdg = abs_xdg();
         assert_eq!(
-            resolve_config_dir(Some(xdg.as_os_str()), None),
+            resolve_config_dir(Some(xdg.as_os_str()), None, NOTHING),
             Some(xdg.join("ink"))
         );
-        assert_eq!(resolve_config_dir(None, None), None);
+        assert_eq!(resolve_config_dir(None, None, NOTHING), None);
     }
 }

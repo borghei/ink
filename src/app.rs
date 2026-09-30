@@ -1316,18 +1316,21 @@ fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
         // The hint the current run of link spans feeds, and its URL.
         let mut current: Option<(usize, &str)> = None;
         let mut at_line_start = true;
-        let mut ends_in_link = false;
+        // The hint fed by the last link on this line, while nothing but
+        // blank padding has followed it.
+        let mut tail: Option<usize> = None;
         for span in &line.spans {
             let blank = span.text.trim().is_empty();
             let Some(url) = span.style.link_url.as_deref() else {
+                // Any unlinked span ends the run, so `[a](u) [b](u)` stays
+                // two links rather than one caption reading "ab".
+                current = None;
                 if !blank {
-                    current = None;
                     at_line_start = false;
-                    ends_in_link = false;
+                    tail = None;
                 }
                 continue;
             };
-            ends_in_link = true;
             if let Some((i, _)) = current.filter(|&(_, u)| u == url) {
                 hints[i].caption.push_str(&span.text);
                 continue;
@@ -1350,11 +1353,10 @@ fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
                 labels += 1;
                 current = Some((hints.len() - 1, url));
             }
+            tail = current.map(|(i, _)| i);
             at_line_start = false;
         }
-        if ends_in_link {
-            open_at_eol = current.map(|(i, _)| i);
-        }
+        open_at_eol = tail;
     }
     for hint in &mut hints {
         hint.caption = link_caption(&hint.caption, &hint.url);
@@ -1680,6 +1682,17 @@ mod link_hint_tests {
         ];
         let hints = collect_link_hints(&lines);
         assert_eq!(rows(&hints), vec![('a', "first", "https://e.com")]);
+    }
+
+    #[test]
+    fn adjacent_links_to_one_url_do_not_merge() {
+        let lines = vec![line(vec![
+            link("a", "https://e.com", false),
+            text(" "),
+            link("b", "https://e.com", false),
+        ])];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(rows(&hints), vec![('a', "a", "https://e.com")]);
     }
 
     #[test]
