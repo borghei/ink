@@ -76,7 +76,7 @@ scoop install ink
 
 ### Pre-built binaries
 
-Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases). Available for Linux (amd64, arm64), macOS (amd64, arm64), and Windows (amd64); `SHA256SUMS` is published alongside.
+Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases). Available for Linux (amd64, arm64), macOS (amd64, arm64), and Windows (amd64); `SHA256SUMS` is published alongside. The Linux binaries are built against glibc 2.35, so they run on Ubuntu 22.04 LTS, Debian 12 and newer.
 
 ### From source
 

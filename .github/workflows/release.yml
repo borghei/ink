@@ -13,11 +13,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # Linux builders are pinned to ubuntu-22.04 on purpose: the binary links
+        # against the runner's glibc, so this sets the minimum glibc (2.35) for
+        # every Linux user — raw binary, .deb/.rpm and Homebrew on Linux alike
+        # (issue #6: an ubuntu-latest/24.04 build needed GLIBC_2.39 and broke
+        # Ubuntu 22.04 LTS). Bumping this runner raises that floor for everyone;
+        # the "glibc baseline check" step below fails the release if it moves.
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: ink-linux-amd64
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             target: aarch64-unknown-linux-gnu
             artifact: ink-linux-arm64
           - os: macos-latest
@@ -40,12 +46,44 @@ jobs:
         if: matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
+          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
 
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+
+      # Guard for issue #6: refuse to ship a Linux binary that needs a newer
+      # glibc than Ubuntu 22.04 LTS provides (2.35). Catches a silent runner
+      # image bump before it reaches users.
+      - name: glibc baseline check
+        if: runner.os == 'Linux'
+        env:
+          MAX_GLIBC: '2.35'
+        run: |
+          set -euo pipefail
+          bin="target/${{ matrix.target }}/release/ink"
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
+            objdump=aarch64-linux-gnu-objdump
+          else
+            objdump=objdump
+          fi
+          versions=$("$objdump" -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/^GLIBC_//' | sort -u -V || true)
+          if [ -z "$versions" ]; then
+            echo "::error::glibc baseline check: no GLIBC_* symbol versions found in $bin (is $objdump working?)"
+            exit 1
+          fi
+          max=$(printf '%s\n' "$versions" | tail -1)
+          echo "Highest glibc symbol version required by $bin: GLIBC_$max (allowed: <= GLIBC_$MAX_GLIBC)"
+          if [ "$(printf '%s\n%s\n' "$MAX_GLIBC" "$max" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then
+            echo "::error::glibc baseline check failed: ${{ matrix.artifact }} requires GLIBC_$max, newer than GLIBC_$MAX_GLIBC (Ubuntu 22.04 LTS). Runner: ${{ matrix.os }} ($(ldd --version | head -1)). Do not ship this; pin the Linux builders back to an older image (see issue #6)."
+            echo "Symbols needing a glibc newer than $MAX_GLIBC:"
+            "$objdump" -T "$bin" | grep -E 'GLIBC_[0-9]' | while read -r line; do
+              v=$(printf '%s' "$line" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/^GLIBC_//')
+              if [ "$(printf '%s\n%s\n' "$MAX_GLIBC" "$v" | sort -V | tail -1)" != "$MAX_GLIBC" ]; then echo "  $line"; fi
+            done
+            exit 1
+          fi
 
       - name: Rename binary (unix)
         if: runner.os != 'Windows'
