@@ -17,11 +17,11 @@ pub const BUILTIN_THEMES: &[&str] = &[
 ];
 
 /// All available theme names: built-ins plus any `*.toml` in the user themes
-/// directory (`~/.config/ink/themes/`).
+/// directory (`themes/` under the ink config directory: `$XDG_CONFIG_HOME/ink`
+/// or the platform default).
 pub fn available_themes() -> Vec<String> {
     let mut names: Vec<String> = BUILTIN_THEMES.iter().map(|s| s.to_string()).collect();
-    if let Some(dir) = dirs::config_dir() {
-        let themes_dir = dir.join("ink").join("themes");
+    if let Some(themes_dir) = crate::config::themes_dir() {
         if let Ok(entries) = std::fs::read_dir(&themes_dir) {
             let mut user: Vec<String> = entries
                 .flatten()
@@ -155,8 +155,8 @@ pub fn resolve_theme(name: &str) -> Theme {
             // Try loading from the user config directory. Note the warning is
             // emitted on every path out of here, including "this platform has
             // no config dir" — a mistyped theme must never fail silently.
-            let theme_path = dirs::config_dir()
-                .map(|d| d.join("ink").join("themes").join(format!("{name}.toml")))
+            let theme_path = crate::config::themes_dir()
+                .map(|d| d.join(format!("{name}.toml")))
                 .filter(|p| p.exists());
             match theme_path {
                 Some(path) => match std::fs::read_to_string(&path)

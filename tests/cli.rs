@@ -201,3 +201,56 @@ fn keybindings_lists_copy_actions() {
             .and(predicate::str::contains("copy_section")),
     );
 }
+
+#[test]
+fn config_path_honors_xdg_config_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let expected = dir.path().join("ink").join("config.toml");
+    let out = ink()
+        .args(["config", "path"])
+        .env("XDG_CONFIG_HOME", dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.trim_end().ends_with(&expected.display().to_string()),
+        "expected {} in: {text}",
+        expected.display()
+    );
+}
+
+#[test]
+fn config_path_without_xdg_config_home_uses_platform_default() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = ink()
+        .args(["config", "path"])
+        .env_remove("XDG_CONFIG_HOME")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        !text.contains(&dir.path().display().to_string()),
+        "unexpected temp path in: {text}"
+    );
+    assert!(text.trim_end().ends_with("config.toml"), "got: {text}");
+}
+
+#[test]
+fn list_themes_finds_user_themes_under_xdg_config_home() {
+    let dir = tempfile::tempdir().unwrap();
+    let themes = dir.path().join("ink").join("themes");
+    std::fs::create_dir_all(&themes).unwrap();
+    std::fs::write(themes.join("xdg-probe.toml"), "").unwrap();
+    ink()
+        .arg("--list-themes")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("xdg-probe"));
+}

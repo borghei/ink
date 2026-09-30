@@ -72,7 +72,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Live theme preview with T key; the chosen theme is saved to config
 - ink --list-themes lists all available themes (built-in + custom)
 - 30+ customizable color properties per theme
-- Custom themes via TOML files in ~/.config/ink/themes/
+- Custom themes via TOML files in the themes/ folder of the ink config directory ($XDG_CONFIG_HOME/ink/themes/ when set)
 - Honors NO_COLOR and quantizes 24-bit colors to the 256-color palette on non-truecolor terminals
 
 ### Other Features
@@ -123,7 +123,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 
 ## Configuration
 
-Config file: ~/.config/ink/config.toml
+Config file: $XDG_CONFIG_HOME/ink/config.toml when XDG_CONFIG_HOME is set; otherwise ~/.config/ink/config.toml (Linux), ~/Library/Application Support/ink/config.toml (macOS), %APPDATA%\ink\config.toml (Windows). `ink config path` prints the resolved location.
 
 ```toml
 theme = "catppuccin"

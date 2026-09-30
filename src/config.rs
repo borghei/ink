@@ -1,5 +1,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)]
@@ -36,9 +38,37 @@ pub struct KeybindingsConfig {
     pub bindings: Option<HashMap<String, Vec<String>>>,
 }
 
-/// Resolved path of the active config file, if the platform has a config dir.
-pub fn config_path() -> Option<std::path::PathBuf> {
-    Some(dirs::config_dir()?.join("ink").join("config.toml"))
+/// The ink config directory: `$XDG_CONFIG_HOME/ink` when that variable is
+/// set to an absolute path (on every platform), otherwise `<platform>/ink`
+/// (`~/.config` on Linux, `~/Library/Application Support` on macOS,
+/// `%APPDATA%` on Windows).
+pub fn config_dir() -> Option<PathBuf> {
+    resolve_config_dir(
+        std::env::var_os("XDG_CONFIG_HOME").as_deref(),
+        dirs::config_dir(),
+    )
+}
+
+/// Pure form of [`config_dir`], so the rule is testable without touching the
+/// process environment. Per the XDG Base Directory spec, an empty or relative
+/// `$XDG_CONFIG_HOME` is ignored.
+fn resolve_config_dir(xdg: Option<&OsStr>, platform: Option<PathBuf>) -> Option<PathBuf> {
+    let base = xdg
+        .map(Path::new)
+        .filter(|p| p.is_absolute())
+        .map(Path::to_path_buf)
+        .or(platform)?;
+    Some(base.join("ink"))
+}
+
+/// Directory holding user theme files (`<config dir>/themes`).
+pub fn themes_dir() -> Option<PathBuf> {
+    Some(config_dir()?.join("themes"))
+}
+
+/// Resolved path of the active config file, if a config dir can be found.
+pub fn config_path() -> Option<PathBuf> {
+    Some(config_dir()?.join("config.toml"))
 }
 
 /// Human-readable string for `ink config path`.
@@ -48,7 +78,7 @@ pub fn config_path_display() -> String {
         .unwrap_or_else(|| "<no config dir on this platform>".to_string())
 }
 
-/// Load config from ~/.config/ink/config.toml
+/// Load config from [`config_path`].
 pub fn load_config() -> Option<Config> {
     let path = config_path()?;
     let content = std::fs::read_to_string(path).ok()?;
@@ -71,4 +101,61 @@ pub fn set_theme(name: &str) -> anyhow::Result<()> {
     std::fs::write(&path, doc.to_string())
         .with_context(|| format!("writing {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn platform() -> Option<PathBuf> {
+        Some(PathBuf::from("platform-config"))
+    }
+
+    /// An absolute path on every OS (`/xdg` is not absolute on Windows).
+    fn abs_xdg() -> PathBuf {
+        std::env::temp_dir().join("xdg")
+    }
+
+    #[test]
+    fn xdg_set_is_used() {
+        let xdg = abs_xdg();
+        assert_eq!(
+            resolve_config_dir(Some(xdg.as_os_str()), platform()),
+            Some(xdg.join("ink"))
+        );
+    }
+
+    #[test]
+    fn xdg_unset_falls_back_to_platform() {
+        assert_eq!(
+            resolve_config_dir(None, platform()),
+            Some(PathBuf::from("platform-config").join("ink"))
+        );
+    }
+
+    #[test]
+    fn xdg_empty_falls_back_to_platform() {
+        assert_eq!(
+            resolve_config_dir(Some(OsStr::new("")), platform()),
+            Some(PathBuf::from("platform-config").join("ink"))
+        );
+    }
+
+    #[test]
+    fn xdg_relative_falls_back_to_platform() {
+        assert_eq!(
+            resolve_config_dir(Some(OsStr::new("relative/dir")), platform()),
+            Some(PathBuf::from("platform-config").join("ink"))
+        );
+    }
+
+    #[test]
+    fn xdg_used_without_platform_dir() {
+        let xdg = abs_xdg();
+        assert_eq!(
+            resolve_config_dir(Some(xdg.as_os_str()), None),
+            Some(xdg.join("ink"))
+        );
+        assert_eq!(resolve_config_dir(None, None), None);
+    }
 }

@@ -121,7 +121,7 @@ pub enum Commands {
 
 #[derive(Subcommand, Debug)]
 pub enum ConfigAction {
-    /// Write a starter config to ~/.config/ink/config.toml
+    /// Write a starter config to the path shown by `ink config path`
     Init {
         /// Overwrite an existing config file
         #[arg(long)]
