@@ -287,7 +287,7 @@ Run `ink keybindings` to print the active map. Run `ink config init` to drop a c
 
 ## Configuration
 
-ink reads `$XDG_CONFIG_HOME/ink/config.toml` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/ink/config.toml` on Linux, `~/Library/Application Support/ink/config.toml` on macOS, and `%APPDATA%\ink\config.toml` on Windows. Run `ink config path` to print the resolved location.
+ink reads `$XDG_CONFIG_HOME/ink/config.toml` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/ink/config.toml` on Linux, `~/Library/Application Support/ink/config.toml` on macOS, and `%APPDATA%\ink\config.toml` on Windows. If you already have a config in the platform folder and nothing under `$XDG_CONFIG_HOME/ink` yet, ink keeps using the existing one until you move it. Run `ink config path` to print the resolved location.
 
 Create the file:
 

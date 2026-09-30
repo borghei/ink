@@ -205,6 +205,9 @@ fn keybindings_lists_copy_actions() {
 #[test]
 fn config_path_honors_xdg_config_home() {
     let dir = tempfile::tempdir().unwrap();
+    // The directory must exist: an existing platform config dir is kept in
+    // use until `$XDG_CONFIG_HOME/ink` is created.
+    std::fs::create_dir_all(dir.path().join("ink")).unwrap();
     let expected = dir.path().join("ink").join("config.toml");
     let out = ink()
         .args(["config", "path"])
