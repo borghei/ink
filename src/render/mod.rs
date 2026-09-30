@@ -588,41 +588,56 @@ pub fn render_flash_bar(frame: &mut Frame, area: Rect, message: &str, t: &theme:
 pub fn render_link_hints(
     frame: &mut Frame,
     area: Rect,
-    hints: &[(char, String)],
+    hints: &[(char, String, String)],
     title: &str,
     t: &theme::Theme,
 ) {
+    use unicode_width::UnicodeWidthStr;
+
     let title_color = theme::hex_to_color(&t.colors.heading1);
     let label_color = theme::hex_to_color(&t.colors.heading2);
+    let caption_color = theme::hex_to_color(&t.colors.link);
     let url_color = theme::hex_to_color(&t.colors.link_url);
     let bg = theme::hex_to_color(&t.colors.code_block_bg);
     let border_color = theme::hex_to_color(&t.colors.table_border);
 
-    let popup_width = 60u16.min(area.width.saturating_sub(2));
-    let max_url = popup_width.saturating_sub(8) as usize;
+    // A row is `  a  ` (5 cols), the caption, two spaces, then the URL. Grow
+    // the popup to fit the longest row, between 60 and 100 columns.
+    let longest = hints
+        .iter()
+        .map(|(_, caption, url)| {
+            let text = if caption.is_empty() {
+                url.width()
+            } else {
+                caption.width() + 2 + url.width()
+            };
+            5 + text
+        })
+        .max()
+        .unwrap_or(0);
+    let wanted = (longest + 6).clamp(60, 100) as u16;
+    let popup_width = wanted.min(area.width.saturating_sub(2));
+    let budget = popup_width.saturating_sub(8) as usize;
     let lines: Vec<Line<'static>> = hints
         .iter()
-        .map(|(label, url)| {
-            let shown: String = if url.chars().count() > max_url {
-                format!(
-                    "{}…",
-                    url.chars()
-                        .take(max_url.saturating_sub(1))
-                        .collect::<String>()
-                )
-            } else {
-                url.clone()
-            };
-            Line::from(vec![
-                Span::styled(
-                    format!("  {label}  "),
-                    Style::default()
-                        .fg(label_color)
-                        .bg(bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(shown, Style::default().fg(url_color).bg(bg)),
-            ])
+        .map(|(label, caption, url)| {
+            let (caption, url) = fit_hint_row(caption, url, budget);
+            let mut spans = vec![Span::styled(
+                format!("  {label}  "),
+                Style::default()
+                    .fg(label_color)
+                    .bg(bg)
+                    .add_modifier(Modifier::BOLD),
+            )];
+            if !caption.is_empty() {
+                spans.push(Span::styled(
+                    caption,
+                    Style::default().fg(caption_color).bg(bg),
+                ));
+                spans.push(Span::styled("  ", Style::default().bg(bg)));
+            }
+            spans.push(Span::styled(url, Style::default().fg(url_color).bg(bg)));
+            Line::from(spans)
         })
         .collect();
 
@@ -644,6 +659,50 @@ pub fn render_link_hints(
         )
         .style(Style::default().bg(bg));
     frame.render_widget(Paragraph::new(lines).block(block), popup_area);
+}
+
+/// Fit a link-hint row's caption and URL into `budget` display columns
+/// (the caption, two spaces, the URL). The caption gives way first, down to
+/// about 40% of the budget; the URL is then cut to whatever is left. An empty
+/// caption leaves the whole budget to the URL.
+fn fit_hint_row(caption: &str, url: &str, budget: usize) -> (String, String) {
+    use unicode_width::UnicodeWidthStr;
+
+    if caption.is_empty() {
+        return (String::new(), truncate_to_width(url, budget));
+    }
+    let (cw, uw) = (caption.width(), url.width());
+    if cw + 2 + uw <= budget {
+        return (caption.to_string(), url.to_string());
+    }
+    let caption_room = (budget * 2 / 5).max(budget.saturating_sub(2 + uw));
+    let caption = truncate_to_width(caption, caption_room);
+    let url_room = budget.saturating_sub(caption.width() + 2);
+    (caption, truncate_to_width(url, url_room))
+}
+
+/// Cut `s` to at most `max` display columns, ending in `…` when shortened.
+fn truncate_to_width(s: &str, max: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+    if s.width() <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        let w = c.width().unwrap_or(0);
+        if used + w > max - 1 {
+            break;
+        }
+        out.push(c);
+        used += w;
+    }
+    out.push('…');
+    out
 }
 
 /// Render the theme picker overlay.
@@ -757,6 +816,63 @@ mod tests {
     fn empty_query_returns_line_unchanged() {
         let out = highlight("anything", "");
         assert_eq!(spans_of(&out), vec!["anything"]);
+    }
+}
+
+#[cfg(test)]
+mod hint_rows {
+    use super::*;
+    use unicode_width::UnicodeWidthStr;
+
+    fn row_width(caption: &str, url: &str) -> usize {
+        if caption.is_empty() {
+            url.width()
+        } else {
+            caption.width() + 2 + url.width()
+        }
+    }
+
+    #[test]
+    fn short_rows_are_untouched() {
+        let (c, u) = fit_hint_row("ink docs", "https://example.com/docs", 52);
+        assert_eq!(c, "ink docs");
+        assert_eq!(u, "https://example.com/docs");
+    }
+
+    #[test]
+    fn missing_caption_gives_the_url_the_whole_budget() {
+        let url = "https://example.com/a/very/long/path/that/keeps/going/on/and/on";
+        let (c, u) = fit_hint_row("", url, 30);
+        assert_eq!(c, "");
+        assert_eq!(u.width(), 30);
+        assert!(u.ends_with('…'));
+    }
+
+    #[test]
+    fn caption_gives_way_first_then_the_url() {
+        let caption = "A rather long link caption that describes the target at length";
+        let url = "https://example.com/some/deep/path/to/a/page";
+        let budget = 60;
+        let (c, u) = fit_hint_row(caption, url, budget);
+        assert!(c.ends_with('…'));
+        assert_eq!(c.width(), budget * 2 / 5);
+        assert!(u.ends_with('…'));
+        assert_eq!(row_width(&c, &u), budget);
+
+        // A short URL lets the caption keep more than its 40% share.
+        let (c, u) = fit_hint_row(caption, "https://x.y", budget);
+        assert_eq!(u, "https://x.y");
+        assert_eq!(row_width(&c, &u), budget);
+    }
+
+    #[test]
+    fn rows_never_exceed_the_budget() {
+        let caption = "写真 🖼 wide glyphs everywhere in this caption text";
+        let url = "https://example.com/日本語/パス/とても/長い/URL/です";
+        for budget in 0..80 {
+            let (c, u) = fit_hint_row(caption, url, budget);
+            assert!(row_width(&c, &u) <= budget, "budget {budget}: {c:?} {u:?}");
+        }
     }
 }
 
