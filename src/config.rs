@@ -108,14 +108,20 @@ mod tests {
     use super::*;
 
     fn platform() -> Option<PathBuf> {
-        Some(PathBuf::from("/platform/config"))
+        Some(PathBuf::from("platform-config"))
+    }
+
+    /// An absolute path on every OS (`/xdg` is not absolute on Windows).
+    fn abs_xdg() -> PathBuf {
+        std::env::temp_dir().join("xdg")
     }
 
     #[test]
     fn xdg_set_is_used() {
+        let xdg = abs_xdg();
         assert_eq!(
-            resolve_config_dir(Some(OsStr::new("/xdg")), platform()),
-            Some(PathBuf::from("/xdg/ink"))
+            resolve_config_dir(Some(xdg.as_os_str()), platform()),
+            Some(xdg.join("ink"))
         );
     }
 
@@ -123,7 +129,7 @@ mod tests {
     fn xdg_unset_falls_back_to_platform() {
         assert_eq!(
             resolve_config_dir(None, platform()),
-            Some(PathBuf::from("/platform/config/ink"))
+            Some(PathBuf::from("platform-config").join("ink"))
         );
     }
 
@@ -131,7 +137,7 @@ mod tests {
     fn xdg_empty_falls_back_to_platform() {
         assert_eq!(
             resolve_config_dir(Some(OsStr::new("")), platform()),
-            Some(PathBuf::from("/platform/config/ink"))
+            Some(PathBuf::from("platform-config").join("ink"))
         );
     }
 
@@ -139,15 +145,16 @@ mod tests {
     fn xdg_relative_falls_back_to_platform() {
         assert_eq!(
             resolve_config_dir(Some(OsStr::new("relative/dir")), platform()),
-            Some(PathBuf::from("/platform/config/ink"))
+            Some(PathBuf::from("platform-config").join("ink"))
         );
     }
 
     #[test]
     fn xdg_used_without_platform_dir() {
+        let xdg = abs_xdg();
         assert_eq!(
-            resolve_config_dir(Some(OsStr::new("/xdg")), None),
-            Some(PathBuf::from("/xdg/ink"))
+            resolve_config_dir(Some(xdg.as_os_str()), None),
+            Some(xdg.join("ink"))
         );
         assert_eq!(resolve_config_dir(None, None), None);
     }
