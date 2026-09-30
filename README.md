@@ -435,3 +435,9 @@ Free to use, modify, and distribute. Cannot be sold — not the original, not fo
 ## Author
 
 Made by [borghei](https://github.com/borghei) — who got tired of reading raw markdown like a caveman.
+
+## Contributors
+
+Thanks to everyone who has sent a pull request:
+
+- [@mariusrueve](https://github.com/mariusrueve) — Conda and Pixi install instructions ([#9](https://github.com/borghei/ink/pull/9)), and the [conda-forge package](https://github.com/conda-forge/ink-md-feedstock) behind them
