@@ -73,6 +73,9 @@ struct NavEntry {
 struct LinkHint {
     label: char,
     url: String,
+    /// The link's visible text, whitespace-collapsed. Empty when it would
+    /// only repeat the URL (autolinks, bare URLs).
+    caption: String,
 }
 
 /// What the letters in the link-hint overlay do.
@@ -520,9 +523,9 @@ fn run_inner(
 
                 // Link-hint overlay
                 if !link_hints.is_empty() {
-                    let hints: Vec<(char, String)> = link_hints
+                    let hints: Vec<(char, String, String)> = link_hints
                         .iter()
-                        .map(|h| (h.label, h.url.clone()))
+                        .map(|h| (h.label, h.caption.clone(), h.url.clone()))
                         .collect();
                     let title = match hint_kind {
                         HintKind::Open => {
@@ -1300,27 +1303,76 @@ fn is_local_file(input: &str) -> bool {
 
 /// Collect one hint per distinct link URL in the given (visible) lines,
 /// labeled a, b, c… Adjacent spans sharing a URL collapse to one hint.
+///
+/// Each hint carries the link's caption: the text of its consecutive spans,
+/// continued across a line wrap when the next line opens with the same link.
 fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
     let mut hints: Vec<LinkHint> = Vec::new();
     let mut labels = b'a';
-    for line in lines {
+    // The hint whose link ran to the end of the previous line, if any.
+    let mut open_at_eol: Option<usize> = None;
+    'lines: for line in lines {
+        let carried = open_at_eol.take();
+        // The hint the current run of link spans feeds, and its URL.
+        let mut current: Option<(usize, &str)> = None;
+        let mut at_line_start = true;
+        let mut ends_in_link = false;
         for span in &line.spans {
-            if let Some(ref url) = span.style.link_url {
-                if hints.iter().any(|h| &h.url == url) {
-                    continue;
+            let blank = span.text.trim().is_empty();
+            let Some(url) = span.style.link_url.as_deref() else {
+                if !blank {
+                    current = None;
+                    at_line_start = false;
+                    ends_in_link = false;
                 }
-                if labels > b'z' {
-                    return hints;
-                }
+                continue;
+            };
+            ends_in_link = true;
+            if let Some((i, _)) = current.filter(|&(_, u)| u == url) {
+                hints[i].caption.push_str(&span.text);
+                continue;
+            }
+            if let Some(i) = carried.filter(|&i| at_line_start && hints[i].url == url) {
+                hints[i].caption.push(' ');
+                hints[i].caption.push_str(&span.text);
+                current = Some((i, url));
+            } else if hints.iter().any(|h| h.url == url) {
+                // Already labeled; this repeat contributes no caption.
+                current = None;
+            } else if labels > b'z' {
+                break 'lines;
+            } else {
                 hints.push(LinkHint {
                     label: labels as char,
-                    url: url.clone(),
+                    url: url.to_string(),
+                    caption: span.text.clone(),
                 });
                 labels += 1;
+                current = Some((hints.len() - 1, url));
             }
+            at_line_start = false;
+        }
+        if ends_in_link {
+            open_at_eol = current.map(|(i, _)| i);
         }
     }
+    for hint in &mut hints {
+        hint.caption = link_caption(&hint.caption, &hint.url);
+    }
     hints
+}
+
+/// Collapse whitespace in a raw link caption, and drop it when it only
+/// repeats the URL (an autolink, a bare URL, or a `mailto:` address).
+fn link_caption(raw: &str, url: &str) -> String {
+    let caption = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let squashed: String = caption.split(' ').collect();
+    let bare_url = url.strip_prefix("mailto:").unwrap_or(url);
+    if squashed == url || squashed == bare_url {
+        String::new()
+    } else {
+        caption
+    }
 }
 
 /// Act on a chosen link: open web/mail URLs in the default handler; follow a
@@ -1540,6 +1592,163 @@ fn build_tab(
         built_width: term_width,
         built_gen: gen,
         images,
+    }
+}
+
+#[cfg(test)]
+mod link_hint_tests {
+    use super::*;
+    use crate::layout::{SpanStyle, StyledLine, StyledSpan};
+
+    fn text(t: &str) -> StyledSpan {
+        StyledSpan {
+            text: t.to_string(),
+            style: SpanStyle::default(),
+        }
+    }
+
+    fn link(t: &str, url: &str, bold: bool) -> StyledSpan {
+        StyledSpan {
+            text: t.to_string(),
+            style: SpanStyle {
+                underline: true,
+                bold,
+                link_url: Some(url.to_string()),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn line(spans: Vec<StyledSpan>) -> StyledLine {
+        StyledLine { spans }
+    }
+
+    fn rows(hints: &[LinkHint]) -> Vec<(char, &str, &str)> {
+        hints
+            .iter()
+            .map(|h| (h.label, h.caption.as_str(), h.url.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn caption_is_the_link_text() {
+        let lines = vec![line(vec![
+            text("See the "),
+            link("ink docs", "https://example.com/docs", false),
+            text(" for more."),
+        ])];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(
+            rows(&hints),
+            vec![('a', "ink docs", "https://example.com/docs")]
+        );
+    }
+
+    #[test]
+    fn multi_span_caption_is_joined() {
+        let lines = vec![line(vec![
+            link("the ", "https://e.com", false),
+            link("bold", "https://e.com", true),
+            link(" part", "https://e.com", false),
+        ])];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(rows(&hints), vec![('a', "the bold part", "https://e.com")]);
+    }
+
+    #[test]
+    fn wrapped_caption_joins_with_one_space() {
+        let lines = vec![
+            line(vec![
+                text("See the "),
+                link("ink  ", "https://e.com/docs", false),
+            ]),
+            line(vec![
+                text("  "),
+                link("docs", "https://e.com/docs", false),
+                text(" and more"),
+            ]),
+        ];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(rows(&hints), vec![('a', "ink docs", "https://e.com/docs")]);
+    }
+
+    #[test]
+    fn a_later_line_starting_with_other_text_does_not_continue() {
+        let lines = vec![
+            line(vec![link("first", "https://e.com", false)]),
+            line(vec![text("x "), link("again", "https://e.com", false)]),
+        ];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(rows(&hints), vec![('a', "first", "https://e.com")]);
+    }
+
+    #[test]
+    fn autolink_caption_is_suppressed() {
+        let lines = vec![line(vec![
+            link("https://x.y", "https://x.y", false),
+            text(" and "),
+            link("me@x.y", "mailto:me@x.y", false),
+        ])];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(
+            rows(&hints),
+            vec![('a', "", "https://x.y"), ('b', "", "mailto:me@x.y")]
+        );
+    }
+
+    #[test]
+    fn hints_dedupe_by_url_keeping_the_first_caption() {
+        let lines = vec![
+            line(vec![
+                link("one", "https://a", false),
+                text(" "),
+                link("two", "https://b", false),
+            ]),
+            line(vec![link("uno", "https://a", false)]),
+        ];
+        let hints = collect_link_hints(&lines);
+        assert_eq!(
+            rows(&hints),
+            vec![('a', "one", "https://a"), ('b', "two", "https://b")]
+        );
+    }
+
+    #[test]
+    fn labels_stop_at_z() {
+        let lines: Vec<StyledLine> = (0..30)
+            .map(|i| line(vec![link("x", &format!("https://e.com/{i}"), false)]))
+            .collect();
+        let hints = collect_link_hints(&lines);
+        assert_eq!(hints.len(), 26);
+        assert_eq!(hints.last().map(|h| h.label), Some('z'));
+    }
+
+    #[test]
+    fn laid_out_markdown_yields_wrapped_captions() {
+        use comrak::{parse_document, Arena};
+        let arena = Arena::new();
+        let src = "See the [ink project documentation](https://example.com/docs) and <https://x.y>";
+        let root = parse_document(&arena, src, &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        let lines = crate::layout::layout_document(
+            root,
+            &theme,
+            24,
+            crate::Spacing::Normal,
+            0,
+            None,
+            crate::image::ImageMode::Off,
+            None,
+        )
+        .lines;
+        let hints = collect_link_hints(&lines);
+        assert_eq!(
+            rows(&hints),
+            vec![
+                ('a', "ink project documentation", "https://example.com/docs"),
+                ('b', "", "https://x.y"),
+            ]
+        );
     }
 }
 
