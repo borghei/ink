@@ -472,27 +472,56 @@ fn edge_list(
             }
         };
     let mut has_edges = vec![false; g.nodes.len()];
+    let mut outgoing_of: Vec<Vec<&graph::Edge>> = vec![Vec::new(); g.nodes.len()];
     for e in &g.edges {
         has_edges[e.from] = true;
         has_edges[e.to] = true;
+        outgoing_of[e.from].push(e);
     }
     for (i, n) in g.nodes.iter().enumerate() {
-        let outgoing: Vec<&graph::Edge> = g.edges.iter().filter(|e| e.from == i).collect();
+        let outgoing = std::mem::take(&mut outgoing_of[i]);
         if outgoing.is_empty() && has_edges[i] {
             continue;
         }
         push_wrapped(&mut out, 0, vec![(one_line(&n.label), Class::Text)]);
         for e in outgoing {
-            let head = if e.end == Marker::None {
-                "──"
-            } else {
-                "──▶"
+            // The edge drawn left to right: its markers, line style, label.
+            let glyph = |m: Marker, at_end: bool| match m {
+                Marker::None => "",
+                Marker::Arrow => {
+                    if at_end {
+                        "▶"
+                    } else {
+                        "◀"
+                    }
+                }
+                Marker::Triangle => {
+                    if at_end {
+                        "▷"
+                    } else {
+                        "◁"
+                    }
+                }
+                Marker::DiamondFilled => "◆",
+                Marker::DiamondOpen => "◇",
+                Marker::Circle => "○",
+                Marker::Cross => "×",
             };
-            let arrow = if e.label.is_empty() {
-                format!("{head} ")
-            } else {
-                format!("──{}{} ", one_line(&e.label), head)
+            let line = match e.style {
+                graph::LineStyle::Dotted => "┄┄",
+                graph::LineStyle::Thick => "━━",
+                _ => "──",
             };
+            let mut arrow = format!("{}{line}", glyph(e.start, false));
+            if !e.label.is_empty() {
+                arrow.push_str(&one_line(&e.label));
+                arrow.push_str(line);
+            }
+            if let Some((a, b)) = &e.cards {
+                arrow = format!("{a} {arrow} {b}").trim().to_string();
+            }
+            arrow.push_str(glyph(e.end, true));
+            arrow.push(' ');
             push_wrapped(
                 &mut out,
                 2,
@@ -503,7 +532,7 @@ fn edge_list(
             );
         }
     }
-    framed(title, &out, &g.notes, theme, width, margin)
+    framed_impl(title, &out, &g.notes, theme, width, margin, false)
 }
 
 /// [`framed`] with the rows left-aligned (text, not a drawing).

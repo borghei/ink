@@ -258,16 +258,25 @@ impl Graph {
     /// to draw for a subgraph id. Nodes only ever mentioned by such an id
     /// are dropped.
     pub fn redirect_cluster_edges(&mut self) {
+        if self.clusters.is_empty() {
+            return;
+        }
+        // Members of every cluster, nested ones included, in node order.
+        let mut members: Vec<Vec<usize>> = vec![Vec::new(); self.clusters.len()];
+        for (m, node) in self.nodes.iter().enumerate() {
+            for c in self.cluster_path(node.cluster) {
+                members[c].push(m);
+            }
+        }
         let mut redirect: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
         for (ci, cl) in self.clusters.iter().enumerate() {
             let Some(n) = self.find(&cl.id) else { continue };
-            if self.nodes[n].declared {
+            if self.nodes[n].declared || redirect.contains_key(&n) {
                 continue;
             }
-            let members: Vec<usize> = (0..self.nodes.len())
-                .filter(|&m| m != n && self.cluster_path(self.nodes[m].cluster).contains(&ci))
-                .collect();
-            if let (Some(&first), Some(&last)) = (members.first(), members.last()) {
+            let mut inner = members[ci].iter().copied().filter(|&m| m != n);
+            if let Some(first) = inner.next() {
+                let last = inner.next_back().unwrap_or(first);
                 redirect.insert(n, (first, last));
             }
         }
@@ -290,10 +299,16 @@ impl Graph {
         if gone.is_empty() {
             return;
         }
+        let mut drop = vec![false; self.nodes.len()];
+        for &g in gone {
+            if let Some(d) = drop.get_mut(g) {
+                *d = true;
+            }
+        }
         let mut map = vec![usize::MAX; self.nodes.len()];
         let mut kept = Vec::new();
         for (i, n) in self.nodes.drain(..).enumerate() {
-            if !gone.contains(&i) {
+            if !drop[i] {
                 map[i] = kept.len();
                 kept.push(n);
             }

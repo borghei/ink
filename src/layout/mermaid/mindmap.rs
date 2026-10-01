@@ -77,12 +77,6 @@ pub fn render(body: &[String], inner: usize) -> Vec<Row> {
         stack.push((c, String::new(), k + 1 == nodes[root].children.len()));
     }
     while let Some((n, prefix, last)) = stack.pop() {
-        // Deep trees stop indenting once half the width is used.
-        let prefix = if text::width(&prefix) + 3 > inner / 2 {
-            text::truncate(&prefix, inner / 2 - 3)
-        } else {
-            prefix
-        };
         let branch = if last { "└─ " } else { "├─ " };
         let cont = if last { "   " } else { "│  " };
         let room = inner.saturating_sub(text::width(&prefix) + 3).max(4);
@@ -95,7 +89,12 @@ pub fn render(body: &[String], inner: usize) -> Vec<Row> {
             let lead = format!("{prefix}{}", if i == 0 { branch } else { cont });
             rows.push(vec![(lead, Class::Edge), (l, class)]);
         }
-        let child_prefix = format!("{prefix}{cont}");
+        // Deep trees stop indenting once half the width is used.
+        let child_prefix = if text::width(&prefix) + 6 > inner / 2 {
+            prefix.clone()
+        } else {
+            format!("{prefix}{cont}")
+        };
         let kids = &nodes[n].children;
         for (k, &c) in kids.iter().enumerate().rev() {
             stack.push((c, child_prefix.clone(), k + 1 == kids.len()));

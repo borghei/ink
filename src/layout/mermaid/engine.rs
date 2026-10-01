@@ -109,7 +109,11 @@ struct NodeBox {
 }
 
 pub fn layout(g: &Graph, p: &Params, avail: usize) -> Result<Drawn, Fail> {
-    if g.nodes.len() > MAX_NODES || g.edges.len() > MAX_EDGES || g.nodes.is_empty() {
+    if g.nodes.len() > MAX_NODES
+        || g.edges.len() > MAX_EDGES
+        || g.clusters.len() > MAX_NODES
+        || g.nodes.is_empty()
+    {
         return Err(Fail::TooBig);
     }
     let horiz = p.dir.horizontal();
