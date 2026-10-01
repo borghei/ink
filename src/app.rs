@@ -19,12 +19,18 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use std::io;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 struct Tab {
     filename: String,
-    #[allow(dead_code)]
-    source: String,
+    /// The document as loaded. Shared, not copied, with every history entry
+    /// made from this tab: an in-page jump records a pointer.
+    source: Arc<str>,
+    /// Modification time of `filename` when `source` was read from it; `None`
+    /// for stdin and URL documents. Going back to a file that has changed
+    /// since re-reads it.
+    mtime: Option<SystemTime>,
     /// The markdown actually parsed: frontmatter stripped, wikilinks expanded.
     /// Heading `source_line`s index into this, so `Y` slices sections from it.
     content: String,
@@ -70,13 +76,15 @@ struct ImagePlacement {
 
 /// A place to return to with `[` / `]`.
 ///
-/// Carries the source that was on screen, so going back to stdin or a URL
-/// document (or a file that has since moved) rebuilds what was shown instead
-/// of trying to re-read the name as a local path.
+/// Carries the source that was on screen (shared with the tab, not copied),
+/// so going back to stdin or a URL document (or a file that has since moved)
+/// rebuilds what was shown instead of trying to re-read the name as a local
+/// path. A local file that has changed since is re-read instead.
 #[derive(Debug, Clone, PartialEq)]
 struct NavEntry {
     filename: String,
-    source: String,
+    source: Arc<str>,
+    mtime: Option<SystemTime>,
     scroll_offset: usize,
 }
 
@@ -84,11 +92,15 @@ impl NavEntry {
     fn of(tab: &Tab) -> Self {
         Self {
             filename: tab.filename.clone(),
-            source: tab.source.clone(),
+            source: Arc::clone(&tab.source),
+            mtime: tab.mtime,
             scroll_offset: tab.scroll_offset,
         }
     }
 }
+
+/// How many places `[` can go back to; the oldest are dropped beyond it.
+const NAV_HISTORY_CAP: usize = 256;
 
 /// Back/forward stacks shared by every way of following a link.
 #[derive(Debug, Default)]
@@ -101,7 +113,7 @@ impl NavHistory {
     /// Remember `here` before moving somewhere new; a new branch drops the
     /// forward stack, as in a browser.
     fn record(&mut self, here: NavEntry) {
-        self.back.push(here);
+        self.push_back(here);
         self.forward.clear();
     }
 
@@ -115,8 +127,15 @@ impl NavHistory {
     /// Step forward from `here`, returning where to go.
     fn go_forward(&mut self, here: NavEntry) -> Option<NavEntry> {
         let to = self.forward.pop()?;
-        self.back.push(here);
+        self.push_back(here);
         Some(to)
+    }
+
+    fn push_back(&mut self, here: NavEntry) {
+        if self.back.len() >= NAV_HISTORY_CAP {
+            self.back.remove(0);
+        }
+        self.back.push(here);
     }
 }
 
@@ -1674,17 +1693,39 @@ fn heading_scroll(tab: &Tab, fragment: &str, viewport: usize) -> Option<usize> {
 }
 
 /// Show a history entry: the same document just scrolls back; anything else
-/// is rebuilt from the source the entry carries.
+/// is rebuilt from the source the entry carries — or, for a local file that
+/// has changed on disk since, from the file (as v0.8.0 always did).
 fn restore_nav_entry(
     tab: &mut Tab,
-    entry: NavEntry,
+    mut entry: NavEntry,
     args: &Args,
     width: u16,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    if tab.filename != entry.filename || tab.source != entry.source {
-        *tab = build_tab(entry.source, &entry.filename, args, width, gen, graphics);
+    // A slide's source is one slide, not the file: never swap in the file.
+    if !args.slides {
+        let now = std::fs::metadata(&entry.filename)
+            .and_then(|m| m.modified())
+            .ok();
+        if file_changed(entry.mtime, now) {
+            if let Ok(fresh) = std::fs::read_to_string(&entry.filename) {
+                entry.source = fresh.into();
+                entry.mtime = now;
+            }
+        }
+    }
+    let same_source = Arc::ptr_eq(&tab.source, &entry.source) || tab.source == entry.source;
+    if tab.filename != entry.filename || !same_source {
+        *tab = build_tab(
+            Arc::clone(&entry.source),
+            &entry.filename,
+            args,
+            width,
+            gen,
+            graphics,
+        );
+        tab.mtime = entry.mtime;
     }
     tab.scroll_offset = entry
         .scroll_offset
@@ -1714,12 +1755,15 @@ fn rebuild_tab(
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    let source = tab.source.clone();
+    let source = Arc::clone(&tab.source);
     let filename = tab.filename.clone();
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
+    let mtime = tab.mtime;
     let width = effective_width(term_width, toc_visible);
     *tab = build_tab(source, &filename, args, width, gen, graphics);
+    // Same source as before, so the same snapshot time.
+    tab.mtime = mtime;
     // Clamp: the new layout may have far fewer lines (e.g. after widening) —
     // an unclamped stale offset blanked the viewport and panicked link-mode.
     tab.scroll_offset = scroll.min(tab.ratatui_lines.len().saturating_sub(1));
@@ -1739,16 +1783,29 @@ fn ensure_tab_current(
     }
 }
 
+/// Has a file changed since a snapshot of it was taken? Only a local file
+/// has a snapshot time (`Some`); a file that is gone (`now == None`) keeps
+/// its snapshot.
+fn file_changed(snapshot: Option<SystemTime>, now: Option<SystemTime>) -> bool {
+    matches!((snapshot, now), (Some(then), Some(now)) if then != now)
+}
+
 fn build_tab(
-    source: String,
+    source: impl Into<Arc<str>>,
     filename: &str,
     args: &Args,
     term_width: u16,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) -> Tab {
+    let source: Arc<str> = source.into();
+    let mtime = if is_local_file(filename) {
+        std::fs::metadata(filename).and_then(|m| m.modified()).ok()
+    } else {
+        None
+    };
     let (_, content) = if args.frontmatter {
-        (None, source.clone())
+        (None, source.to_string())
     } else {
         frontmatter::strip_frontmatter(&source)
     };
@@ -1851,6 +1908,7 @@ fn build_tab(
     Tab {
         filename: filename.to_string(),
         source,
+        mtime,
         content,
         styled_lines,
         ratatui_lines,
@@ -2063,6 +2121,7 @@ mod section_tests {
         Tab {
             filename: "t.md".into(),
             source: content.into(),
+            mtime: None,
             content: content.into(),
             styled_lines: Vec::new(),
             ratatui_lines: Vec::new(),
@@ -2242,7 +2301,7 @@ mod section_tests {
     /// A tab built through the real pipeline: wikilinks, parse, layout.
     pub(super) fn built(src: &str) -> Tab {
         let graphics = crate::graphics::Graphics::halfblocks();
-        build_tab(src.into(), "t.md", &test_args(), 80, 0, &graphics)
+        build_tab(src, "t.md", &test_args(), 80, 0, &graphics)
     }
 
     /// The display line `#fragment` scrolls to, or `None`.
@@ -2375,9 +2434,74 @@ mod section_tests {
     fn entry(name: &str, scroll: usize) -> NavEntry {
         NavEntry {
             filename: name.into(),
-            source: format!("# {name}"),
+            source: format!("# {name}").into(),
+            mtime: None,
             scroll_offset: scroll,
         }
+    }
+
+    #[test]
+    fn an_in_page_jump_records_a_pointer_not_a_copy() {
+        let t = built(DOC);
+        let mut nav = NavHistory::default();
+        nav.record(NavEntry::of(&t));
+        nav.record(NavEntry::of(&t));
+        assert!(nav.back.iter().all(|e| Arc::ptr_eq(&e.source, &t.source)));
+        // Back and forward hand the same allocation around too.
+        let back = nav.go_back(NavEntry::of(&t)).unwrap();
+        assert!(Arc::ptr_eq(&back.source, &t.source));
+        assert!(Arc::ptr_eq(&nav.forward[0].source, &t.source));
+    }
+
+    #[test]
+    fn history_is_capped_dropping_the_oldest() {
+        let mut nav = NavHistory::default();
+        for i in 0..NAV_HISTORY_CAP + 44 {
+            nav.record(entry("a.md", i));
+        }
+        assert_eq!(nav.back.len(), NAV_HISTORY_CAP);
+        assert_eq!(nav.back[0].scroll_offset, 44);
+        // Forward steps that refill the back stack respect the cap too.
+        let here = nav.go_back(entry("b.md", 0)).unwrap();
+        nav.go_forward(here).unwrap();
+        assert_eq!(nav.back.len(), NAV_HISTORY_CAP);
+    }
+
+    #[test]
+    fn going_back_rereads_a_file_only_when_it_changed() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let t1 = t0 + Duration::from_secs(5);
+        assert!(file_changed(Some(t0), Some(t1)), "edited since");
+        assert!(!file_changed(Some(t0), Some(t0)), "unchanged");
+        assert!(!file_changed(Some(t0), None), "deleted: keep the snapshot");
+        assert!(!file_changed(None, Some(t1)), "stdin / URL: no file");
+        assert!(!file_changed(None, None));
+    }
+
+    #[test]
+    fn local_files_carry_their_mtime_and_stdin_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        std::fs::write(&path, "# Doc\n").unwrap();
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let file = build_tab(
+            "# Doc\n".to_string(),
+            path.to_str().unwrap(),
+            &test_args(),
+            80,
+            0,
+            &graphics,
+        );
+        assert!(file.mtime.is_some());
+        let stdin = build_tab(
+            "# Doc\n".to_string(),
+            "stdin",
+            &test_args(),
+            80,
+            0,
+            &graphics,
+        );
+        assert_eq!(stdin.mtime, None);
     }
 
     #[test]
@@ -2412,7 +2536,7 @@ mod section_tests {
         t.filename = "stdin".into();
         let e = NavEntry::of(&t);
         assert_eq!(e.filename, "stdin");
-        assert_eq!(e.source, DOC);
+        assert_eq!(&*e.source, DOC);
         assert_eq!(e.scroll_offset, 7);
     }
 }
