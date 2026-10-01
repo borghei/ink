@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 #
 # Environment:
-#   INK_VERSION=v0.9.0                   install a specific release (default: latest)
+#   INK_VERSION=v0.10.0                  install a specific release (default: latest)
 #   INK_INSTALL_DIR="$HOME/.local/bin"   install somewhere else (default: /usr/local/bin)
 #
 # Options:
