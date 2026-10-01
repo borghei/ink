@@ -1529,14 +1529,12 @@ fn open_link(
         }
     }
     if !is_followable_local(url) {
-        return None;
+        return Some(format!("cannot follow {url}"));
     }
-    let (path, fragment) = split_fragment(url);
     let size = terminal.size().ok();
     let viewport = size.map(|s| s.height.saturating_sub(3)).unwrap_or(24) as usize;
 
-    if path.is_empty() {
-        let fragment = fragment.unwrap_or("");
+    if let Some(fragment) = url.strip_prefix('#') {
         let tab = &mut tabs[active_tab];
         let Some(line) = heading_scroll(tab, fragment, viewport) else {
             return Some(format!("no heading #{fragment}"));
@@ -1550,10 +1548,9 @@ fn open_link(
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let src = crate::sanitize::resolve_local(&base, path)
-        .and_then(|target| Some((std::fs::read_to_string(&target).ok()?, target)));
-    let Some((src, target)) = src else {
-        return Some(format!("cannot open {path}"));
+    let Some((src, target, path, fragment)) = read_link_target(&base, url) else {
+        let shown = link_targets(url).last().map_or(url, |(path, _)| *path);
+        return Some(format!("cannot open {shown}"));
     };
     nav.record(NavEntry::of(&tabs[active_tab]));
     let width = effective_width(size.map(|s| s.width).unwrap_or(80), args.toc);
@@ -1579,20 +1576,44 @@ fn open_link(
 /// Links ink follows itself: a local markdown file, optionally with a
 /// `#heading` suffix, or a bare `#heading` in the current document.
 fn is_followable_local(url: &str) -> bool {
-    let (path, fragment) = split_fragment(url);
-    if path.is_empty() {
-        return fragment.is_some_and(|f| !f.is_empty());
+    match url.strip_prefix('#') {
+        Some(fragment) => !fragment.is_empty(),
+        None => !link_targets(url).is_empty(),
     }
-    let lower = path.to_ascii_lowercase();
-    !lower.contains("://") && (lower.ends_with(".md") || lower.ends_with(".markdown"))
 }
 
-/// `other.md#intro` -> (`other.md`, Some(`intro`)); `#intro` -> (``, Some(`intro`)).
-fn split_fragment(url: &str) -> (&str, Option<&str>) {
-    match url.split_once('#') {
-        Some((path, frag)) => (path, Some(frag)),
-        None => (url, None),
+/// Read the file a local link points at, relative to `base`: the first of
+/// [`link_targets`] whose file exists wins, so a `#` that is part of the
+/// name (`c#-notes.md`) is not taken for a fragment. Returns the source, the
+/// resolved path, the link's file part and its fragment.
+fn read_link_target<'u>(
+    base: &std::path::Path,
+    url: &'u str,
+) -> Option<(String, std::path::PathBuf, &'u str, Option<&'u str>)> {
+    link_targets(url).into_iter().find_map(|(path, fragment)| {
+        let target = crate::sanitize::resolve_local_exact(base, path)?;
+        let src = std::fs::read_to_string(&target).ok()?;
+        Some((src, target, path, fragment))
+    })
+}
+
+/// The ways to read a local link as (markdown file, fragment), most literal
+/// first: the whole link as a file name (`#` is legal in names, and `%23`
+/// is decoded when resolving), then split at the last `#`, then at the
+/// first. Readings whose file part is not markdown are dropped.
+fn link_targets(url: &str) -> Vec<(&str, Option<&str>)> {
+    let mut out = vec![(url, None)];
+    for i in [url.rfind('#'), url.find('#')].into_iter().flatten() {
+        let reading = (&url[..i], Some(&url[i + 1..]));
+        if !out.contains(&reading) {
+            out.push(reading);
+        }
     }
+    out.retain(|(path, _)| {
+        let lower = path.to_ascii_lowercase();
+        !lower.contains("://") && (lower.ends_with(".md") || lower.ends_with(".markdown"))
+    });
+    out
 }
 
 /// GitHub-style anchor for a heading: lowercased, whitespace to `-`, every
@@ -2176,10 +2197,22 @@ mod section_tests {
 
     #[test]
     fn fragment_splitting_and_followable_links() {
-        assert_eq!(split_fragment("#a"), ("", Some("a")));
-        assert_eq!(split_fragment("doc.md#a"), ("doc.md", Some("a")));
-        assert_eq!(split_fragment("doc.md"), ("doc.md", None));
+        assert_eq!(link_targets("doc.md#a"), [("doc.md", Some("a"))]);
+        assert_eq!(link_targets("doc.md"), [("doc.md", None)]);
+        // Literal name first, then the last `#`, then the first.
+        assert_eq!(
+            link_targets("c#-notes.md#intro"),
+            [("c#-notes.md", Some("intro"))]
+        );
+        assert_eq!(link_targets("issue#12.md"), [("issue#12.md", None)]);
+        assert_eq!(
+            link_targets("a#b.md#c.md"),
+            [("a#b.md#c.md", None), ("a#b.md", Some("c.md"))]
+        );
+        assert!(link_targets("image.png#frag").is_empty());
         assert!(is_followable_local("#section"));
+        assert!(is_followable_local("c#-notes.md"));
+        assert!(is_followable_local("issue#12.md"));
         assert!(is_followable_local("docs/x.md#section"));
         assert!(is_followable_local("x.MARKDOWN"));
         assert!(!is_followable_local("#"));
@@ -2266,6 +2299,66 @@ mod section_tests {
         )
         .headings;
         assert_eq!(headings[0].anchor, "a -- b --- c");
+    }
+
+    #[test]
+    fn links_to_files_with_hash_in_the_name_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::write(base.join("c#-notes.md"), "# C sharp\n").unwrap();
+        std::fs::write(base.join("issue#12.md"), "# Twelve\n").unwrap();
+        std::fs::write(base.join("other.md"), "# Other\n\n## Intro\n").unwrap();
+        let read = |url| {
+            read_link_target(base, url)
+                .map(|(src, _, path, frag)| (src.lines().next().unwrap().to_string(), path, frag))
+        };
+        assert_eq!(
+            read("c#-notes.md"),
+            Some(("# C sharp".into(), "c#-notes.md", None))
+        );
+        assert_eq!(
+            read("issue#12.md"),
+            Some(("# Twelve".into(), "issue#12.md", None))
+        );
+        // `%23` is a `#` in the name.
+        assert_eq!(
+            read("issue%2312.md"),
+            Some(("# Twelve".into(), "issue%2312.md", None))
+        );
+        // A `#` after the file name is still a fragment.
+        assert_eq!(
+            read("other.md#intro"),
+            Some(("# Other".into(), "other.md", Some("intro")))
+        );
+        assert_eq!(
+            read("c#-notes.md#top"),
+            Some(("# C sharp".into(), "c#-notes.md", Some("top")))
+        );
+        assert_eq!(read("missing.md#x"), None);
+    }
+
+    #[test]
+    fn wikilink_sections_jump_to_the_heading_text() {
+        // `[[page#Section Name]]` → `page.md` + the heading text, matched by
+        // slugging it like a heading; `[[#Section]]` stays in the document.
+        let t = built("# Top\n\nSee [[#My Section]].\n\n## My Section\n\nbody\n");
+        let urls: Vec<String> = t
+            .styled_lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter_map(|s| s.style.link_url.clone())
+            .collect();
+        assert_eq!(urls, ["#My Section"]);
+        assert!(is_followable_local(&urls[0]));
+        let i = find_heading(
+            t.anchors.iter().map(|(a, _)| a.as_str()),
+            urls[0].trim_start_matches('#'),
+        );
+        assert_eq!(i, Some(1));
+        assert_eq!(
+            crate::wikilink::resolve_target("notes#Install `ink` CLI"),
+            "notes.md#Install `ink` CLI"
+        );
     }
 
     #[test]
