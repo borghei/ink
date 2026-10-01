@@ -299,6 +299,11 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
 
     install_panic_hook();
     enable_raw_mode()?;
+    // A background-colour reply that missed the startup query must not be
+    // read as key presses.
+    if theme::detect::reply_may_arrive_late() {
+        input::discard_late_reply();
+    }
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     if mouse_capture {

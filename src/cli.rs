@@ -247,8 +247,7 @@ pub fn run() -> Result<()> {
     // `auto` asks the terminal for its background colour (OSC 11) once, now,
     // before anything owns the screen. Only with a terminal on both ends:
     // the reply arrives on stdin, and a pipe would never answer.
-    let wants_terminal = matches!(cli.command, None | Some(Commands::Doctor { .. }));
-    if theme == "auto" && wants_terminal {
+    if theme == "auto" && uses_background(&cli, color) {
         theme::detect::init_background(stdout_tty && std::io::stdin().is_terminal());
     }
 
@@ -562,6 +561,20 @@ pub enum ThemeOrigin {
     Config,
     /// Neither: `auto`, detected from the terminal background.
     Auto,
+}
+
+/// Will this run draw with the `auto` theme's colours? Only then is the
+/// terminal worth asking for its background: `ink doctor` reports it, the
+/// reader and `--plain` draw with it when colour is on. `--list-themes` and
+/// the other subcommands never look at it.
+fn uses_background(cli: &Cli, plain_color: bool) -> bool {
+    match cli.command {
+        Some(Commands::Doctor { .. }) => true,
+        Some(_) => false,
+        None if cli.list_themes => false,
+        None if cli.plain => plain_color,
+        None => theme::caps::color_enabled(cli.color, true),
+    }
 }
 
 /// The theme to use: an explicit `--theme` beats the config file, which beats
