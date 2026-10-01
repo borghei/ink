@@ -307,6 +307,44 @@ fn state_diagram_start_end_fork_and_back_edge() {
     );
 }
 
+// ── Class diagrams ──
+
+#[test]
+fn class_diagram_compartments_and_relationship_glyphs() {
+    expect(
+        "classDiagram\nclass Animal {\n  <<interface>>\n  +String name\n  +eat() void\n}\nAnimal <|-- Dog\nDog *-- Tail\nDog \"1\" --> \"*\" Bone : chews",
+        50,
+        r"
+╭─ class diagram ───────────────────────────────╮
+│              ┌───────────────┐                │
+│              │ <<interface>> │                │
+│              │    Animal     │                │
+│              ├───────────────┤                │
+│              │ +String name  │                │
+│              ├───────────────┤                │
+│              │ +eat() void   │                │
+│              └───────────────┘                │
+│                      △                        │
+│                      │                        │
+│                      │                        │
+│                   ┌──┴──┐                     │
+│                   │ Dog │                     │
+│                   └───┬─┘                     │
+│                     ◆ │                       │
+│                  ┌──┘ └────┐                  │
+│                  │         1                  │
+│                  │       chews                │
+│                  │         *                  │
+│                  │         ▼                  │
+│               ┌──┴───┐  ┌──────┐              │
+│               │ Tail │  │ Bone │              │
+│               └──────┘  └──────┘              │
+│                                               │
+│ △ inheritance · ◆ composition · ▶ association │
+╰───────────────────────────────────────────────╯",
+    );
+}
+
 // ── Properties over the corpus ──
 
 const WIDTHS: [usize; 5] = [24, 40, 60, 80, 120];

@@ -93,7 +93,6 @@ pub enum LineStyle {
 }
 
 /// What an edge end looks like where it meets its node.
-#[allow(dead_code)] // relationship markers arrive with class diagrams
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Marker {
     None,

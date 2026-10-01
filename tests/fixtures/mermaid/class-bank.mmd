@@ -1,0 +1,23 @@
+classDiagram
+    class BankAccount{
+        <<abstract>>
+        +String owner
+        +BigDecimal balance
+        +deposit(amount) bool
+        +withdrawal(amount) int
+    }
+    class Shape~T~{
+        <<interface>>
+        +List~T~ points
+        +area()$ double
+    }
+    Customer "1" --> "*" Ticket : buys
+    Student "1" --> "1..*" Course : takes
+    Galaxy --> "many" Star : Contains
+    BankAccount <|-- Savings
+    Shape~T~ <|.. Square
+    namespace Accounts {
+        class Savings
+        class Checking
+    }
+    BankAccount <|-- Checking

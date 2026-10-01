@@ -10,6 +10,7 @@
 //! input, and produce the same output for the same input.
 
 mod canvas;
+mod class;
 mod engine;
 mod flowchart;
 mod graph;
@@ -62,7 +63,8 @@ pub fn render_mermaid_with(
 fn asciify(text: &str) -> std::borrow::Cow<'_, str> {
     fn stand_in(c: char) -> Option<char> {
         Some(match c {
-            '─' | '┄' | '╌' => '-',
+            '─' | '╌' => '-',
+            '┄' => '.',
             '━' | '═' => '=',
             '│' | '┃' | '║' => '|',
             '┆' => ':',
@@ -211,6 +213,7 @@ fn parse_graph(src: &Source) -> Option<(Graph, String)> {
             (flowchart::parse(&src.header, &src.body), "flowchart")
         }
         "stateDiagram" | "stateDiagram-v2" => (state::parse(&src.body), "state diagram"),
+        "classDiagram" | "classDiagram-v2" => (class::parse(&src.body), "class diagram"),
         _ => return None,
     };
     Some((g, src.title.clone().unwrap_or_else(|| kind.to_string())))
