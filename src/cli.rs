@@ -71,9 +71,17 @@ pub struct Cli {
     #[arg(long)]
     pub no_pager: bool,
 
-    /// Show YAML/TOML frontmatter
+    /// Show YAML/TOML/JSON frontmatter as a metadata box at the top
+    /// (hidden by default)
     #[arg(long)]
     pub frontmatter: bool,
+
+    /// Render only these SOURCE lines of the markdown (1-based, inclusive):
+    /// `START:END`, `START:`, `:END` or `N`; repeatable. A fenced code block
+    /// cut by a range is reopened/closed so it still highlights. Implies
+    /// --plain
+    #[arg(long, value_name = "START:END", value_parser = parse_line_range)]
+    pub line_range: Vec<crate::parser::line_range::LineRange>,
 
     /// Line spacing [default: normal]
     #[arg(long, value_enum)]
@@ -118,6 +126,11 @@ fn parse_width(s: &str) -> Result<WidthArg, String> {
                 format!("expected a column count from {lo} to {hi}, or one of: narrow, wide, full")
             }),
     }
+}
+
+/// `--line-range` parser.
+fn parse_line_range(s: &str) -> Result<crate::parser::line_range::LineRange, String> {
+    crate::parser::line_range::LineRange::parse(s)
 }
 
 /// `--image-protocol` parser (keeps the aliases `ProtocolChoice::parse` accepts).
@@ -357,7 +370,8 @@ pub fn run() -> Result<()> {
         slides: cli.slides,
         // The interactive reader needs a terminal: with stdout piped or
         // redirected (`ink file.md | cat`), render plain output instead.
-        plain: cli.plain || !stdout_tty,
+        // `--line-range` has no reader equivalent: it renders plain.
+        plain: cli.plain || !stdout_tty || !cli.line_range.is_empty(),
         watch: cli.watch,
         toc,
         images: if cli.no_images {
@@ -438,8 +452,9 @@ pub fn run() -> Result<()> {
         let sources = read_all_inputs(&args)?;
         let mut rendered = String::new();
         for source in &sources {
+            let source = crate::parser::line_range::select(source, &cli.line_range);
             rendered.push_str(&render::plain::render_plain_with_color(
-                source, &args, color,
+                &source, &args, color,
             )?);
         }
         emit_plain(&rendered, cli.no_pager);
@@ -671,7 +686,7 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # Show table of contents on startup
 # toc = false
 
-# Show YAML/TOML frontmatter as a code block at the top of the document
+# Show YAML/TOML/JSON frontmatter as a metadata box at the top of the document
 # frontmatter = false
 
 [behavior]
@@ -794,6 +809,7 @@ fn print_keybindings() {
             NextTab => "next_tab",
             PrevTab => "prev_tab",
             ToggleToc => "toggle_toc",
+            TocFocus => "toc_focus",
             Search => "search",
             ThemePicker => "theme_picker",
             FollowLink => "follow_link",
@@ -805,6 +821,7 @@ fn print_keybindings() {
             SelectLineMode => "select_line_mode",
             CopyCode => "copy_code",
             CopySection => "copy_section",
+            Edit => "edit",
             _ => "?",
         }
         .to_string()

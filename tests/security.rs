@@ -244,3 +244,29 @@ fn diff_strips_escapes_from_document_lines() {
     assert!(!stdout.contains("\x1b]"), "OSC leaked: {stdout:?}");
     assert!(!stdout.contains("\x1b[2J"), "CSI leaked: {stdout:?}");
 }
+
+/// Text carried by the markdown extensions (callout titles, spoilers,
+/// super/subscripts, definition terms, aligned table cells) goes through the
+/// same sanitizer as everything else.
+#[test]
+fn extension_text_cannot_inject_escapes() {
+    let source = "> [!NOTE] title \x1b]52;c;SGVsbG8=\x07 \x1b[2J\n> body\n\n\
+        x^\x1b[31m^ and H~\x1b[2J~O and ||spoil \x1b]0;pwn\x07 er||\n\n\
+        Term \x1b[2J\n: def \x1b[2J\n\n\
+        | a |\n|--:|\n| \x1b[2J |\n";
+    let out = render_plain(source, &args()).unwrap();
+    assert_only_ink_escapes(&out);
+    assert!(!out.contains("\x1b[2J") && !out.contains("\x1b]52") && !out.contains("\x1b]0"));
+}
+
+/// Math is rendered from document text: `\text{…}`, unknown commands and
+/// environment cells all pass through the sanitizer.
+#[test]
+fn math_text_cannot_inject_escapes() {
+    let source = "Inline $\\text{\x1b[2J} \\foo{\x1b]0;t\x07} x^{\x1b[31m}$.\n\n\
+        $$\n\\begin{pmatrix} \x1b[2J & b \\\\ c & \x1b]52;c;AA==\x07 \\end{pmatrix}\n$$\n\n\
+        ```math\n\\text{\x1b[2J}\n```\n\n| m |\n|---|\n| $\\text{\x1b[2J}$ |\n";
+    let out = render_plain(source, &args()).unwrap();
+    assert_only_ink_escapes(&out);
+    assert!(!out.contains("\x1b[2J") && !out.contains("\x1b]0") && !out.contains("\x1b]52"));
+}

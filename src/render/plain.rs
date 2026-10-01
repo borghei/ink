@@ -19,11 +19,9 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
 /// escape sequences at all — no SGR color or attributes, no OSC 8 links —
 /// so it is safe for files, pipes, and `git` textconv.
 pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result<String> {
-    let (_, content) = if args.frontmatter {
-        (None, source.to_string())
-    } else {
-        frontmatter::strip_frontmatter(source)
-    };
+    // Frontmatter is stripped, or with `--frontmatter` turned into a block
+    // the layout draws as a metadata box.
+    let content = frontmatter::prepare(source, args.frontmatter);
 
     // Pre-process wikilinks
     let content = crate::wikilink::process_wikilinks(&content);

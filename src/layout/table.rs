@@ -1,6 +1,6 @@
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
-use comrak::nodes::{AstNode, NodeValue};
+use comrak::nodes::{AstNode, NodeValue, TableAlignment};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -22,6 +22,10 @@ pub fn layout_table<'a>(
     }
 
     let num_cols = headers.len();
+    let alignments: Vec<TableAlignment> = match &node.data.borrow().value {
+        NodeValue::Table(t) => t.alignments.clone(),
+        _ => Vec::new(),
+    };
 
     // Calculate ideal column widths from content
     let mut col_widths: Vec<usize> = headers.iter().map(|h| cell_width(h)).collect();
@@ -93,6 +97,7 @@ pub fn layout_table<'a>(
     render_row_lines(
         &header_wrapped,
         &col_widths,
+        &alignments,
         Some(header_color),
         border_color,
         false,
@@ -117,6 +122,7 @@ pub fn layout_table<'a>(
         render_row_lines(
             &row_wrapped,
             &col_widths,
+            &alignments,
             None,
             border_color,
             i % 2 == 1,
@@ -232,7 +238,7 @@ fn render_transposed(
 /// Measures grapheme clusters, never splitting inside one: per-char sums
 /// disagree with the rendered width for emoji (VS16, ZWJ sequences), which
 /// used to return labels wider than the column.
-fn fit_label(s: &str, w: usize) -> String {
+pub(super) fn fit_label(s: &str, w: usize) -> String {
     if w == 0 {
         return String::new();
     }
@@ -285,7 +291,7 @@ fn cell_width(text: &str) -> usize {
 
 /// Word-wrap text to fit within max_width characters. A `\n` (hard break in
 /// the cell) always starts a new line.
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if text.contains('\n') {
         return text
             .split('\n')
@@ -387,6 +393,7 @@ fn force_break(word: &str, max_width: usize) -> Vec<String> {
 fn render_row_lines(
     wrapped_cols: &[Vec<String>],
     widths: &[usize],
+    alignments: &[TableAlignment],
     text_color: Option<&String>,
     border_color: &str,
     alt_row: bool,
@@ -420,8 +427,14 @@ fn render_row_lines(
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            let cell_width = cell_text.width();
-            let padding = width.saturating_sub(cell_width);
+            let (pad_left, pad_right) = align_padding(
+                alignments
+                    .get(col_idx)
+                    .copied()
+                    .unwrap_or(TableAlignment::None),
+                *width,
+                cell_text.width(),
+            );
 
             let mut style = SpanStyle::default();
             if let Some(c) = text_color {
@@ -433,7 +446,11 @@ fn render_row_lines(
             }
 
             line.push(StyledSpan {
-                text: format!(" {cell_text}{} ", " ".repeat(padding)),
+                text: format!(
+                    " {}{cell_text}{} ",
+                    " ".repeat(pad_left),
+                    " ".repeat(pad_right)
+                ),
                 style,
             });
             line.push(StyledSpan {
@@ -446,6 +463,20 @@ fn render_row_lines(
         }
 
         lines.push(line);
+    }
+}
+
+/// Left and right padding that places `text_width` columns of cell text in
+/// a `width`-column slot per the column's `:--`/`:-:`/`--:` alignment. Each
+/// wrapped line of a cell is placed on its own, so a right-aligned
+/// multi-line cell is ragged left. Centering leans left on an odd remainder
+/// (as GitHub's HTML tables do).
+fn align_padding(align: TableAlignment, width: usize, text_width: usize) -> (usize, usize) {
+    let free = width.saturating_sub(text_width);
+    match align {
+        TableAlignment::Right => (free, 0),
+        TableAlignment::Center => (free / 2, free - free / 2),
+        TableAlignment::Left | TableAlignment::None => (0, free),
     }
 }
 
@@ -514,10 +545,50 @@ fn extract_table_data<'a>(node: &'a AstNode<'a>) -> (Vec<String>, Vec<Vec<String
 }
 
 fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
+    use comrak::arena_tree::NodeEdge;
     // Iterative pre-order walk: inline nesting can be thousands deep.
     let mut buf = String::new();
-    for inner in node.descendants() {
+    // A raised/lowered run is converted as a whole; its subtree is skipped.
+    let mut skip_until: Option<&'a AstNode<'a>> = None;
+    for edge in node.traverse() {
+        let inner = match edge {
+            NodeEdge::Start(n) => n,
+            NodeEdge::End(n) => {
+                if skip_until.is_some_and(|s| std::ptr::eq(s, n)) {
+                    skip_until = None;
+                } else if skip_until.is_none()
+                    && matches!(n.data.borrow().value, NodeValue::SpoileredText)
+                {
+                    buf.push_str("||");
+                }
+                continue;
+            }
+        };
+        if skip_until.is_some() {
+            continue;
+        }
         match &inner.data.borrow().value {
+            NodeValue::Superscript | NodeValue::Subscript => {
+                let sup = matches!(inner.data.borrow().value, NodeValue::Superscript);
+                let mut text = String::new();
+                for d in inner.descendants() {
+                    if let NodeValue::Text(t) = &d.data.borrow().value {
+                        text.push_str(t);
+                    }
+                }
+                let ascii = crate::glyphs::current().ascii;
+                buf.push_str(&if sup {
+                    super::scripts::superscript(&text, ascii, false)
+                } else {
+                    super::scripts::subscript(&text, ascii, false)
+                });
+                skip_until = Some(inner);
+            }
+            NodeValue::SpoileredText => buf.push_str("||"),
+            NodeValue::Math(m) => buf.push_str(&super::math::render_inline(
+                &m.literal,
+                crate::glyphs::current().ascii,
+            )),
             NodeValue::Text(t) => buf.push_str(t),
             NodeValue::Code(c) => {
                 buf.push('`');

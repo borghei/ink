@@ -1,8 +1,6 @@
 use crate::theme;
 use anyhow::Result;
-use crossterm::event::{self, EnableMouseCapture, Event, KeyCode, KeyModifiers};
-use crossterm::execute;
-use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use std::collections::HashSet;
@@ -32,13 +30,13 @@ pub fn browse(dir: &Path, theme_name: &str, mouse_capture: bool) -> Result<Optio
     }
 
     crate::app::install_panic_hook();
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    if mouse_capture {
-        execute!(stdout, EnableMouseCapture)?;
+    crate::app::enter_tui(mouse_capture)?;
+    // A background-colour reply that missed the startup query must not be
+    // read as key presses (typed into the filter, or `q` quitting).
+    if theme::detect::reply_may_arrive_late() {
+        crate::input::discard_late_reply();
     }
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let result = browse_inner(&mut terminal, dir, &files, theme_name);
@@ -228,67 +226,69 @@ fn browse_inner(
         })?;
 
         // ── Input handling ──
-        if event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
-                // Windows reports key releases too; acting on them would
-                // move twice and type every filter character twice.
-                if !crate::input::is_actionable_key(&key) {
-                    continue;
-                }
-                if filter_active {
-                    match key.code {
-                        KeyCode::Esc => {
-                            filter_active = false;
-                            filter.clear();
-                        }
-                        KeyCode::Enter => {
-                            filter_active = false;
-                        }
-                        KeyCode::Backspace => {
-                            filter.pop();
-                        }
-                        KeyCode::Char(c) => {
-                            if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
-                                filter_active = false;
-                                filter.clear();
-                            } else {
-                                filter.push(c);
-                            }
-                        }
-                        _ => {}
-                    }
-                    continue;
-                }
-
+        // Through the reader's queue, so a late OSC 11 reply that was
+        // filtered out at startup is never typed into the filter.
+        if let Some(Event::Key(key)) =
+            crate::input::next_event(std::time::Duration::from_millis(50))?
+        {
+            // Windows reports key releases too; acting on them would
+            // move twice and type every filter character twice.
+            if !crate::input::is_actionable_key(&key) {
+                continue;
+            }
+            if filter_active {
                 match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
-                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        return Ok(None);
-                    }
-                    KeyCode::Down | KeyCode::Char('j')
-                        if !filtered.is_empty() && selected < filtered.len() - 1 =>
-                    {
-                        selected += 1;
-                    }
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        selected = selected.saturating_sub(1);
-                    }
-                    KeyCode::Char('G') | KeyCode::End if !filtered.is_empty() => {
-                        selected = filtered.len() - 1;
-                    }
-                    KeyCode::Home | KeyCode::Char('g') => {
-                        selected = 0;
+                    KeyCode::Esc => {
+                        filter_active = false;
+                        filter.clear();
                     }
                     KeyCode::Enter => {
-                        if let Some(&file_idx) = filtered.get(selected) {
-                            return Ok(Some(files[file_idx].full_path.clone()));
-                        }
+                        filter_active = false;
                     }
-                    KeyCode::Char('/') => {
-                        filter_active = true;
+                    KeyCode::Backspace => {
+                        filter.pop();
+                    }
+                    KeyCode::Char(c) => {
+                        if key.modifiers.contains(KeyModifiers::CONTROL) && c == 'c' {
+                            filter_active = false;
+                            filter.clear();
+                        } else {
+                            filter.push(c);
+                        }
                     }
                     _ => {}
                 }
+                continue;
+            }
+
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(None),
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    return Ok(None);
+                }
+                KeyCode::Down | KeyCode::Char('j')
+                    if !filtered.is_empty() && selected < filtered.len() - 1 =>
+                {
+                    selected += 1;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    selected = selected.saturating_sub(1);
+                }
+                KeyCode::Char('G') | KeyCode::End if !filtered.is_empty() => {
+                    selected = filtered.len() - 1;
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    selected = 0;
+                }
+                KeyCode::Enter => {
+                    if let Some(&file_idx) = filtered.get(selected) {
+                        return Ok(Some(files[file_idx].full_path.clone()));
+                    }
+                }
+                KeyCode::Char('/') => {
+                    filter_active = true;
+                }
+                _ => {}
             }
         }
     }

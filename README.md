@@ -144,6 +144,8 @@ ink --plain README.md
 
 Headings, bold, italic, strikethrough, links, blockquotes, lists, task lists, tables, footnotes, horizontal rules — all rendered with proper styling and colors.
 
+Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. Superscript `x^2^` (or `x<sup>2</sup>`) and subscript `H<sub>2</sub>O` come out as `x²` and `H₂O` (as `^(…)`/`_(…)` when a character has no Unicode form). Single and double tildes, `~x~` and `~~x~~`, strike through as on GitHub. `||spoilers||` stay hidden until you select or copy them, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
+
 ### Syntax-highlighted code blocks
 
 Language-aware highlighting for every major language. Code blocks get clean borders with the language label shown at the top.
@@ -164,7 +166,11 @@ Flowcharts (every node shape, link style and direction, with subgraphs drawn as 
 
 ### GitHub-style admonitions
 
-`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` blocks render with distinct colors and icons.
+`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` blocks render with distinct colors and icons. A custom title (`> [!NOTE] Read this first`) replaces the type name, and Obsidian callouts (`> [!info]- Title`, `[!bug]`, `[!example]`, …) map onto the same five colours, fold markers ignored.
+
+### Frontmatter
+
+YAML (`---`), TOML (`+++`) and JSON (`{`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown.
 
 ### Wikilinks
 
@@ -200,7 +206,7 @@ the reader and the file browser.
   `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
   **`y`** copies and exits; `Esc` cancels.
 - **Drag with the mouse** to select, release to copy. Double-click takes the word, triple-click the
-  line.
+  line. A single click on a link follows it instead (see below).
 - **`c`** labels every code block on screen — press its letter to copy the block's *raw* source: no
   borders, no line numbers, no syntax-highlighting escapes.
 - **`Y`** copies the markdown source of the section you are reading (heading included, down to the
@@ -219,6 +225,8 @@ they select what you can see. Reach for `c` and `Y` when you want the source ins
 
 Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link or `#heading` anchor right inside ink (`[` goes back).
 
+Clicking works too: a plain click on a link (press and release without moving) does exactly what its letter would. Dragging across a link still selects it. With `--no-mouse` ink leaves clicks to your terminal, which opens links its own way (usually Cmd- or Ctrl-click).
+
 ### Help overlay
 
 Press `?` any time for a popup listing every active keybinding — including your own overrides.
@@ -226,6 +234,8 @@ Press `?` any time for a popup listing every active keybinding — including you
 ### Table of contents
 
 Press `t` to toggle a sidebar showing every heading in the document. Tracks your position as you scroll.
+
+Press `o` to move into it (it opens if it was closed). `j`/`k` or the arrows move, `g`/`G` go to the first and last heading, `Ctrl+d`/`Ctrl+u` page, and `Enter` jumps there — `[` brings you back. `h`/`l` fold and unfold a section's subheadings in the sidebar, and `/` filters the list as you type (every word you type must appear, case doesn't matter). `Esc` clears the filter; `Esc` again, or `o`, goes back to the document without moving. With the mouse, click a heading to jump to it; the wheel over the sidebar scrolls the sidebar, not the page.
 
 ### 8 built-in themes
 
@@ -239,7 +249,7 @@ On the Linux console, a non-UTF-8 locale, a legacy console font or a screen read
 
 ### Math and emoji
 
-Inline `$E=mc^2$` and block `$$...$$` math render in code style, and `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
+Inline `$E=mc^2$`, block `$$...$$` and ```` ```math ```` render as Unicode text: `$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$` reads `x = (-b ± √(b² - 4ac))/2a`. Greek letters, operators, `\mathbb{R}` → ℝ, super- and subscripts, fractions, roots, and matrix, `cases` and `aligned` environments (drawn on several lines with brackets) are covered; anything else is shown as written. A lone `$` in prose (`costs $5 and $10`) stays a dollar sign. With `--ascii` the LaTeX source is shown instead. `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
 
 ### Presentation mode
 
@@ -252,6 +262,8 @@ ink --slides deck.md
 ### Works as a pager
 
 Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly. When stdout is not a terminal, `ink file.md` behaves like `ink --plain file.md`, as `bat` and `glow` do.
+
+`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted. It always prints plain output.
 
 Color follows `--color <auto|always|never>` (default `auto`). In `auto` mode, `--plain` and `ink diff` emit color and OSC 8 hyperlinks only when stdout is a terminal, so redirects, pipes, and `git` textconv get clean text. Precedence: an explicit `--color` wins; then `NO_COLOR` turns color off; then `CLICOLOR_FORCE=1` or `FORCE_COLOR` turns it on; then `TERM=dumb` turns it off; then the terminal check. Tools that display ANSI from a pipe need `--color=always`:
 
@@ -306,7 +318,9 @@ ink diff old.md new.md
 | `v` / `V` | Select text — character-wise / line-wise (`y` copies, `Esc` cancels) |
 | `c` | Copy a code block by letter |
 | `Y` | Copy the current section as markdown |
+| `e` | Edit the file in `$VISUAL` / `$EDITOR` (opens at the heading you are reading, reloads when you quit the editor) |
 | `t` | Toggle table of contents |
+| `o` | Focus the table of contents (`j`/`k` move, `Enter` jumps, `h`/`l` fold, `/` filters, `Esc` returns) |
 | `T` | Theme picker (choice is saved to config) |
 | `?` | Help overlay |
 | `Enter` | Follow first visible link |
@@ -326,6 +340,8 @@ preset = "emacs"   # default | vim | emacs
 [keybindings.bindings]
 # Per-action overrides, applied on top of the preset.
 toggle_toc = ["ctrl-t"]
+toc_focus = ["ctrl-o"]
+edit = ["alt-e"]
 ```
 
 The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), `Ctrl+F`/`Ctrl+B` (next/prev heading), and `Ctrl+X Ctrl+C` (chord exit).
@@ -353,7 +369,7 @@ spacing = "normal"
 # Show table of contents on startup
 toc = false
 
-# Show YAML/TOML frontmatter
+# Show YAML/TOML/JSON frontmatter as a metadata box at the top
 frontmatter = false
 
 # Behavior
@@ -420,7 +436,9 @@ Options:
       --image-protocol <P>  auto | kitty | iterm2 | sixel | halfblocks
       --list-themes      List available themes and exit
       --no-pager         Never page --plain output, even on a TTY
-      --frontmatter      Show YAML/TOML frontmatter
+      --frontmatter      Show YAML/TOML/JSON frontmatter as a metadata box
+      --line-range <START:END>  Render only these source lines (N, START:, :END;
+                         repeatable; implies --plain)
       --spacing <MODE>   Line spacing: compact, normal, relaxed
       --no-mouse         Don't capture the mouse (overrides mouse_capture in config)
       --ascii            Draw borders, bullets and markers in plain ASCII
