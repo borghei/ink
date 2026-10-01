@@ -42,13 +42,19 @@ const IMAGE_CACHE_CAP: usize = 64;
 /// decodes could pin gigabytes.
 const IMAGE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
 
-/// Decode limits for raster images. Anything wider or taller than this is
-/// refused before its pixels are allocated: a tiny, highly compressible PNG
-/// can declare 11000×11000 and expand to hundreds of MB (a decompression
-/// bomb), and inline `data:` URIs deliver one with no network at all.
-/// 8192 px still admits every real photo (a 48 MP sensor is 8000×6000).
-const RASTER_MAX_SIDE_PX: u32 = 8192;
-/// Hard cap on the bytes a single raster decode may allocate (8192² RGBA8).
+/// Per-side limit for raster images: far beyond any real image (full-page
+/// screenshots run 1280×12000+, panoramas 30000 px wide), so it rejects only
+/// nonsense headers. It is not what stops decompression bombs — a tiny,
+/// highly compressible PNG can declare 11000×11000 and expand to hundreds of
+/// MB — [`RASTER_MAX_ALLOC`] is.
+const RASTER_MAX_SIDE_PX: u32 = 65_535;
+/// Hard cap on the bytes a single raster decode may allocate, checked
+/// against the decoder's declared output size before any pixels exist. It
+/// admits a 61 MP photo (9504×6336: ≈180 MB as RGB8, ≈241 MB as RGBA8) and
+/// refuses e.g. 11000×11000 RGBA (≈484 MB). The trade-off: a bomb under the
+/// cap (11000×11000 grey, 121 MB) does decode, transiently, one image at a
+/// time; it is downscaled to [`CACHED_MAX_SIDE_PX`] before caching, so what
+/// stays in memory is a few MB.
 const RASTER_MAX_ALLOC: u64 = 256 * 1024 * 1024;
 /// Decoded rasters are downscaled to at most this many pixels per side
 /// before caching. Both consumers — half-block rendering (≤60 cells wide) and
@@ -868,33 +874,82 @@ mod tests {
         out
     }
 
+    /// A PNG whose header declares `w`×`h` RGBA pixels, with no pixel data:
+    /// enough for the decoder to report its output size.
+    fn rgba_png_header(w: u32, h: u32) -> Vec<u8> {
+        let mut png = blank_png(1, 1);
+        // IHDR data starts after the 8-byte signature and 8-byte chunk head.
+        png[16..20].copy_from_slice(&w.to_be_bytes());
+        png[20..24].copy_from_slice(&h.to_be_bytes());
+        png[25] = 6; // RGBA
+        let crc = {
+            let mut c = flate2::Crc::new();
+            c.update(&png[12..29]);
+            c.sum()
+        };
+        png[29..33].copy_from_slice(&crc.to_be_bytes());
+        png
+    }
+
     // Regression: decode_raster set no limits, so a ~100 KB PNG declaring
     // 11000×11000 expanded to hundreds of MB (and 64 of them stayed cached).
-    // It must be refused before allocation, as a normal decode failure.
+    // The allocation cap bounds every decode; a grey 11000×11000 (121 MB)
+    // fits under it, so it decodes once and is cached at ≤ 2048 px a side.
     #[test]
-    fn decompression_bomb_png_is_rejected() {
+    fn decompression_bomb_png_stays_bounded() {
         let png = blank_png(11_000, 11_000);
         assert!(png.len() < 1024 * 1024, "bomb fixture should be tiny");
-        assert!(
-            decode_raster(&png).is_none(),
-            "over-limit PNG must not decode"
-        );
-        // Through the public path (inline data: URI, no flag needed) it is
-        // the ordinary "could not be decoded" failure, not a panic.
+        // Through the public path (inline data: URI, no flag needed): what
+        // the cache keeps is ≤ 2048 px a side, so six copies cost six small
+        // entries, not 6 × 121 MB.
         use base64::Engine;
         let uri = format!(
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&png)
         );
-        assert_eq!(
-            load_decoded(&uri, None, ImageMode::LocalOnly, None).err(),
-            Some(ImageUnavailable::Failed)
+        let img = load_decoded(&uri, None, ImageMode::LocalOnly, None)
+            .expect("a 121 MB grey decode is under the cap");
+        assert_eq!((img.width(), img.height()), (2048, 2048));
+        assert!(
+            img.as_bytes().len() <= 2048 * 2048 * 4,
+            "cached size is small"
         );
+        // Past the allocation cap it is refused before any pixel exists: the
+        // same 11000×11000 as RGBA is ≈484 MB.
+        assert!(decode_raster(&rgba_png_header(11_000, 11_000)).is_none());
+        assert!(decode_raster(&rgba_png_header(65_535, 65_535)).is_none());
+        // Beyond the per-side limit, too.
+        assert!(decode_raster(&rgba_png_header(70_000, 1)).is_none());
+    }
+
+    #[test]
+    fn tall_screenshots_and_wide_panoramas_decode() {
+        // Regression: an 8192 px side limit refused full-page screenshots.
+        let tall = decode_raster(&blank_png(1280, 12_000)).expect("1280×12000 decodes");
+        assert_eq!(tall.height(), CACHED_MAX_SIDE_PX);
+        assert_eq!(tall.width(), 218, "aspect ratio preserved");
+        let wide = decode_raster(&blank_png(20_000, 1_000)).expect("panorama decodes");
+        assert_eq!(wide.width(), CACHED_MAX_SIDE_PX);
+        // A 61 MP RGB photo declares ≈180 MB: under the cap. (Checked on the
+        // header alone; encoding a real one here would be slow.)
+        let mut photo = rgba_png_header(9504, 6336);
+        photo[25] = 2; // RGB
+        let mut c = flate2::Crc::new();
+        c.update(&photo[12..29]);
+        photo[29..33].copy_from_slice(&c.sum().to_be_bytes());
+        let reader = image::ImageReader::new(std::io::Cursor::new(&photo))
+            .with_guessed_format()
+            .unwrap();
+        use image::ImageDecoder;
+        let decoder = reader.into_decoder().unwrap();
+        assert!(decoder.total_bytes() <= RASTER_MAX_ALLOC);
+        let rgba_61mp = 9504u64 * 6336 * 4;
+        assert!(rgba_61mp <= RASTER_MAX_ALLOC, "even as RGBA8");
     }
 
     #[test]
     fn image_at_the_limit_decodes_and_is_downscaled_for_the_cache() {
-        let png = blank_png(RASTER_MAX_SIDE_PX, 16);
+        let png = blank_png(16_384, 16);
         let img = decode_raster(&png).expect("an image within the limits decodes");
         assert_eq!(img.width(), CACHED_MAX_SIDE_PX, "wide image downscaled");
         assert!(img.height() >= 1);
