@@ -1,7 +1,9 @@
 pub mod keymap;
 pub mod preset;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
@@ -255,9 +257,24 @@ fn fmt_key(code: &KeyCode, mods: &KeyModifiers) -> String {
     }
 }
 
+/// Whether a key event should drive an action.
+///
+/// crossterm on Windows reports both the press and the release of every key
+/// (plus repeats), while Unix terminals only ever deliver presses. Acting on
+/// releases made every key fire twice there. Repeats are kept: holding `j`
+/// should keep scrolling.
+pub fn is_actionable_key(key: &KeyEvent) -> bool {
+    key.kind != KeyEventKind::Release
+}
+
 pub fn poll_action(timeout: std::time::Duration, mode: InputMode) -> Option<Action> {
     if event::poll(timeout).ok()? {
         let event = event::read().ok()?;
+        if let Event::Key(key) = &event {
+            if !is_actionable_key(key) {
+                return None;
+            }
+        }
         Some(map_event(event, mode))
     } else {
         None
@@ -266,6 +283,7 @@ pub fn poll_action(timeout: std::time::Duration, mode: InputMode) -> Option<Acti
 
 fn map_event(event: Event, mode: InputMode) -> Action {
     match event {
+        Event::Key(key) if !is_actionable_key(&key) => Action::None,
         Event::Key(key) => match mode {
             InputMode::Search => map_search_key(key),
             InputMode::LinkHint => map_link_hint_key(key),
@@ -420,5 +438,41 @@ fn map_mouse(mouse: MouseEvent) -> Action {
         MouseEventKind::Drag(MouseButton::Left) => Action::MouseDrag(mouse.column, mouse.row),
         MouseEventKind::Up(MouseButton::Left) => Action::MouseUp(mouse.column, mouse.row),
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyEventState;
+
+    fn key(kind: KeyEventKind) -> KeyEvent {
+        KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+            kind,
+            state: KeyEventState::NONE,
+        }
+    }
+
+    #[test]
+    fn press_and_repeat_are_actionable_release_is_not() {
+        assert!(is_actionable_key(&key(KeyEventKind::Press)));
+        assert!(is_actionable_key(&key(KeyEventKind::Repeat)));
+        assert!(!is_actionable_key(&key(KeyEventKind::Release)));
+    }
+
+    #[test]
+    fn a_release_maps_to_no_action_in_every_mode() {
+        for mode in [
+            InputMode::Normal,
+            InputMode::Search,
+            InputMode::LinkHint,
+            InputMode::Slides,
+            InputMode::Visual,
+        ] {
+            let ev = Event::Key(key(KeyEventKind::Release));
+            assert_eq!(map_event(ev, mode), Action::None);
+        }
     }
 }

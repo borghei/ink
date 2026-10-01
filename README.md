@@ -184,7 +184,7 @@ they select what you can see. Reach for `c` and `Y` when you want the source ins
 
 ### Open links from the keyboard
 
-Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link right inside ink.
+Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link or `#heading` anchor right inside ink (`[` goes back).
 
 ### Help overlay
 
