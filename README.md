@@ -198,7 +198,7 @@ Press `t` to toggle a sidebar showing every heading in the document. Tracks your
 
 Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, and Solarized. Press `T` to open the theme picker and preview each one live.
 
-Auto-detects your terminal background and picks dark or light mode by default.
+With no theme set, ink asks the terminal for its background colour (an OSC 11 query, answered by nearly every modern terminal and passed through by tmux) and picks Light or Dark to match, falling back to `COLORFGBG` and then Dark. An explicit `--theme` or `theme =` in the config always wins, and never triggers the query.
 
 ### Math and emoji
 

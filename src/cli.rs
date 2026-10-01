@@ -217,6 +217,15 @@ pub fn run() -> Result<()> {
     let stdout_tty = std::io::stdout().is_terminal();
     let color = theme::caps::color_enabled(cli.color, stdout_tty);
 
+    let (theme, theme_origin) = theme_choice(&cli.theme, &user_config);
+    // `auto` asks the terminal for its background colour (OSC 11) once, now,
+    // before anything owns the screen. Only with a terminal on both ends:
+    // the reply arrives on stdin, and a pipe would never answer.
+    let wants_terminal = matches!(cli.command, None | Some(Commands::Doctor { .. }));
+    if theme == "auto" && wants_terminal {
+        theme::detect::init_background(stdout_tty && std::io::stdin().is_terminal());
+    }
+
     // Handle subcommands
     if let Some(cmd) = &cli.command {
         return match cmd {
@@ -241,7 +250,7 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
             Commands::Doctor { save } => {
-                return crate::doctor::run(save.as_deref());
+                return crate::doctor::run(save.as_deref(), &theme, theme_origin);
             }
             Commands::Keybindings => {
                 print_keybindings();
@@ -290,15 +299,6 @@ pub fn run() -> Result<()> {
     };
     let toc = cli.toc || cfg_flag(|c| c.toc);
     let frontmatter = cli.frontmatter || cfg_flag(|c| c.frontmatter);
-
-    let theme = if cli.theme == "auto" {
-        user_config
-            .as_ref()
-            .and_then(|c| c.theme.clone())
-            .unwrap_or_else(|| "auto".to_string())
-    } else {
-        cli.theme.clone()
-    };
 
     // Resolve once now, while stderr still reaches the user: a broken or
     // unknown theme warns here instead of inside the alternate screen.
@@ -526,6 +526,29 @@ fn read_file(path: &str) -> Result<String> {
             eprintln!("ink: '{path}' is not valid UTF-8; rendering with replacements");
             Ok(String::from_utf8_lossy(e.as_bytes()).into_owned())
         }
+    }
+}
+
+/// Where the active theme name came from (for `ink doctor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeOrigin {
+    /// `--theme NAME`.
+    Flag,
+    /// `theme = "NAME"` in the config file.
+    Config,
+    /// Neither: `auto`, detected from the terminal background.
+    Auto,
+}
+
+/// The theme to use: an explicit `--theme` beats the config file, which beats
+/// `auto`. (`--theme auto` is the clap default, so it means "not given".)
+fn theme_choice(flag: &str, config: &Option<config::Config>) -> (String, ThemeOrigin) {
+    if flag != "auto" {
+        return (flag.to_string(), ThemeOrigin::Flag);
+    }
+    match config.as_ref().and_then(|c| c.theme.clone()) {
+        Some(t) if t != "auto" => (t, ThemeOrigin::Config),
+        _ => ("auto".to_string(), ThemeOrigin::Auto),
     }
 }
 

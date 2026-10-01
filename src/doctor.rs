@@ -11,8 +11,13 @@ use std::fmt::Write as _;
 use std::io::IsTerminal;
 
 /// Build the report and print it; optionally save to `path`.
-pub fn run(save: Option<&std::path::Path>) -> anyhow::Result<()> {
-    let report = build_report();
+pub fn run(
+    save: Option<&std::path::Path>,
+    theme: &str,
+    origin: crate::cli::ThemeOrigin,
+) -> anyhow::Result<()> {
+    let mut report = build_report();
+    report.push_str(&theme_section(theme, origin));
     print!("{report}");
     if let Some(path) = save {
         std::fs::write(path, &report)?;
@@ -120,6 +125,37 @@ fn build_report() -> String {
          is the problem — please open an issue with this report attached:\n\
          https://github.com/borghei/ink/issues/new?template=image-rendering.yml"
     );
+    r
+}
+
+/// `[theme]`: the theme in use and why.
+fn theme_section(theme: &str, origin: crate::cli::ThemeOrigin) -> String {
+    use crate::cli::ThemeOrigin;
+    use crate::theme::detect::BackgroundSource;
+    let mut r = String::new();
+    let _ = writeln!(r, "\n[theme]");
+    match origin {
+        ThemeOrigin::Flag => {
+            let _ = writeln!(r, "theme                = {theme} (from --theme)");
+        }
+        ThemeOrigin::Config => {
+            let _ = writeln!(r, "theme                = {theme} (from config)");
+        }
+        ThemeOrigin::Auto => {
+            let bg = crate::theme::detect::background();
+            let resolved = if bg.dark { "dark" } else { "light" };
+            let why = match &bg.source {
+                BackgroundSource::Osc11 {
+                    rgb: (r8, g8, b8),
+                    raw,
+                } => format!("terminal background {raw} = #{r8:02x}{g8:02x}{b8:02x}, via OSC 11"),
+                BackgroundSource::Colorfgbg(v) => format!("COLORFGBG={v}"),
+                BackgroundSource::Default => "default; nothing reported a background".into(),
+            };
+            let _ = writeln!(r, "theme                = auto -> {resolved} ({why})");
+            let _ = writeln!(r, "background query     = {}", bg.query);
+        }
+    }
     r
 }
 

@@ -81,6 +81,8 @@ notify = "8"
 # Real (Myers) line diff for `ink diff`
 similar = "2"
 signal-hook = "0.3"
+# termios + poll for the OSC 11 background query (unix only; empty on Windows)
+libc = "0.2"
 ratatui-image = { version = "11.0.6", default-features = false, features = ["crossterm", "image-defaults"] }
 
 [dev-dependencies]
