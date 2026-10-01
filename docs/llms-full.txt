@@ -33,8 +33,8 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Respects --no-images flag
 
 ### Mermaid Diagrams
-- Renders mermaid code blocks as ASCII art
-- Supports flowcharts/graphs, sequence diagrams, pie charts, Gantt charts
+- Renders mermaid code blocks as text art; flowcharts, state, class and ER diagrams use a layered layout (each node drawn once, routed edges, TD/BT/LR/RL); unsupported diagram types show their source in a titled box
+- Supports flowcharts/graphs, state, class and ER diagrams, sequence diagrams, pie charts, Gantt charts, mindmaps
 - Unknown diagram types get fallback rendering
 
 ### Admonitions

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.10.0 — 2026-10-01
+
+### Added
+- **Mermaid diagrams are laid out, not listed.** Flowcharts used to print as a list of edges; they now draw each node once as a box, with routed edges, arrowheads, edge labels, node shapes and subgraph frames, in every direction (TD, BT, LR, RL). State, class and ER diagrams, which printed as raw source, use the same layout. Gantt charts get a scaled time axis, mindmaps draw as a tree, and unsupported diagram types show their source in a titled box. (#26)
+- **Interactive table of contents.** `o` moves focus into the sidebar: move with `j`/`k`, jump with Enter, fold subtrees with `h`/`l`, filter headings with `/`. A click on a row jumps to it. (#24)
+- **Clickable links.** With mouse capture on, clicking a link follows it; dragging still selects. (#24)
+- **Open in your editor.** `e` opens the current file in `$VISUAL`/`$EDITOR` at the section you are reading and reloads it when the editor exits. On Windows, editors installed as `.cmd` shims (VS Code, Cursor) are found. (#24, #27)
+- **Math renders as Unicode.** `$…$`, `$$…$$` and ```` ```math ```` blocks show Greek letters, operators, fractions, roots, sub/superscripts, matrices and `cases` instead of raw LaTeX. Prices like "$5 and $10" are left alone. (#25)
+- **Table column alignment.** `:--`, `--:` and `:-:` are honoured. (#25)
+- **More markdown.** Definition lists, callouts with custom titles (`> [!NOTE] Title`, including Obsidian types), and `<sub>`/`<sup>` as real sub/superscripts for short plain text (`H<sub>2</sub>O` → H₂O). (#25, #27)
+- **Frontmatter box.** With `--frontmatter`, YAML, TOML and JSON frontmatter render as a key/value box instead of being parsed as markdown. A leading JSON object is only treated as frontmatter in that mode and when markdown follows it; otherwise it is shown as written. (#25, #27)
+- **`--line-range START:END`** renders only those source lines in `--plain`, `bat`-style, keeping code fences intact when a range cuts through one. (#25, #27)
+
+### Changed
+- Enter follows the first followable link anywhere on screen, web and mail links included; it used to look only at the top few lines and only at local links. (#24)
+- A paragraph followed by a line starting `: ` is now a definition list, and ```` ```math ```` blocks render as math rather than a code box. (#25)
+- The table of contents highlights the heading `n`/`N` jumped to and scrolls to keep it visible. (#24)
+
+### Fixed
+- **A hung-up terminal no longer leaves ink spinning at 100% CPU.** Closing an SSH session or killing tmux left the process running forever; it now exits. (#24)
+- crates.io and the Homebrew tap are published by the release workflow again, through crates.io Trusted Publishing and a tap-scoped deploy key, instead of by hand. (#23)
+
 ## 0.9.0 — 2026-10-01
 
 ### Added
