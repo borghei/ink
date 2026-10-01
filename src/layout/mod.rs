@@ -2519,6 +2519,62 @@ mod deep_nesting {
         assert!(lines.iter().any(|l| l.contains("deep")), "content dropped");
     }
 
+    /// Lay `src` out on a 1 MB stack and report whether its `[^1]` footnote
+    /// was parsed as one: the definition label is drawn bold, while literal
+    /// `[^1]: …` text would be a plain paragraph.
+    fn footnote_rendered(src: String) -> bool {
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let arena = Arena::new();
+                let root = parse_document(&arena, &src, &crate::parser::options_for(&src));
+                let theme = crate::theme::resolve_theme("dark");
+                let result = layout_document(
+                    root,
+                    &theme,
+                    60,
+                    Spacing::Normal,
+                    0,
+                    None,
+                    ImageMode::Off,
+                    None,
+                );
+                result
+                    .lines
+                    .iter()
+                    .flat_map(|l| &l.spans)
+                    .any(|s| s.text == "[^1]: " && s.style.bold)
+            })
+            .unwrap()
+            .join()
+            .expect("layout overflowed or panicked")
+    }
+
+    const NOTE: &str = "\n\nText[^1].\n\n[^1]: the note\n";
+
+    #[test]
+    fn footnotes_render_beside_long_lines_that_nest_nothing() {
+        // Control: an ordinary document.
+        assert!(footnote_rendered(format!("Hello{NOTE}")));
+        // A fenced block holding a 5000-character line of `_[*~`.
+        let code = format!("```\n{}\n```{NOTE}", "_[*~".repeat(1250));
+        assert!(
+            footnote_rendered(code),
+            "fenced code switched footnotes off"
+        );
+        // A wide table row with 300 links.
+        let row: String = (0..300)
+            .map(|i| format!("[l{i}](https://e.com/{i}) "))
+            .collect();
+        let table = format!("| a | b |\n|---|---|\n| {row} | x |{NOTE}");
+        assert!(footnote_rendered(table), "table row switched footnotes off");
+        // Hostile nesting still turns them off, and still renders.
+        assert!(!footnote_rendered(format!(
+            "{} deep{NOTE}",
+            ">".repeat(20000)
+        )));
+    }
+
     #[test]
     fn nesting_below_the_cap_is_unchanged() {
         let lines = render_text_lines("> a\n> > b\n> > > c\n", 60);
