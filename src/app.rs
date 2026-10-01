@@ -1415,7 +1415,12 @@ fn run_inner(
                         }
                     }
                 }
-                Action::MouseUp(_, _) => {
+                Action::MouseUp(col, row) => {
+                    // Pressed and released on one cell with no drag, and not
+                    // the second press of a double click.
+                    let clicked = dragging
+                        && !drag_moved
+                        && matches!(last_click, Some((_, c, r, 1)) if c == col && r == row);
                     dragging = false;
                     match sel {
                         // A plain click with no drag is a dismiss, not a copy.
@@ -1428,6 +1433,22 @@ fn run_inner(
                         None => {}
                     }
                     drag_moved = false;
+                    // A click on a link follows it, the way `f` would.
+                    let link = screen_to_doc(doc_rect, &tabs[active_tab], col, row)
+                        .filter(|_| clicked)
+                        .and_then(|pos| link_at(&tabs[active_tab], pos))
+                        .map(str::to_string);
+                    if let Some(url) = link {
+                        // The page under the pointer changes: the next press
+                        // is a fresh click, not the second of a double.
+                        last_click = None;
+                        if let Some(msg) = open_link(
+                            &url, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
+                            graphics,
+                        ) {
+                            flash = Some((msg, Instant::now()));
+                        }
+                    }
                 }
 
                 Action::Resize(_, _) => {
@@ -1478,6 +1499,22 @@ fn screen_to_doc(area: Rect, tab: &Tab, col: u16, row: u16) -> Option<Pos> {
     // right half of a wide character selects that character.
     let col = selection::snap_col(&tab.plain[line], (col - area.x) as usize);
     Some(Pos::new(line, col))
+}
+
+/// The link under a document position, if any: the `link_url` of the span
+/// covering that display column (wide characters count as two columns,
+/// and the left margin is part of the line).
+fn link_at(tab: &Tab, pos: Pos) -> Option<&str> {
+    use unicode_width::UnicodeWidthStr;
+    let mut start = 0;
+    for span in &tab.styled_lines.get(pos.line)?.spans {
+        let end = start + span.text.width();
+        if pos.col < end {
+            return span.style.link_url.as_deref();
+        }
+        start = end;
+    }
+    None
 }
 
 /// Scroll to heading `i` of the TOC, framed the way `n`/`N` frame a heading,
@@ -2533,6 +2570,36 @@ mod section_tests {
         // Clamped so the last screen stays full.
         assert_eq!(heading_scroll(&t, "beta", 30), Some(10));
         assert_eq!(heading_scroll(&t, "gamma", 10), None);
+    }
+
+    #[test]
+    fn link_at_counts_display_columns_past_wide_characters() {
+        use unicode_width::UnicodeWidthStr;
+        let t = built("漢字 [go](#x) after\n");
+        let line = t.plain.iter().position(|l| l.contains("go")).unwrap();
+        let text = &t.plain[line];
+        let col = text[..text.find("go").unwrap()].width();
+        assert_eq!(link_at(&t, Pos::new(line, col)), Some("#x"));
+        assert_eq!(link_at(&t, Pos::new(line, col + 1)), Some("#x"));
+        assert_eq!(link_at(&t, Pos::new(line, col + 2)), None);
+        assert_eq!(link_at(&t, Pos::new(line, col - 1)), None);
+        // The left margin is not a link either.
+        assert_eq!(link_at(&t, Pos::new(line, 0)), None);
+        assert_eq!(link_at(&t, Pos::new(999, 0)), None);
+    }
+
+    #[test]
+    fn a_toc_jump_is_recorded_in_history_and_marks_the_heading() {
+        let mut t = tab(DOC, HEADINGS, 0);
+        t.ratatui_lines = vec![Line::default(); 40];
+        let mut nav = NavHistory::default();
+        jump_to_heading(&mut t, &mut nav, 3, 10);
+        assert_eq!(t.scroll_offset, 19);
+        assert_eq!(t.toc.selected, 3);
+        assert_eq!(nav.back.last().map(|e| e.scroll_offset), Some(0));
+        // Jumping to where the reader already is records nothing.
+        jump_to_heading(&mut t, &mut nav, 3, 10);
+        assert_eq!(nav.back.len(), 1);
     }
 
     fn entry(name: &str, scroll: usize) -> NavEntry {

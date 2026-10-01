@@ -564,3 +564,81 @@ fn the_focused_toc_writes_only_7_bit_bytes_in_ascii_mode() {
     assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
     assert!(s.output.is_ascii(), "non-ASCII output: {text}");
 }
+
+/// An SGR mouse report: `btn` 0 = left press, 32 = left drag; `press`
+/// false = release. Columns and rows are 1-based.
+fn mouse(btn: u8, col: u16, row: u16, press: bool) -> Vec<u8> {
+    let end = if press { 'M' } else { 'm' };
+    format!("\x1b[<{btn};{col};{row}{end}").into_bytes()
+}
+
+/// A config directory whose clipboard route is OSC 52 only, so a test that
+/// copies never touches the machine's real clipboard.
+fn osc52_only_config() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ink")).unwrap();
+    std::fs::write(
+        dir.path().join("ink/config.toml"),
+        "[behavior]\nclipboard = \"osc52\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+/// Runs the reader on the long anchor-link document with mouse capture on,
+/// sends `gesture` once it is up, and returns the output from before and
+/// after it.
+fn after_gesture(gesture: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+    let doc = long_doc_with_anchor_link();
+    let config = osc52_only_config();
+    let marks = Marks::default();
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(
+        &args,
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        type_steps(vec![gesture], Marks::clone(&marks)),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let at = *marks.borrow().first().expect("gesture not sent");
+    (s.output[..at].to_vec(), s.output[at..].to_vec())
+}
+
+#[test]
+fn a_click_on_an_anchor_link_follows_it() {
+    // "go to target" is on row 2, columns 15-26.
+    let mut click = mouse(0, 18, 2, true);
+    click.extend(mouse(0, 18, 2, false));
+    let (before, after) = after_gesture(click);
+    assert!(!contains(&before, b"ARRIVED"));
+    assert!(
+        contains(&after, b"ARRIVED"),
+        "the click did not follow the link"
+    );
+    assert!(!contains(&after, b"\x1b]52;"), "a click copied something");
+}
+
+#[test]
+fn a_drag_across_a_link_selects_and_copies_instead_of_following() {
+    let mut drag = mouse(0, 15, 2, true);
+    drag.extend(mouse(32, 20, 2, true));
+    drag.extend(mouse(32, 26, 2, true));
+    drag.extend(mouse(0, 26, 2, false));
+    let (_, after) = after_gesture(drag);
+    // "go to target" as OSC 52 base64.
+    assert!(
+        contains(&after, b"\x1b]52;c;Z28gdG8gdGFyZ2V0\x07"),
+        "no OSC 52 copy of the selection: {:?}",
+        String::from_utf8_lossy(&after)
+    );
+    assert!(!contains(&after, b"ARRIVED"), "the drag followed the link");
+}
+
+#[test]
+fn a_click_off_any_link_does_nothing() {
+    let mut click = mouse(0, 6, 2, true);
+    click.extend(mouse(0, 6, 2, false));
+    let (_, after) = after_gesture(click);
+    assert!(!contains(&after, b"ARRIVED"));
+    assert!(!contains(&after, b"\x1b]52;"));
+}

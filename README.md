@@ -200,7 +200,7 @@ the reader and the file browser.
   `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
   **`y`** copies and exits; `Esc` cancels.
 - **Drag with the mouse** to select, release to copy. Double-click takes the word, triple-click the
-  line.
+  line. A single click on a link follows it instead (see below).
 - **`c`** labels every code block on screen — press its letter to copy the block's *raw* source: no
   borders, no line numbers, no syntax-highlighting escapes.
 - **`Y`** copies the markdown source of the section you are reading (heading included, down to the
@@ -218,6 +218,8 @@ they select what you can see. Reach for `c` and `Y` when you want the source ins
 ### Open links from the keyboard
 
 Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link or `#heading` anchor right inside ink (`[` goes back).
+
+Clicking works too: a plain click on a link (press and release without moving) does exactly what its letter would. Dragging across a link still selects it. With `--no-mouse` ink leaves clicks to your terminal, which opens links its own way (usually Cmd- or Ctrl-click).
 
 ### Help overlay
 
