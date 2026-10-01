@@ -39,6 +39,10 @@ struct Tab {
     lowered: Vec<String>,
     scroll_offset: usize,
     toc: TocState,
+    /// Every top-level heading's anchor text (`LayoutHeading::anchor`) and
+    /// display line, in order, for `#fragment` links. Unlike the TOC this
+    /// keeps headings whose display text is empty (``## `--width` ``).
+    anchors: Vec<(String, usize)>,
     word_count: usize,
     reading_time: usize,
     /// Terminal width + theme generation this tab was laid out for. Used to
@@ -1637,10 +1641,10 @@ fn find_heading<'a>(texts: impl IntoIterator<Item = &'a str>, fragment: &str) ->
 /// Scroll offset that puts the heading named by `fragment` at the top of the
 /// viewport, framed the way `n`/`N` heading jumps frame it.
 fn heading_scroll(tab: &Tab, fragment: &str, viewport: usize) -> Option<usize> {
-    let headings = &tab.toc.headings;
-    let i = find_heading(headings.iter().map(|h| h.text.as_str()), fragment)?;
+    let anchors = &tab.anchors;
+    let i = find_heading(anchors.iter().map(|(text, _)| text.as_str()), fragment)?;
     let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
-    Some(headings[i].line_index.saturating_sub(1).min(max_scroll))
+    Some(anchors[i].1.saturating_sub(1).min(max_scroll))
 }
 
 /// Show a history entry: the same document just scrolls back; anything else
@@ -1749,8 +1753,9 @@ fn build_tab(
         headings,
         images: image_specs,
         code_blocks,
-    } = layout::layout_document(
+    } = layout::layout_document_with_source(
         root,
+        Some(&content),
         &theme::resolve_theme(&args.theme),
         max_content_width,
         args.spacing,
@@ -1793,6 +1798,11 @@ fn build_tab(
 
     let (word_count, reading_time) = stats::document_stats(&content);
 
+    let anchors: Vec<(String, usize)> = headings
+        .iter()
+        .map(|h| (h.anchor.clone(), h.line_index))
+        .collect();
+
     // Headings carry their exact display-line index straight from layout —
     // no substring reverse-scan, and duplicate/split headings map correctly.
     let toc_entries: Vec<crate::toc::TocEntry> = headings
@@ -1823,6 +1833,7 @@ fn build_tab(
         lowered,
         scroll_offset: 0,
         toc,
+        anchors,
         word_count,
         reading_time,
         built_width: term_width,
@@ -2019,6 +2030,10 @@ mod section_tests {
             )
             .collect();
         toc.update_selection(scroll);
+        let anchors = headings
+            .iter()
+            .map(|(_, text, line_index, _)| ((*text).to_string(), *line_index))
+            .collect();
         Tab {
             filename: "t.md".into(),
             source: content.into(),
@@ -2030,6 +2045,7 @@ mod section_tests {
             lowered: Vec::new(),
             scroll_offset: scroll,
             toc,
+            anchors,
             word_count: 0,
             reading_time: 0,
             built_width: 80,
@@ -2164,6 +2180,87 @@ mod section_tests {
         assert!(!is_followable_local("#"));
         assert!(!is_followable_local("https://e.com/x.md"));
         assert!(!is_followable_local("image.png#frag"));
+    }
+
+    /// Arguments for laying a document out the way the reader does.
+    pub(super) fn test_args() -> Args {
+        Args {
+            inputs: Vec::new(),
+            theme: "dark".into(),
+            width: None,
+            slides: false,
+            plain: false,
+            watch: false,
+            toc: false,
+            images: crate::image::ImageMode::Off,
+            image_protocol: crate::graphics::ProtocolChoice::HalfBlocks,
+            frontmatter: false,
+            spacing: crate::Spacing::Normal,
+            mouse_capture: false,
+            clipboard: crate::clipboard::ClipboardMode::Auto,
+        }
+    }
+
+    /// A tab built through the real pipeline: wikilinks, parse, layout.
+    pub(super) fn built(src: &str) -> Tab {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        build_tab(src.into(), "t.md", &test_args(), 80, 0, &graphics)
+    }
+
+    /// The display line `#fragment` scrolls to, or `None`.
+    fn anchor_line(t: &Tab, fragment: &str) -> Option<usize> {
+        let i = find_heading(t.anchors.iter().map(|(a, _)| a.as_str()), fragment)?;
+        Some(t.anchors[i].1)
+    }
+
+    #[test]
+    fn anchors_see_inline_code_dashes_shortcodes_and_links() {
+        let src = "# Install `ink` CLI\n\n### `--width`\n\n## a -- b\n\n\
+                   ## :rocket: Launch\n\n## See [the docs](https://e.com) now\n\n\
+                   ## Dash — literal\n\n## Usage\n\n## Usage\n\n## Usage\n";
+        let t = built(src);
+        let lines: Vec<usize> = t.anchors.iter().map(|(_, l)| *l).collect();
+        assert_eq!(lines.len(), 9, "{:?}", t.anchors);
+        for (fragment, i) in [
+            ("install-ink-cli", 0),
+            ("--width", 1),
+            ("a----b", 2),
+            ("rocket-launch", 3),
+            ("see-the-docs-now", 4),
+            ("dash--literal", 5),
+            ("usage", 6),
+            ("usage-1", 7),
+            ("usage-2", 8),
+        ] {
+            assert_eq!(anchor_line(&t, fragment), Some(lines[i]), "#{fragment}");
+        }
+        // The old, display-text-derived slugs no longer match.
+        assert_eq!(anchor_line(&t, "install--cli"), None);
+        // The TOC still shows what it showed: no code, no empty entries.
+        let toc: Vec<&str> = t.toc.headings.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(toc[0], "Install  CLI");
+        assert!(!toc.contains(&""));
+        assert!(toc.contains(&"a – b"), "{toc:?}");
+    }
+
+    #[test]
+    fn anchor_text_undoes_smart_dashes_without_the_source() {
+        use comrak::{parse_document, Arena};
+        let arena = Arena::new();
+        let root = parse_document(&arena, "## a -- b --- c\n", &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        let headings = crate::layout::layout_document(
+            root,
+            &theme,
+            80,
+            crate::Spacing::Normal,
+            0,
+            None,
+            crate::image::ImageMode::Off,
+            None,
+        )
+        .headings;
+        assert_eq!(headings[0].anchor, "a -- b --- c");
     }
 
     #[test]

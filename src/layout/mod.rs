@@ -96,6 +96,10 @@ fn coalesce_line(line: &mut StyledLine) {
 pub struct LayoutHeading {
     pub level: u8,
     pub text: String,
+    /// The heading's text as GitHub sees it when it builds the anchor: inline
+    /// code included, `--` not turned into a dash, `:rocket:` kept as written.
+    /// `text` is what the TOC shows; this is what `#fragment` links match.
+    pub anchor: String,
     pub line_index: usize,
     /// 1-based line in the (frontmatter-stripped) markdown source this heading
     /// was written on. Lets `Y` copy a section's *source* rather than its
@@ -153,6 +157,35 @@ pub fn layout_document<'a>(
     images: ImageMode,
     graphics_font: Option<(u16, u16)>,
 ) -> LayoutResult {
+    layout_document_with_source(
+        root,
+        None,
+        theme,
+        width,
+        spacing,
+        center_margin,
+        base_dir,
+        images,
+        graphics_font,
+    )
+}
+
+/// `layout_document`, given the markdown `root` was parsed from. Heading
+/// anchors then see the text exactly as written where smart punctuation
+/// rewrote it (`--` stays `--`, a literal `–` stays `–`); without the source
+/// they fall back to mapping dashes back to hyphens.
+#[allow(clippy::too_many_arguments)]
+pub fn layout_document_with_source<'a>(
+    root: &'a AstNode<'a>,
+    source: Option<&str>,
+    theme: &Theme,
+    width: u16,
+    spacing: Spacing,
+    center_margin: usize,
+    base_dir: Option<&std::path::Path>,
+    images: ImageMode,
+    graphics_font: Option<(u16, u16)>,
+) -> LayoutResult {
     let mut lines: Vec<StyledLine> = Vec::new();
     let headings = std::cell::RefCell::new(Vec::new());
     let image_specs = std::cell::RefCell::new(Vec::new());
@@ -174,6 +207,7 @@ pub fn layout_document<'a>(
         image_specs: &image_specs,
         code_blocks: &code_blocks,
         record_headings: true,
+        source,
     };
     layout_node(root, &ctx, &mut lines);
     sanitize_lines(&mut lines);
@@ -226,6 +260,8 @@ struct LayoutContext<'a> {
     // record correct absolute line indices. Nested walks (blockquotes, list
     // items) build into their own buffers, so they don't record headings.
     record_headings: bool,
+    /// The parsed markdown, when the caller has it; see `heading_anchor_text`.
+    source: Option<&'a str>,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -380,19 +416,65 @@ fn layout_heading<'a>(
         level,
         spans,
         &collect_child_text(node),
+        &heading_anchor_text(node, ctx.source),
         source_line,
         ctx,
         lines,
     );
 }
 
+/// A heading's text the way GitHub reads it to build the anchor: markup
+/// removed, but inline code kept, emoji shortcodes kept as `:name:`, and
+/// smart punctuation undone (`--` was turned into `–`). Only dashes need
+/// undoing: curly quotes and ellipses are punctuation the slug drops anyway.
+fn heading_anchor_text<'a>(node: &'a AstNode<'a>, source: Option<&str>) -> String {
+    let mut text = String::new();
+    for inner in node.descendants().skip(1) {
+        let data = inner.data.borrow();
+        match data.value {
+            NodeValue::Text(ref t) => {
+                if !t.contains(['\u{2013}', '\u{2014}']) {
+                    text.push_str(t);
+                } else if let Some(raw) = source_slice(source, data.sourcepos) {
+                    text.push_str(raw);
+                } else {
+                    text.push_str(&t.replace('\u{2014}', "---").replace('\u{2013}', "--"));
+                }
+            }
+            NodeValue::Code(ref c) => text.push_str(&c.literal),
+            NodeValue::ShortCode(ref s) => {
+                text.push(':');
+                text.push_str(&s.code);
+                text.push(':');
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+/// The source a single-line inline node was parsed from (comrak columns are
+/// 1-based, inclusive, in bytes). `None` when it spans lines, falls outside
+/// the source, or holds an entity reference (`&amp;` would slug as "amp").
+fn source_slice(source: Option<&str>, pos: comrak::nodes::Sourcepos) -> Option<&str> {
+    if pos.start.line != pos.end.line || pos.start.column == 0 {
+        return None;
+    }
+    let line = source?.lines().nth(pos.start.line.checked_sub(1)?)?;
+    let raw = line.get(pos.start.column - 1..pos.end.column)?;
+    (!raw.contains('&')).then_some(raw)
+}
+
 /// Lay out a heading from its inline spans; `text` is its plain text for the
-/// TOC and `source_line` the 1-based source line it was written on. Shared by
+/// TOC, `anchor` its text for `#fragment` matching (see `LayoutHeading`), and
+/// `source_line` the 1-based source line it was written on. Shared by
 /// markdown headings and HTML `<h1>`..`<h6>`.
+#[allow(clippy::too_many_arguments)]
 fn layout_heading_spans(
     level: u8,
     mut spans: Vec<StyledSpan>,
     text: &str,
+    anchor: &str,
     source_line: usize,
     ctx: &LayoutContext,
     lines: &mut Vec<StyledLine>,
@@ -428,6 +510,7 @@ fn layout_heading_spans(
             // screen through the TOC sidebar and the copy status line, neither
             // of which is a `StyledLine`.
             text: crate::sanitize::sanitize_text(text).into_owned(),
+            anchor: anchor.to_string(),
             line_index: lines.len(),
             source_line,
         });
@@ -1115,6 +1198,7 @@ fn layout_blockquote<'a>(
         code_blocks: ctx.code_blocks,
         graphics_font: ctx.graphics_font,
         record_headings: false,
+        source: ctx.source,
     };
     let mut inner_lines = Vec::new();
     let mut skip_first = admonition.is_some();
@@ -1229,6 +1313,7 @@ fn layout_list<'a>(
         code_blocks: ctx.code_blocks,
         graphics_font: ctx.graphics_font,
         record_headings: false,
+        source: ctx.source,
     };
 
     for (i, item) in node.children().enumerate() {
