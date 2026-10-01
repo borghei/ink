@@ -1,5 +1,6 @@
 pub mod html;
 pub mod mermaid;
+mod scripts;
 pub mod table;
 
 use crate::image::ImageMode;
@@ -348,6 +349,10 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         NodeValue::ThematicBreak => {
             drop(data);
             layout_hr(ctx, lines);
+        }
+        NodeValue::DescriptionList => {
+            drop(data);
+            layout_description_list(node, ctx, lines);
         }
         NodeValue::Table(..) => {
             drop(data);
@@ -1107,6 +1112,10 @@ fn layout_flattened<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut 
                 | NodeValue::Item(_)
                 | NodeValue::TaskItem(_)
                 | NodeValue::FootnoteDefinition(_)
+                | NodeValue::DescriptionList
+                | NodeValue::DescriptionItem(_)
+                | NodeValue::DescriptionTerm
+                | NodeValue::DescriptionDetails
         );
         if is_container {
             stack.extend(child.reverse_children());
@@ -1126,18 +1135,18 @@ fn layout_blockquote<'a>(
         layout_flattened(node, ctx, lines);
         return;
     }
-    // Check first child for admonition pattern [!TYPE]
+    // GitHub alert / Obsidian callout: `[!TYPE]` opening the first paragraph.
     let admonition = detect_admonition(node);
 
     // Choose bar color based on depth or admonition type
     let bar_color = if let Some(ref adm) = admonition {
-        match adm.as_str() {
-            "NOTE" => &ctx.theme.colors.admonition_note,
-            "TIP" => &ctx.theme.colors.admonition_tip,
-            "IMPORTANT" => &ctx.theme.colors.admonition_important,
-            "WARNING" => &ctx.theme.colors.admonition_warning,
-            "CAUTION" => &ctx.theme.colors.admonition_caution,
-            _ => &ctx.theme.colors.blockquote_bar,
+        match adm.kind {
+            AdmonitionKind::Note => &ctx.theme.colors.admonition_note,
+            AdmonitionKind::Tip => &ctx.theme.colors.admonition_tip,
+            AdmonitionKind::Important => &ctx.theme.colors.admonition_important,
+            AdmonitionKind::Warning => &ctx.theme.colors.admonition_warning,
+            AdmonitionKind::Caution => &ctx.theme.colors.admonition_caution,
+            AdmonitionKind::Other => &ctx.theme.colors.blockquote_bar,
         }
     } else {
         // Different colors for nested blockquote depths
@@ -1148,37 +1157,6 @@ fn layout_blockquote<'a>(
             _ => &ctx.theme.colors.heading4,
         }
     };
-
-    // Render admonition header if detected
-    if let Some(ref adm_type) = admonition {
-        let icons = crate::glyphs::current().admonition;
-        let icon = match adm_type.as_str() {
-            "NOTE" => icons[0],
-            "TIP" => icons[1],
-            "IMPORTANT" => icons[2],
-            "WARNING" => icons[3],
-            "CAUTION" => icons[4],
-            _ => icons[5],
-        };
-        let mut header_line = StyledLine::new();
-        ctx.add_margin(&mut header_line);
-        header_line.push(StyledSpan {
-            text: crate::glyphs::current().quote_bar.to_string(),
-            style: SpanStyle {
-                fg: Some(bar_color.clone()),
-                ..Default::default()
-            },
-        });
-        header_line.push(StyledSpan {
-            text: format!("{icon}{adm_type}"),
-            style: SpanStyle {
-                fg: Some(bar_color.clone()),
-                bold: true,
-                ..Default::default()
-            },
-        });
-        lines.push(header_line);
-    }
 
     // Render children into temporary buffer
     let inner_ctx = LayoutContext {
@@ -1201,6 +1179,39 @@ fn layout_blockquote<'a>(
         source: ctx.source,
     };
     let mut inner_lines = Vec::new();
+    // Header: the icon and the custom title, or the type when there is none.
+    if let Some(ref adm) = admonition {
+        let icons = crate::glyphs::current().admonition;
+        let icon = icons[adm.kind as usize];
+        let header_style = SpanStyle {
+            fg: Some(bar_color.clone()),
+            bold: true,
+            ..Default::default()
+        };
+        let mut spans = vec![StyledSpan {
+            text: icon.to_string(),
+            style: header_style.clone(),
+        }];
+        if adm.title_head.is_empty() && adm.title_nodes.is_empty() {
+            spans.push(StyledSpan {
+                text: adm.name.clone(),
+                style: header_style.clone(),
+            });
+        } else {
+            spans.push(StyledSpan {
+                text: adm.title_head.clone(),
+                style: header_style.clone(),
+            });
+            collect_inline_seq(
+                adm.title_nodes.iter().copied(),
+                &inner_ctx,
+                &mut spans,
+                &header_style,
+                0,
+            );
+        }
+        inner_lines.extend(wrap_spans(spans, inner_ctx.width, 0, 0));
+    }
     let mut skip_first = admonition.is_some();
     for child in node.children() {
         let child_data = child.data.borrow();
@@ -1213,15 +1224,20 @@ fn layout_blockquote<'a>(
             if skip_first {
                 // For admonitions, we render first paragraph without the [!TYPE] prefix
                 skip_first = false;
-                if let NodeValue::Paragraph = &child.data.borrow().value {
-                    let spans = collect_inline_spans(child, &inner_ctx);
-                    // Filter out the admonition marker text
-                    let filtered: Vec<StyledSpan> = spans
-                        .into_iter()
-                        .filter(|s| !s.text.starts_with("[!"))
-                        .collect();
-                    if !filtered.is_empty() {
-                        let wrapped = wrap_spans(filtered, inner_ctx.width, 0, 0);
+                if let (NodeValue::Paragraph, Some(adm)) =
+                    (&child.data.borrow().value, admonition.as_ref())
+                {
+                    // The paragraph minus its first line (marker and title).
+                    let mut spans = Vec::new();
+                    collect_inline_seq(
+                        child.children().skip(adm.body_skip),
+                        &inner_ctx,
+                        &mut spans,
+                        &SpanStyle::default(),
+                        0,
+                    );
+                    if !spans.is_empty() {
+                        let wrapped = wrap_spans(spans, inner_ctx.width, 0, 0);
                         inner_lines.extend(wrapped);
                         add_spacing(&inner_ctx, &mut inner_lines);
                     }
@@ -1262,26 +1278,101 @@ fn layout_blockquote<'a>(
     }
 }
 
-/// Detect GitHub-style admonition: > [!NOTE], > [!WARNING], etc.
-fn detect_admonition<'a>(node: &'a AstNode<'a>) -> Option<String> {
-    if let Some(child) = node.children().next() {
-        let data = child.data.borrow();
-        if let NodeValue::Paragraph = &data.value {
-            drop(data);
-            if let Some(inline) = child.children().next() {
-                let idata = inline.data.borrow();
-                if let NodeValue::Text(ref text) = idata.value {
-                    let trimmed = text.trim();
-                    if trimmed.starts_with("[!") && trimmed.contains(']') {
-                        let end = trimmed.find(']').unwrap();
-                        let adm_type = &trimmed[2..end];
-                        return Some(adm_type.to_uppercase());
-                    }
-                }
+/// The colour and icon family of an admonition; the discriminant indexes
+/// `Glyphs::admonition`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AdmonitionKind {
+    Note = 0,
+    Tip = 1,
+    Important = 2,
+    Warning = 3,
+    Caution = 4,
+    Other = 5,
+}
+
+impl AdmonitionKind {
+    /// GitHub's five alert types plus Obsidian's callout types and aliases.
+    fn of(name: &str) -> Self {
+        match name.to_ascii_lowercase().as_str() {
+            "note" | "info" | "todo" | "abstract" | "summary" | "tldr" => Self::Note,
+            "tip" | "hint" | "success" | "check" | "done" => Self::Tip,
+            "important" => Self::Important,
+            "warning" | "attention" | "question" | "help" | "faq" => Self::Warning,
+            "caution" | "danger" | "error" | "failure" | "fail" | "missing" | "bug" => {
+                Self::Caution
             }
+            _ => Self::Other,
         }
     }
-    None
+}
+
+/// A blockquote opening with `[!TYPE]`: a GitHub alert (`> [!NOTE]`) or an
+/// Obsidian callout (`> [!info]- Custom title`, the fold marker ignored).
+struct Admonition<'a> {
+    kind: AdmonitionKind,
+    /// The type as written, upper-cased: the header when there is no title.
+    name: String,
+    /// The custom title's start: the marker's text node after the marker.
+    title_head: String,
+    /// The inlines after that on the marker's line (the rest of the title).
+    title_nodes: Vec<&'a AstNode<'a>>,
+    /// How many of the paragraph's inlines the header line used, its line
+    /// break included: the body starts after them.
+    body_skip: usize,
+}
+
+/// Detect `> [!TYPE]` / `> [!TYPE]+ Title` at the start of a blockquote.
+fn detect_admonition<'a>(node: &'a AstNode<'a>) -> Option<Admonition<'a>> {
+    let para = node.children().next()?;
+    if !matches!(para.data.borrow().value, NodeValue::Paragraph) {
+        return None;
+    }
+    let first = para.children().next()?;
+    let text = match &first.data.borrow().value {
+        NodeValue::Text(t) => t.clone(),
+        _ => return None,
+    };
+    let rest = text.trim_start().strip_prefix("[!")?;
+    let end = rest.find(']')?;
+    let name = &rest[..end];
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return None;
+    }
+    let after = rest[end + 1..]
+        .strip_prefix(['+', '-'])
+        .unwrap_or(&rest[end + 1..]);
+
+    // The title is everything up to the paragraph's first line break.
+    let mut title_nodes = Vec::new();
+    let mut body_skip = 1;
+    let title_head = after.trim_start().to_string();
+    let mut siblings = para.children().skip(1);
+    let mut ended = false;
+    for sib in siblings.by_ref() {
+        body_skip += 1;
+        if matches!(
+            sib.data.borrow().value,
+            NodeValue::SoftBreak | NodeValue::LineBreak
+        ) {
+            ended = true;
+            break;
+        }
+        title_nodes.push(sib);
+    }
+    if !ended {
+        body_skip = usize::MAX;
+    }
+    Some(Admonition {
+        kind: AdmonitionKind::of(name),
+        name: name.to_uppercase(),
+        title_head,
+        title_nodes,
+        body_skip,
+    })
 }
 
 fn layout_list<'a>(
@@ -1403,6 +1494,101 @@ fn layout_list<'a>(
     add_spacing(ctx, lines);
 }
 
+/// A definition list (`Term` / `: definition`): each term bold on its own
+/// line, each definition indented under it, its first line marked with the
+/// list pointer (`▸`, `>` in ASCII mode). Nests like a list: past
+/// `MAX_BLOCK_DEPTH` it is flattened.
+fn layout_description_list<'a>(
+    node: &'a AstNode<'a>,
+    ctx: &LayoutContext,
+    lines: &mut Vec<StyledLine>,
+) {
+    if ctx.block_depth >= MAX_BLOCK_DEPTH {
+        layout_flattened(node, ctx, lines);
+        add_spacing(ctx, lines);
+        return;
+    }
+    const INDENT: usize = 4;
+    let inner_ctx = LayoutContext {
+        theme: ctx.theme,
+        width: ctx.width.saturating_sub(INDENT),
+        indent: 0,
+        list_depth: ctx.list_depth,
+        block_depth: ctx.block_depth + 1,
+        spacing: ctx.spacing,
+        margin: 0,
+        syntax_set: ctx.syntax_set,
+        theme_set: ctx.theme_set,
+        base_dir: ctx.base_dir,
+        images: ctx.images,
+        headings: ctx.headings,
+        image_specs: ctx.image_specs,
+        code_blocks: ctx.code_blocks,
+        graphics_font: ctx.graphics_font,
+        record_headings: false,
+        source: ctx.source,
+    };
+    let term_style = SpanStyle {
+        bold: true,
+        fg: Some(ctx.theme.colors.bold.clone()),
+        ..Default::default()
+    };
+    let marker_style = SpanStyle {
+        fg: Some(ctx.theme.colors.list_bullet.clone()),
+        ..Default::default()
+    };
+    let marker = format!("  {} ", crate::glyphs::current().pointer);
+    let items: Vec<_> = node.children().collect();
+    for (i, item) in items.iter().enumerate() {
+        for part in item.children() {
+            let is_term = match part.data.borrow().value {
+                NodeValue::DescriptionTerm => true,
+                NodeValue::DescriptionDetails => false,
+                _ => continue,
+            };
+            if is_term {
+                // The term's paragraph(s), bold, at the list's own indent.
+                for para in part.children() {
+                    let mut spans = Vec::new();
+                    collect_inlines(para, ctx, &mut spans, &term_style, 0);
+                    lines.extend(wrap_spans(spans, ctx.width, 0, ctx.margin));
+                }
+                continue;
+            }
+            let mut detail_lines = Vec::new();
+            for child in part.children() {
+                layout_node(child, &inner_ctx, &mut detail_lines);
+            }
+            trim_trailing_blank(&mut detail_lines);
+            for (j, detail) in detail_lines.into_iter().enumerate() {
+                if j > 0 && detail.spans.iter().all(|s| s.text.trim().is_empty()) {
+                    lines.push(StyledLine::empty());
+                    continue;
+                }
+                let mut line = StyledLine::new();
+                ctx.add_margin(&mut line);
+                line.push(if j == 0 {
+                    StyledSpan {
+                        text: marker.clone(),
+                        style: marker_style.clone(),
+                    }
+                } else {
+                    StyledSpan {
+                        text: " ".repeat(INDENT),
+                        style: SpanStyle::default(),
+                    }
+                });
+                line.spans.extend(detail.spans);
+                lines.push(line);
+            }
+        }
+        if i + 1 < items.len() {
+            add_spacing(ctx, lines);
+        }
+    }
+    add_spacing(ctx, lines);
+}
+
 fn layout_hr(ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     let width = ctx.width.min(60);
     let left_pad = (ctx.width.saturating_sub(width)) / 2;
@@ -1465,10 +1651,22 @@ fn collect_inlines<'a>(
         }
         return;
     }
+    collect_inline_seq(node.children(), ctx, spans, outer_style, depth);
+}
+
+/// `collect_inlines` over a run of sibling inlines (all of a node's children,
+/// or the part of a paragraph after an admonition's title line).
+fn collect_inline_seq<'a>(
+    children: impl Iterator<Item = &'a AstNode<'a>>,
+    ctx: &LayoutContext,
+    spans: &mut Vec<StyledSpan>,
+    outer_style: &SpanStyle,
+    depth: usize,
+) {
     // Inline HTML arrives one tag per node (`<kbd>`, text, `</kbd>`), so the
     // tags open among these siblings style the siblings that follow them.
     let mut html_styles = html::HtmlStyles::default();
-    for child in node.children() {
+    for child in children {
         let parent_style = &html_styles.style(outer_style).clone();
         let data = child.data.borrow();
         // Inside an unclosed inline <script>/<style>: show nothing.
@@ -1532,6 +1730,55 @@ fn collect_inlines<'a>(
                 };
                 drop(data);
                 collect_inlines(child, ctx, spans, &style, depth + 1);
+                continue;
+            }
+            NodeValue::Superscript | NodeValue::Subscript => {
+                let sup = matches!(data.value, NodeValue::Superscript);
+                drop(data);
+                // Raised/lowered text is one run of characters: inner markup
+                // is flattened (Unicode forms have no bold or italic).
+                let text = collect_child_text(child);
+                let ascii = crate::glyphs::current().ascii;
+                spans.push(StyledSpan {
+                    text: if sup {
+                        scripts::superscript(&text, ascii, false)
+                    } else {
+                        scripts::subscript(&text, ascii, false)
+                    },
+                    style: parent_style.clone(),
+                });
+                continue;
+            }
+            NodeValue::SpoileredText => {
+                drop(data);
+                // `||text||`: the bars stay visible (dim) so the spoiler is
+                // marked even without colour; the text itself is drawn in its
+                // background colour, a solid bar until selected or copied.
+                let bars = SpanStyle {
+                    dim: true,
+                    ..parent_style.clone()
+                };
+                let hidden = SpanStyle {
+                    fg: Some(ctx.theme.colors.code_bg.clone()),
+                    bg: Some(ctx.theme.colors.code_bg.clone()),
+                    dim: true,
+                    ..parent_style.clone()
+                };
+                spans.push(StyledSpan {
+                    text: "||".to_string(),
+                    style: bars.clone(),
+                });
+                let first = spans.len();
+                collect_inlines(child, ctx, spans, &hidden, depth + 1);
+                // Inner links/code set their own colours: conceal them too.
+                for span in &mut spans[first..] {
+                    span.style.fg = hidden.fg.clone();
+                    span.style.bg = hidden.bg.clone();
+                }
+                spans.push(StyledSpan {
+                    text: "||".to_string(),
+                    style: bars,
+                });
                 continue;
             }
             NodeValue::Link(link) => {

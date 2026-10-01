@@ -34,6 +34,17 @@ fn main() {
 > [!NOTE]
 > An admonition.
 
+> [!TIP] A custom title
+> Tip body.
+
+> [!info]- An Obsidian callout
+> Callout body.
+
+Water is H~2~O, e = mc^2^, ~~struck~~ and ||a spoiler||.
+
+Term
+: Its definition.
+
 ---
 
 The end.

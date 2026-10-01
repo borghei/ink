@@ -113,3 +113,143 @@ fn table_alignment_measures_wide_characters() {
     // "a" centred in four columns: 1 left, 2 right.
     assert_eq!(rows[2], "│  a   │ 22 │");
 }
+
+// ── Markdown extensions ──
+
+/// Layout lines for `src` (dark theme, width 80, no margin).
+fn layout(src: &str) -> Vec<ink_md::layout::StyledLine> {
+    let arena = comrak::Arena::new();
+    let root = comrak::parse_document(&arena, src, &ink_md::parser::options_for(src));
+    ink_md::layout::layout_document(
+        root,
+        &ink_md::theme::resolve_theme("dark"),
+        80,
+        Spacing::Normal,
+        0,
+        None,
+        ink_md::image::ImageMode::Off,
+        None,
+    )
+    .lines
+}
+
+fn find_span<'l>(
+    lines: &'l [ink_md::layout::StyledLine],
+    text: &str,
+) -> &'l ink_md::layout::StyledSpan {
+    lines
+        .iter()
+        .flat_map(|l| &l.spans)
+        .find(|s| s.text.contains(text))
+        .unwrap_or_else(|| panic!("no span containing {text:?}"))
+}
+
+#[test]
+fn superscript_and_subscript_use_unicode_forms() {
+    let out = render("H~2~O, e = mc^2^, x^n+1^ and a~ij~.\n");
+    assert!(out.contains("H₂O, e = mc², xⁿ⁺¹ and aᵢⱼ."), "{out}");
+}
+
+#[test]
+fn superscript_without_a_unicode_form_falls_back() {
+    // No superscript `q`; no subscript `b`: the whole run falls back.
+    let out = render("x^q^ and y~ab~\n");
+    assert!(out.contains("x^(q) and y_(ab)"), "{out}");
+}
+
+#[test]
+fn subscript_leaves_strikethrough_and_lone_tildes_alone() {
+    let lines = layout("~~struck~~ and about ~5ms\n");
+    let struck = find_span(&lines, "struck");
+    assert!(struck.style.strikethrough);
+    assert_eq!(struck.text, "struck");
+    assert!(render("about ~5ms here\n").contains("about ~5ms here"));
+}
+
+#[test]
+fn double_underscore_stays_bold() {
+    let lines = layout("__bold__ text\n");
+    let span = find_span(&lines, "bold");
+    assert!(span.style.bold && !span.style.underline, "{span:?}");
+}
+
+#[test]
+fn spoiler_text_is_concealed_between_visible_bars() {
+    let out = render("Vader is ||his father||.\n");
+    assert!(out.contains("Vader is ||his father||."), "{out}");
+    let lines = layout("Vader is ||his *father*||.\n");
+    for word in ["his ", "father"] {
+        let span = find_span(&lines, word);
+        assert!(span.style.fg.is_some() && span.style.fg == span.style.bg);
+    }
+    assert!(find_span(&lines, "||").style.dim);
+}
+
+#[test]
+fn definition_list_term_bold_and_definitions_marked() {
+    let out = render("Term\n: First definition\n: Second one\n\nOther\n: More\n");
+    assert!(
+        out.contains("  Term\n    ▸ First definition\n\n    ▸ Second one\n\n  Other\n    ▸ More\n"),
+        "{out}"
+    );
+    let lines = layout("Term\n: def\n");
+    assert!(find_span(&lines, "Term").style.bold);
+}
+
+#[test]
+fn definition_with_several_paragraphs_indents_them_all() {
+    let out = render("Term\n\n: First para\n\n  Second para\n");
+    assert!(
+        out.contains("    ▸ First para\n\n      Second para\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn github_alert_without_title_shows_its_type() {
+    let out = render("> [!WARNING]\n> Be careful.\n");
+    assert!(out.contains("│ ⚠ WARNING\n    │ Be careful.\n"), "{out}");
+}
+
+#[test]
+fn github_alert_custom_title_replaces_the_type() {
+    let out = render("> [!NOTE] Read *this* first\n> Body text.\n");
+    assert!(
+        out.contains("│ ℹ Read this first\n    │ Body text.\n"),
+        "{out}"
+    );
+    assert!(!out.contains("NOTE"), "{out}");
+}
+
+#[test]
+fn obsidian_callouts_map_types_and_ignore_fold_markers() {
+    let out = render("> [!info]- Folded section\n> Hidden body.\n");
+    assert!(
+        out.contains("│ ℹ Folded section\n    │ Hidden body.\n"),
+        "{out}"
+    );
+    let out = render("> [!bug]+\n> It crashes.\n");
+    assert!(out.contains("│ 🔴 BUG\n    │ It crashes.\n"), "{out}");
+    let out = render("> [!example] Title only\n");
+    assert!(out.contains("│ ▎ Title only\n"), "{out}");
+    // The callout colour follows its family.
+    let lines = layout("> [!danger] Hot\n> x\n");
+    let theme = ink_md::theme::resolve_theme("dark");
+    assert_eq!(
+        find_span(&lines, "Hot").style.fg.as_deref(),
+        Some(theme.colors.admonition_caution.as_str())
+    );
+}
+
+#[test]
+fn bracketed_text_that_is_not_a_type_stays_a_quote() {
+    let out = render("> [!not a type] text\n");
+    assert!(out.contains("│ [!not a type] text"), "{out}");
+}
+
+#[test]
+fn table_cells_render_scripts_and_spoilers() {
+    let out = render("| a | b |\n|---|---|\n| x^2^ | ||s|| |\n");
+    let rows = table_rows(&out);
+    assert_eq!(rows[1], "│ x² │ ||s|| │");
+}

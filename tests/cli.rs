@@ -581,7 +581,8 @@ fn plain_keeps_256_colours_on_xterm_256color() {
 
 /// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
 /// nested lists, an ordered list, a task list, a table that wraps, a fenced
-/// code block, nested blockquotes, an admonition and a rule. In ASCII mode
+/// code block, nested blockquotes, admonitions and callouts with titles,
+/// super/subscripts, a spoiler, a definition list and a rule. In ASCII mode
 /// every byte ink prints for it must be 7-bit. Nothing is exempt for this
 /// fixture; images (named, not drawn) and math are not covered by it.
 #[test]
@@ -600,6 +601,27 @@ fn ascii_mode_plain_output_is_seven_bit() {
             let text = String::from_utf8_lossy(&out.stdout);
             panic!("non-ASCII byte at {pos} (width {width}):\n{text}");
         }
+    }
+}
+
+/// The markdown extensions fall back to ASCII forms rather than Unicode
+/// super/subscripts or emoji icons.
+#[test]
+fn ascii_mode_extension_fallbacks() {
+    let out = ink()
+        .args(["--ascii", "--plain", "--color=never", "--width", "80"])
+        .arg("tests/fixtures/ascii.md")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "| (*) A custom title",
+        "| (i) An Obsidian callout",
+        "| Callout body.",
+        "Water is H_(2)O, e = mc^(2), struck and ||a spoiler||.",
+        "  Term\n    > Its definition.",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }
 }
 
