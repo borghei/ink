@@ -1,4 +1,5 @@
 pub mod frontmatter;
+pub mod line_range;
 
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{parse_document, Arena, Options};
