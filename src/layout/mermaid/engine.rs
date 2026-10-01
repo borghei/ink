@@ -838,9 +838,12 @@ pub fn layout(g: &Graph, p: &Params, avail: usize) -> Result<Drawn, Fail> {
     let mut notes = Vec::new();
     if !frames_ok {
         for (c, cl) in g.clusters.iter().enumerate() {
+            // Unlabelled members (the `[*]` start/end pseudo-states) are
+            // left out: they would read as empty items (`Running: , A`).
             let members: Vec<String> = (0..n)
                 .filter(|&v| node_path[v].contains(&c))
-                .map(|v| g.nodes[v].label.replace('\n', " "))
+                .map(|v| g.nodes[v].label.replace('\n', " ").trim().to_string())
+                .filter(|label| !label.is_empty())
                 .collect();
             if !members.is_empty() {
                 let title = if cl.title.is_empty() {

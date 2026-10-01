@@ -307,6 +307,24 @@ fn state_diagram_start_end_fork_and_back_edge() {
     );
 }
 
+// Regression: when composite-state frames cannot be drawn, the note listing
+// each state's members included the unlabelled `[*]` pseudo-states, giving
+// `Running: , A, B, `.
+#[test]
+fn undrawable_state_frames_list_only_named_members() {
+    let src = "stateDiagram-v2\n[*] --> Idle\nIdle --> Running\nstate Running {\n[*] --> A\nA --> B\nB --> [*]\n}\nstate Paused {\n[*] --> C\nC --> D\n}\nRunning --> Paused\nPaused --> Running\nRunning --> Idle\nRunning --> [*]";
+    for width in [40, 60, 100] {
+        let out = render(src, width);
+        let flat = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert!(flat.contains("Running: A, B "), "{width}:\n{out}");
+        assert!(flat.contains("Paused: C, D "), "{width}:\n{out}");
+        assert!(
+            !flat.contains(": ,") && !flat.contains(", ,") && !flat.contains(", │"),
+            "{width}:\n{out}"
+        );
+    }
+}
+
 // ── Class and ER diagrams ──
 
 #[test]

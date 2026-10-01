@@ -145,16 +145,75 @@ fn find_span<'l>(
 }
 
 #[test]
-fn superscript_and_html_subscript_use_unicode_forms() {
-    let out = render("H<sub>2</sub>O, e = mc^2^, x^n+1^ and a<sub>ij</sub>.\n");
+fn html_superscript_and_subscript_use_unicode_forms() {
+    let out = render("H<sub>2</sub>O, e = mc<sup>2</sup>, x<sup>n+1</sup> and a<sub>ij</sub>.\n");
     assert!(out.contains("H₂O, e = mc², xⁿ⁺¹ and aᵢⱼ."), "{out}");
 }
 
 #[test]
-fn superscript_without_a_unicode_form_falls_back() {
-    // No superscript `q`; no subscript `b`: the whole run falls back.
-    let out = render("x^q^ and y<sub>ab</sub>\n");
-    assert!(out.contains("x^(q) and y_(ab)"), "{out}");
+fn html_script_without_a_unicode_form_is_left_as_text() {
+    // No superscript `q`; no subscript `b`: the text is shown as written,
+    // with no `^(…)`/`_(…)` wrapper.
+    let out = render("x<sup>q</sup> and y<sub>ab</sub>\n");
+    assert!(out.contains("xq and yab"), "{out}");
+}
+
+// Regression: `<sub>`/`<sup>` collapsed everything inside into one span
+// with the first span's style, dropping links, and wrapped it in `_(…)`.
+// GitHub READMEs use `<sub>` for small captions: those pass through.
+#[test]
+fn html_sub_caption_keeps_its_links() {
+    let src = "<sub>Photo by [Ann](https://a.example) and [Bob](https://b.example)</sub>\n";
+    let out = render(src);
+    assert!(out.contains("Photo by Ann and Bob"), "{out}");
+    assert!(!out.contains("_("), "{out}");
+    let lines = layout(src);
+    assert_eq!(
+        find_span(&lines, "Ann").style.link_url.as_deref(),
+        Some("https://a.example")
+    );
+    assert_eq!(
+        find_span(&lines, "Bob").style.link_url.as_deref(),
+        Some("https://b.example")
+    );
+    assert_eq!(find_span(&lines, "Photo by").style.link_url, None);
+}
+
+#[test]
+fn html_script_with_markup_inside_is_left_as_is() {
+    let lines = layout("x<sup>**2**</sup> and y<sub>i *j*</sub>\n");
+    assert!(find_span(&lines, "2").style.bold);
+    assert!(find_span(&lines, "j").style.italic);
+    let out = render("x<sup>**2**</sup> and y<sub>i *j*</sub>\n");
+    assert!(out.contains("x2 and yi j"), "{out}");
+}
+
+#[test]
+fn unclosed_html_script_leaves_its_text() {
+    let out = render("a<sub>2 b and c<sup>n\n");
+    assert!(out.contains("a2 b and cn"), "{out}");
+}
+
+// Regression: the `superscript` and `spoiler` extensions paired carets and
+// double bars in ordinary prose (`2^(10 and 3)5`, a hidden `b) or (c`).
+// Neither syntax is GitHub markdown; both are off and prose is verbatim.
+#[test]
+fn carets_and_double_bars_in_prose_render_verbatim() {
+    for src in [
+        "Compute 2^10 and 3^5 here. Also x^2 + y^2 = z^2.",
+        "if (a||b) or (c||d) then",
+        "Not syntax: ^x^ and ||x||.",
+    ] {
+        let out = render(&format!("{src}\n"));
+        assert!(out.contains(src), "{src:?} became:\n{out}");
+        let lines = layout(&format!("{src}\n"));
+        for span in lines.iter().flat_map(|l| &l.spans) {
+            assert!(
+                span.style.fg.is_none() || span.style.fg != span.style.bg,
+                "concealed span {span:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -174,18 +233,6 @@ fn double_underscore_stays_bold() {
     let lines = layout("__bold__ text\n");
     let span = find_span(&lines, "bold");
     assert!(span.style.bold && !span.style.underline, "{span:?}");
-}
-
-#[test]
-fn spoiler_text_is_concealed_between_visible_bars() {
-    let out = render("Vader is ||his father||.\n");
-    assert!(out.contains("Vader is ||his father||."), "{out}");
-    let lines = layout("Vader is ||his *father*||.\n");
-    for word in ["his ", "father"] {
-        let span = find_span(&lines, word);
-        assert!(span.style.fg.is_some() && span.style.fg == span.style.bg);
-    }
-    assert!(find_span(&lines, "||").style.dim);
 }
 
 #[test]
@@ -251,10 +298,10 @@ fn bracketed_text_that_is_not_a_type_stays_a_quote() {
 }
 
 #[test]
-fn table_cells_render_scripts_and_spoilers() {
-    let out = render("| a | b |\n|---|---|\n| x^2^ | ||s|| |\n");
+fn table_cells_keep_carets_verbatim() {
+    let out = render("| a | b |\n|---|---|\n| 2^10 | x^2^ |\n");
     let rows = table_rows(&out);
-    assert_eq!(rows[1], "│ x² │ ||s|| │");
+    assert_eq!(rows[1], "│ 2^10 │ x^2^ │");
 }
 
 // ── Frontmatter ──
@@ -268,7 +315,6 @@ fn frontmatter_hidden_by_default() {
     for src in [
         "---\ntitle: Hello\nauthor: me\n---\n# Doc\n",
         "+++\ntitle = \"Hello\"\n+++\n# Doc\n",
-        "{\n  \"title\": \"Hello\"\n}\n# Doc\n",
     ] {
         let out = render(src);
         assert!(
@@ -316,6 +362,33 @@ fn json_frontmatter_renders_as_a_metadata_box() {
     assert!(out.contains("│ tags   a, b     │"), "{out}");
     assert!(out.contains("│ o      {\"k\": 1} │"), "{out}");
     assert!(!out.contains("\"title\""), "{out}");
+}
+
+// Regression: a file that is a JSON object rendered as nothing, its
+// "frontmatter" stripped. A leading JSON object is document text unless
+// `--frontmatter` is on and markdown follows it.
+#[test]
+fn json_documents_are_never_hidden() {
+    let json = "{\n  \"name\": \"ink\",\n  \"version\": 1\n}\n";
+    for out in [render(json), with_frontmatter(json)] {
+        // Shown as markdown text, as in v0.9.0 (smart quotes, one paragraph).
+        assert!(out.contains("name") && out.contains("version"), "{out}");
+        assert!(!out.contains("frontmatter"), "{out}");
+    }
+    // A markdown file opening with a bare JSON sample keeps it by default.
+    let src = "{\n  \"title\": \"Hello\"\n}\n# Doc\n";
+    let out = render(src);
+    assert!(
+        out.contains("title") && out.contains("Hello") && out.contains("Doc"),
+        "{out}"
+    );
+    assert!(!out.contains("frontmatter"), "{out}");
+    // With --frontmatter and markdown after it, it is the metadata box.
+    let out = with_frontmatter(src);
+    assert!(
+        out.contains("╭─ frontmatter") && out.contains("│ title  Hello   │"),
+        "{out}"
+    );
 }
 
 #[test]

@@ -15,10 +15,25 @@ struct Session {
     output: Vec<u8>,
 }
 
+/// What the scripted terminal does next: type bytes, or change its size
+/// (the kernel then sends ink SIGWINCH).
+enum Reply {
+    Type(Vec<u8>),
+    Resize(u16, u16),
+}
+
 fn run_in_pty(
     args: &[&str],
     envs: &[(&str, &str)],
     mut respond: impl FnMut(&[u8], Duration) -> Option<Vec<u8>>,
+) -> Session {
+    run_in_pty_ctl(args, envs, move |out, t| respond(out, t).map(Reply::Type))
+}
+
+fn run_in_pty_ctl(
+    args: &[&str],
+    envs: &[(&str, &str)],
+    mut respond: impl FnMut(&[u8], Duration) -> Option<Reply>,
 ) -> Session {
     let (mut master, slave) = open_pty();
     let config_home = tempfile::tempdir().unwrap();
@@ -63,8 +78,20 @@ fn run_in_pty(
     let mut output = Vec::new();
     let mut buf = [0u8; 8192];
     while start.elapsed() < Duration::from_secs(15) {
-        if let Some(reply) = respond(&output, start.elapsed()) {
-            master.write_all(&reply).unwrap();
+        match respond(&output, start.elapsed()) {
+            Some(Reply::Type(bytes)) => master.write_all(&bytes).unwrap(),
+            Some(Reply::Resize(cols, rows)) => {
+                let size = libc::winsize {
+                    ws_row: rows,
+                    ws_col: cols,
+                    ws_xpixel: 0,
+                    ws_ypixel: 0,
+                };
+                // SAFETY: a valid fd and a pointer to a live winsize.
+                let rc = unsafe { libc::ioctl(fd, libc::TIOCSWINSZ, &size) };
+                assert_eq!(rc, 0, "TIOCSWINSZ failed");
+            }
+            None => {}
         }
         let mut pfd = libc::pollfd {
             fd,
@@ -467,6 +494,17 @@ type Marks = std::rc::Rc<std::cell::RefCell<Vec<usize>>>;
 /// repeated until it takes). `marks` records how much output there was when
 /// each step went out, so a test can tell what was drawn before and after.
 fn type_steps(steps: Vec<Vec<u8>>, marks: Marks) -> impl FnMut(&[u8], Duration) -> Option<Vec<u8>> {
+    let steps = steps.into_iter().map(Reply::Type).collect();
+    let mut ctl = control_steps(steps, marks);
+    move |out, t| match ctl(out, t)? {
+        Reply::Type(bytes) => Some(bytes),
+        Reply::Resize(..) => unreachable!(),
+    }
+}
+
+/// [`type_steps`] with resizes among the steps.
+fn control_steps(steps: Vec<Reply>, marks: Marks) -> impl FnMut(&[u8], Duration) -> Option<Reply> {
+    let mut steps = steps.into_iter().map(Some).collect::<Vec<_>>();
     let mut up_at = None;
     let mut sent = 0;
     let mut last_q = Duration::ZERO;
@@ -481,11 +519,11 @@ fn type_steps(steps: Vec<Vec<u8>>, marks: Marks) -> impl FnMut(&[u8], Duration) 
         if sent < steps.len() {
             sent += 1;
             marks.borrow_mut().push(out.len());
-            return Some(steps[sent - 1].clone());
+            return steps[sent - 1].take();
         }
         if t > last_q + Duration::from_millis(500) {
             last_q = t;
-            return Some(b"q".to_vec());
+            return Some(Reply::Type(b"q".to_vec()));
         }
         None
     }
@@ -542,6 +580,37 @@ fn the_toc_takes_focus_filters_and_jumps() {
     assert!(!contains(before, b"ARRIVED"));
     // Enter jumped to the heading.
     assert!(contains(after, b"ARRIVED"), "did not jump");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+}
+
+// Regression: focusing the TOC and then shrinking the window to 40 columns
+// or fewer hid the sidebar but left it focused, so keys drove an invisible
+// cursor and the status bar kept the TOC's key reminder.
+#[test]
+fn shrinking_the_window_gives_focus_back_to_the_document() {
+    let doc = long_doc_with_anchor_link();
+    let marks = Marks::default();
+    let steps = vec![
+        Reply::Type(b"o".to_vec()),
+        Reply::Resize(38, 30),
+        Reply::Type(b"j".to_vec()),
+    ];
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty_ctl(&args, &[], control_steps(steps, Marks::clone(&marks)));
+    let marks = marks.borrow();
+    assert_eq!(marks.len(), 3, "steps not all sent");
+    let focused = String::from_utf8_lossy(&s.output[marks[0]..marks[1]]);
+    assert!(focused.contains("j/k"), "TOC never took focus");
+    // After the resize the sidebar is gone and so is its key reminder.
+    let resized = String::from_utf8_lossy(&s.output[marks[1]..marks[2]]);
+    assert!(resized.contains("filler"), "no redraw after the resize");
+    assert!(!resized.contains("j/k"), "TOC hints survived: {resized}");
+    assert!(resized.contains("search"), "no document key reminder");
+    // `j` scrolls the document (its lines are redrawn one row up) instead
+    // of moving a hidden TOC cursor (which redraws nothing).
+    let after = String::from_utf8_lossy(&s.output[marks[2]..]);
+    assert!(after.contains("filler"), "j did not scroll the document");
     assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
 }
 

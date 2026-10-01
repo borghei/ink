@@ -43,12 +43,12 @@ pub fn options() -> Options<'static> {
     // `` $`…`$ `` / ```` ```math ````.
     opts.extension.math_dollars = true;
     opts.extension.math_code = true;
-    // `^sup^`, `||spoiler||`, and definition lists (`Term` then
-    // `: definition`). Not `subscript`: it turns GitHub's single-tilde
-    // `~strike~` into subscript (`<sub>` still works). Not `underline`: it
-    // turns `__bold__` into underlined text.
-    opts.extension.superscript = true;
-    opts.extension.spoiler = true;
+    // Definition lists (`Term` then `: definition`). Not `superscript`
+    // (`^x^`) or `spoiler` (`||x||`): neither is GitHub markdown, and both
+    // pair up ordinary prose (`2^10 and 3^5`, `(a||b) or (c||d)`);
+    // `<sup>`/`<sub>` still work. Not `subscript`: it turns GitHub's
+    // single-tilde `~strike~` into subscript. Not `underline`: it turns
+    // `__bold__` into underlined text.
     opts.extension.description_lists = true;
     // In ASCII mode, an ASCII document must stay ASCII: no `:smile:` → emoji
     // and no smart quotes, dashes or ellipses.
@@ -100,13 +100,13 @@ pub fn options_for(source: &str) -> Options<'static> {
 
 /// Upper bound on AST depth: every nesting level is opened by at least one
 /// of these bytes (`>` blockquotes; `-` `*` `+` `.` `)` list markers; `*`
-/// `_` `~` emphasis and strikethrough; `^` superscript; `|`
-/// spoilers; `:` definition lists; `[` links, images, footnotes), plus the
+/// `_` `~` emphasis and strikethrough; `:` definition lists; `[` links,
+/// images, footnotes), plus the
 /// few fixed levels (document, paragraph, text).
 fn nesting_bound(source: &str) -> usize {
     8 + source
         .bytes()
-        .filter(|b| b"<>*_~^|:[-+.)".contains(b))
+        .filter(|b| b"<>*_~:[-+.)".contains(b))
         .count()
 }
 
@@ -184,9 +184,6 @@ mod tests {
             format!("{}x{}", "*".repeat(20000), "*".repeat(20000)),
             // Openers need not be adjacent to nest.
             format!("{}x{}", "*a _".repeat(2000), "_ a*".repeat(2000)),
-            // Superscripts and spoilers nest like emphasis.
-            format!("{}x{}", "^a *".repeat(2000), "* a^".repeat(2000)),
-            format!("{}x{}", "||a ^".repeat(2000), "^ a||".repeat(2000)),
         ] {
             let src = src + NOTE;
             let arena = Arena::new();
