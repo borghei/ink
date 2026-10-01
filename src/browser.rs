@@ -215,6 +215,11 @@ fn browse_inner(
         // ── Input handling ──
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
+                // Windows reports key releases too; acting on them would
+                // move twice and type every filter character twice.
+                if !crate::input::is_actionable_key(&key) {
+                    continue;
+                }
                 if filter_active {
                     match key.code {
                         KeyCode::Esc => {
