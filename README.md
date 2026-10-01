@@ -263,7 +263,7 @@ ink --slides deck.md
 
 Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly. When stdout is not a terminal, `ink file.md` behaves like `ink --plain file.md`, as `bat` and `glow` do.
 
-`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted. It always prints plain output.
+`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted, inside a blockquote too. It always prints plain output.
 
 Color follows `--color <auto|always|never>` (default `auto`). In `auto` mode, `--plain` and `ink diff` emit color and OSC 8 hyperlinks only when stdout is a terminal, so redirects, pipes, and `git` textconv get clean text. Precedence: an explicit `--color` wins; then `NO_COLOR` turns color off; then `CLICOLOR_FORCE=1` or `FORCE_COLOR` turns it on; then `TERM=dumb` turns it off; then the terminal check. Tools that display ANSI from a pipe need `--color=always`:
 
