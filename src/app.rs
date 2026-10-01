@@ -1740,7 +1740,21 @@ fn run_suspended(
     let _ = restore_terminal();
     #[cfg(unix)]
     term_signal::suspend();
-    let status = std::process::Command::new(&argv[0])
+    // Windows: std only tries `<name>.exe`, so find `code.cmd` and the like
+    // on PATH ourselves (see `editor::resolve_program`).
+    #[cfg(windows)]
+    let program: std::ffi::OsString = crate::editor::resolve_program(
+        &argv[0],
+        std::env::var("PATH").ok().as_deref(),
+        std::env::var("PATHEXT").ok().as_deref(),
+        |p| p.is_file(),
+    )
+    .map_or_else(|| argv[0].clone().into(), Into::into);
+    #[cfg(not(windows))]
+    let program = &argv[0];
+    // A `.bat`/`.cmd` argument std cannot quote safely is an error here
+    // (shown in the status bar), never handed to cmd.exe unescaped.
+    let status = std::process::Command::new(program)
         .args(&argv[1..])
         .status();
     #[cfg(unix)]

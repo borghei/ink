@@ -99,7 +99,10 @@ fn line_arg_for(program: &str) -> LineArg {
         .and_then(|n| n.to_str())
         .unwrap_or(program)
         .to_ascii_lowercase();
-    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    let name = [".exe", ".cmd", ".bat"]
+        .iter()
+        .find_map(|ext| name.strip_suffix(ext))
+        .unwrap_or(&name);
     match name {
         "vi" | "vim" | "nvim" | "gvim" | "view" | "nano" | "emacs" | "emacsclient" | "kak"
         | "micro" => LineArg::Plus,
@@ -143,9 +146,111 @@ pub fn editor_argv(command: &str, path: &str, line: Option<usize>) -> Option<Vec
     Some(argv)
 }
 
+/// The program to spawn for `program` on Windows, where std's `Command`
+/// only looks for `program.exe`: VS Code, Cursor and VSCodium put `code.cmd`
+/// (and the like) on `PATH`, so `EDITOR="code --wait"` would fail with
+/// "program not found". A bare name with no extension is looked up in each
+/// `PATH` directory (`;`-separated) with each `PATHEXT` extension (default
+/// `.COM;.EXE;.BAT;.CMD`), in that order, as `cmd.exe` does; the current
+/// directory is never searched. `None` — spawn `program` as given — for a
+/// path, a name with an extension, or no match. Pure (the environment and
+/// the file test are passed in) so it is tested on every OS; std quotes the
+/// arguments of a `.bat`/`.cmd` itself and refuses ones it cannot escape.
+pub fn resolve_program(
+    program: &str,
+    path_var: Option<&str>,
+    pathext_var: Option<&str>,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> Option<std::path::PathBuf> {
+    if program.is_empty()
+        || program.contains(['/', '\\', ':'])
+        || std::path::Path::new(program).extension().is_some()
+    {
+        return None;
+    }
+    let exts: Vec<&str> = pathext_var
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or(".COM;.EXE;.BAT;.CMD")
+        .split(';')
+        .map(str::trim)
+        .filter(|e| e.starts_with('.') && e.len() > 1)
+        .collect();
+    for dir in path_var?.split(';') {
+        let dir = dir.trim().trim_matches('"');
+        if dir.is_empty() {
+            continue;
+        }
+        for ext in &exts {
+            let candidate = std::path::Path::new(dir).join(format!("{program}{ext}"));
+            if exists(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windows_resolution_finds_cmd_shims_and_prefers_exe() {
+        use std::path::{Path, PathBuf};
+        let at = |dir: &str, name: &str| Path::new(dir).join(name);
+        // Exact matches: Windows file lookups ignore case, this stub does not.
+        let files = |list: Vec<PathBuf>| move |p: &Path| list.iter().any(|f| f == p);
+        let (win, code, tools) = (r"C:\Windows", r"C:\Code\bin", r"C:\Tools");
+        let path = Some(r"C:\Windows;C:\Code\bin;C:\Tools");
+        // Only a `.cmd` shim: found (std alone would look for code.exe).
+        assert_eq!(
+            resolve_program("code", path, None, files(vec![at(code, "code.CMD")])),
+            Some(at(code, "code.CMD"))
+        );
+        // `.exe` and `.cmd` side by side: `.exe` (PATHEXT order).
+        assert_eq!(
+            resolve_program(
+                "code",
+                path,
+                None,
+                files(vec![at(code, "code.CMD"), at(code, "code.EXE")])
+            ),
+            Some(at(code, "code.EXE"))
+        );
+        // PATH order first, as cmd.exe does; PATHEXT from the environment.
+        assert_eq!(
+            resolve_program(
+                "subl",
+                path,
+                Some(".EXE;.CMD"),
+                files(vec![at(win, "subl.CMD"), at(tools, "subl.EXE")])
+            ),
+            Some(at(win, "subl.CMD"))
+        );
+        let any = |_: &Path| true;
+        // Explicit paths and names with an extension are left alone.
+        for program in [
+            r"C:\Code\bin\code",
+            r".\code",
+            "bin/code",
+            "code.cmd",
+            "notepad.exe",
+            "",
+        ] {
+            assert_eq!(resolve_program(program, path, None, any), None, "{program}");
+        }
+        // No match, or no PATH: spawned as given.
+        assert_eq!(resolve_program("code", path, None, |_: &Path| false), None);
+        assert_eq!(resolve_program("code", None, None, any), None);
+    }
+
+    #[test]
+    fn shim_extensions_keep_the_line_syntax() {
+        assert_eq!(
+            editor_argv("code.cmd --wait", "doc.md", Some(7)).unwrap(),
+            v(&["code.cmd", "--wait", "--goto", "doc.md:7"])
+        );
+    }
 
     fn v(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()
