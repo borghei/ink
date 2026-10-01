@@ -151,8 +151,9 @@ pub enum Commands {
     },
     /// Generate a man page (troff, to stdout)
     Man,
-    /// Print an image-rendering diagnostic report (terminal identity,
-    /// graphics-protocol negotiation, decoder self-tests)
+    /// Print a diagnostic report to attach to an issue: platform, terminal,
+    /// colour and theme detection, clipboard route, mouse, config problems,
+    /// graphics-protocol negotiation, decoder self-tests (no personal data)
     Doctor {
         /// Also write the report to this file (attach it to a GitHub issue)
         #[arg(long, value_name = "PATH")]
@@ -256,7 +257,19 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
             Commands::Doctor { save } => {
-                return crate::doctor::run(save.as_deref(), &theme, theme_origin);
+                let (clipboard, clipboard_source) = clipboard_mode(&user_config);
+                return crate::doctor::run(
+                    save.as_deref(),
+                    &crate::doctor::Context {
+                        theme: &theme,
+                        theme_origin,
+                        color_choice: cli.color,
+                        clipboard,
+                        clipboard_source,
+                        mouse: mouse_capture(cli.no_mouse, &user_config),
+                        config_warnings: &warnings,
+                    },
+                );
             }
             Commands::Keybindings => {
                 print_keybindings();
@@ -340,17 +353,7 @@ pub fn run() -> Result<()> {
         frontmatter,
         spacing,
         mouse_capture: mouse_capture(cli.no_mouse, &user_config).0,
-        clipboard: user_config
-            .as_ref()
-            .and_then(|c| c.behavior.as_ref())
-            .and_then(|b| b.clipboard.as_deref())
-            .map(|v| {
-                crate::clipboard::ClipboardMode::parse(v).unwrap_or_else(|| {
-                    eprintln!("ink: unknown clipboard mode '{v}', using 'auto'");
-                    crate::clipboard::ClipboardMode::Auto
-                })
-            })
-            .unwrap_or_default(),
+        clipboard: clipboard_mode(&user_config).0,
     };
 
     // Check if input is a directory or no input with a TTY → launch file browser
@@ -551,6 +554,28 @@ fn theme_choice(flag: &str, config: &Option<config::Config>) -> (String, ThemeOr
     match config.as_ref().and_then(|c| c.theme.clone()) {
         Some(t) if t != "auto" => (t, ThemeOrigin::Config),
         _ => ("auto".to_string(), ThemeOrigin::Auto),
+    }
+}
+
+/// The configured clipboard mode and where it came from. An unknown value
+/// warns (on stderr, before any alternate screen) and falls back to `auto`.
+fn clipboard_mode(
+    config: &Option<config::Config>,
+) -> (crate::clipboard::ClipboardMode, &'static str) {
+    use crate::clipboard::ClipboardMode;
+    let Some(v) = config
+        .as_ref()
+        .and_then(|c| c.behavior.as_ref())
+        .and_then(|b| b.clipboard.as_deref())
+    else {
+        return (ClipboardMode::default(), "default");
+    };
+    match ClipboardMode::parse(v) {
+        Some(mode) => (mode, "config behavior.clipboard"),
+        None => {
+            eprintln!("ink: unknown clipboard mode '{v}', using 'auto'");
+            (ClipboardMode::Auto, "config value not recognised; default")
+        }
     }
 }
 

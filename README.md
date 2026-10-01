@@ -394,6 +394,7 @@ Subcommands:
   man          Generate a man page
   config       Config helpers (init, path)
   keybindings  Print the active keybinding map
+  doctor       Print a diagnostic report to attach to an issue
 ```
 
 ## How it compares
@@ -424,7 +425,7 @@ Terminal graphics support varies wildly. If an image is blank, garbled, or missi
 
 1. **Try the universal renderer:** `ink --image-protocol halfblocks file.md`. If the image appears as coarse colored blocks, decoding is fine — the problem is your terminal's pixel graphics protocol.
 2. **Try a specific protocol:** `--image-protocol iterm2` (iTerm2, WezTerm, VS Code, Warp and friends) or `--image-protocol sixel`. Some terminals advertise protocols they only partially implement — auto-detection already works around the known cases (e.g. iTerm2 claiming kitty support), but new terminal versions ship new quirks.
-3. **Collect a diagnostic report:** run `ink doctor` in the affected terminal — it prints your terminal identity, what the graphics negotiation chose, and decoder self-tests. `ink doctor --save ink-doctor.txt` writes it to a file.
+3. **Collect a diagnostic report:** run `ink doctor` in the affected terminal — it prints your platform and terminal identity, the colour depth and theme ink picked (and which signal decided each), the clipboard helper and OSC 52 wrapping it would use, mouse capture, config warnings, what the graphics negotiation chose, and decoder self-tests. It leaves out anything that identifies you (no hostnames, user names, IPs or session IDs; your home directory shows as `~`), so it is safe to paste into an issue. `ink doctor --save ink-doctor.txt` writes it to a file. The same report helps with colour, theme and clipboard problems.
 4. **Send it to us:** open an [image rendering issue](https://github.com/borghei/ink/issues/new?template=image-rendering.yml) with the report attached. That output usually pinpoints the problem immediately.
 
 ## Security model

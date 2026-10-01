@@ -54,14 +54,45 @@ impl TermCaps {
 /// Pure truecolor detection. Windows Terminal (`WT_SESSION`) and several
 /// common terminals support 24-bit color without setting `COLORTERM`.
 fn is_truecolor(colorterm: &str, term: &str, term_program: &str, wt_session: bool) -> bool {
-    colorterm.eq_ignore_ascii_case("truecolor")
-        || colorterm.eq_ignore_ascii_case("24bit")
-        || term.contains("truecolor")
-        || term.contains("direct")
-        || term.contains("kitty")
-        || term.contains("alacritty")
-        || wt_session
-        || matches!(term_program, "vscode" | "ghostty" | "WezTerm" | "iTerm.app")
+    truecolor_signal(colorterm, term, term_program, wt_session).is_some()
+}
+
+/// The environment signal that advertises truecolor, for `ink doctor`.
+fn truecolor_signal(
+    colorterm: &str,
+    term: &str,
+    term_program: &str,
+    wt_session: bool,
+) -> Option<String> {
+    if colorterm.eq_ignore_ascii_case("truecolor") || colorterm.eq_ignore_ascii_case("24bit") {
+        return Some(format!("COLORTERM={colorterm}"));
+    }
+    if ["truecolor", "direct", "kitty", "alacritty"]
+        .iter()
+        .any(|t| term.contains(t))
+    {
+        return Some(format!("TERM={term}"));
+    }
+    if wt_session {
+        return Some("WT_SESSION (Windows Terminal)".into());
+    }
+    if matches!(term_program, "vscode" | "ghostty" | "WezTerm" | "iTerm.app") {
+        return Some(format!("TERM_PROGRAM={term_program}"));
+    }
+    None
+}
+
+/// The colour depth ink renders at and the signal that decided it, for
+/// `ink doctor`.
+pub fn depth_report() -> (&'static str, String) {
+    let colorterm = std::env::var("COLORTERM").unwrap_or_default();
+    let term = std::env::var("TERM").unwrap_or_default();
+    let term_program = std::env::var("TERM_PROGRAM").unwrap_or_default();
+    let wt = std::env::var_os("WT_SESSION").is_some();
+    match truecolor_signal(&colorterm, &term, &term_program, wt) {
+        Some(signal) => ("truecolour (24-bit)", signal),
+        None => ("256 colours", format!("TERM={term}; no truecolour signal")),
+    }
 }
 
 /// The `--color` flag.
@@ -79,7 +110,12 @@ pub enum ColorChoice {
 /// Should non-TUI output carry escape sequences? See the module docs for
 /// the precedence.
 pub fn color_enabled(choice: ColorChoice, stdout_tty: bool) -> bool {
-    resolve_color(
+    color_enabled_why(choice, stdout_tty).0
+}
+
+/// [`color_enabled`] plus the signal that decided it (for `ink doctor`).
+pub fn color_enabled_why(choice: ColorChoice, stdout_tty: bool) -> (bool, &'static str) {
+    resolve_color_why(
         choice,
         &env_set,
         std::env::var("TERM").unwrap_or_default().as_str(),
@@ -88,27 +124,44 @@ pub fn color_enabled(choice: ColorChoice, stdout_tty: bool) -> bool {
 }
 
 /// Pure form of [`color_enabled`]: `env` returns a variable's non-empty value.
+#[cfg(test)]
 fn resolve_color(
     choice: ColorChoice,
     env: &dyn Fn(&str) -> Option<String>,
     term: &str,
     stdout_tty: bool,
 ) -> bool {
+    resolve_color_why(choice, env, term, stdout_tty).0
+}
+
+fn resolve_color_why(
+    choice: ColorChoice,
+    env: &dyn Fn(&str) -> Option<String>,
+    term: &str,
+    stdout_tty: bool,
+) -> (bool, &'static str) {
     match choice {
-        ColorChoice::Always => return true,
-        ColorChoice::Never => return false,
+        ColorChoice::Always => return (true, "--color=always"),
+        ColorChoice::Never => return (false, "--color=never"),
         ColorChoice::Auto => {}
     }
     if env("NO_COLOR").is_some() {
-        return false;
+        return (false, "NO_COLOR");
     }
-    if env("CLICOLOR_FORCE").is_some_and(|v| v != "0") || env("FORCE_COLOR").is_some() {
-        return true;
+    if env("CLICOLOR_FORCE").is_some_and(|v| v != "0") {
+        return (true, "CLICOLOR_FORCE");
+    }
+    if env("FORCE_COLOR").is_some() {
+        return (true, "FORCE_COLOR");
     }
     if term == "dumb" {
-        return false;
+        return (false, "TERM=dumb");
     }
-    stdout_tty
+    if stdout_tty {
+        (true, "stdout is a terminal")
+    } else {
+        (false, "stdout is not a terminal")
+    }
 }
 
 /// Cached capabilities for the current process.

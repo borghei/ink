@@ -189,7 +189,7 @@ fn doctor_save_writes_report_file() {
         .assert()
         .success();
     let saved = std::fs::read_to_string(&path).unwrap();
-    assert!(saved.contains("ink doctor — image rendering diagnostics"));
+    assert!(saved.contains("ink doctor — environment diagnostics"));
 }
 
 #[test]
