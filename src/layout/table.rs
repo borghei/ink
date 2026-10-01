@@ -1,6 +1,6 @@
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
-use comrak::nodes::{AstNode, NodeValue};
+use comrak::nodes::{AstNode, NodeValue, TableAlignment};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -22,6 +22,10 @@ pub fn layout_table<'a>(
     }
 
     let num_cols = headers.len();
+    let alignments: Vec<TableAlignment> = match &node.data.borrow().value {
+        NodeValue::Table(t) => t.alignments.clone(),
+        _ => Vec::new(),
+    };
 
     // Calculate ideal column widths from content
     let mut col_widths: Vec<usize> = headers.iter().map(|h| cell_width(h)).collect();
@@ -93,6 +97,7 @@ pub fn layout_table<'a>(
     render_row_lines(
         &header_wrapped,
         &col_widths,
+        &alignments,
         Some(header_color),
         border_color,
         false,
@@ -117,6 +122,7 @@ pub fn layout_table<'a>(
         render_row_lines(
             &row_wrapped,
             &col_widths,
+            &alignments,
             None,
             border_color,
             i % 2 == 1,
@@ -387,6 +393,7 @@ fn force_break(word: &str, max_width: usize) -> Vec<String> {
 fn render_row_lines(
     wrapped_cols: &[Vec<String>],
     widths: &[usize],
+    alignments: &[TableAlignment],
     text_color: Option<&String>,
     border_color: &str,
     alt_row: bool,
@@ -420,8 +427,14 @@ fn render_row_lines(
                 .map(|s| s.as_str())
                 .unwrap_or("");
 
-            let cell_width = cell_text.width();
-            let padding = width.saturating_sub(cell_width);
+            let (pad_left, pad_right) = align_padding(
+                alignments
+                    .get(col_idx)
+                    .copied()
+                    .unwrap_or(TableAlignment::None),
+                *width,
+                cell_text.width(),
+            );
 
             let mut style = SpanStyle::default();
             if let Some(c) = text_color {
@@ -433,7 +446,11 @@ fn render_row_lines(
             }
 
             line.push(StyledSpan {
-                text: format!(" {cell_text}{} ", " ".repeat(padding)),
+                text: format!(
+                    " {}{cell_text}{} ",
+                    " ".repeat(pad_left),
+                    " ".repeat(pad_right)
+                ),
                 style,
             });
             line.push(StyledSpan {
@@ -446,6 +463,20 @@ fn render_row_lines(
         }
 
         lines.push(line);
+    }
+}
+
+/// Left and right padding that places `text_width` columns of cell text in
+/// a `width`-column slot per the column's `:--`/`:-:`/`--:` alignment. Each
+/// wrapped line of a cell is placed on its own, so a right-aligned
+/// multi-line cell is ragged left. Centering leans left on an odd remainder
+/// (as GitHub's HTML tables do).
+fn align_padding(align: TableAlignment, width: usize, text_width: usize) -> (usize, usize) {
+    let free = width.saturating_sub(text_width);
+    match align {
+        TableAlignment::Right => (free, 0),
+        TableAlignment::Center => (free / 2, free - free / 2),
+        TableAlignment::Left | TableAlignment::None => (0, free),
     }
 }
 
