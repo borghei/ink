@@ -144,6 +144,8 @@ ink --plain README.md
 
 Headings, bold, italic, strikethrough, links, blockquotes, lists, task lists, tables, footnotes, horizontal rules — all rendered with proper styling and colors.
 
+Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. Superscript `x^2^` and subscript `H~2~O` come out as `x²` and `H₂O` (as `^(…)`/`_(…)` when a character has no Unicode form; `~~strikethrough~~` is unchanged). `||spoilers||` stay hidden until you select or copy them, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
+
 ### Syntax-highlighted code blocks
 
 Language-aware highlighting for every major language. Code blocks get clean borders with the language label shown at the top.
@@ -164,7 +166,11 @@ Flowcharts, sequence diagrams, pie charts, and Gantt charts rendered as ASCII ar
 
 ### GitHub-style admonitions
 
-`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` blocks render with distinct colors and icons.
+`[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, and `[!CAUTION]` blocks render with distinct colors and icons. A custom title (`> [!NOTE] Read this first`) replaces the type name, and Obsidian callouts (`> [!info]- Title`, `[!bug]`, `[!example]`, …) map onto the same five colours, fold markers ignored.
+
+### Frontmatter
+
+YAML (`---`), TOML (`+++`) and JSON (`{`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown.
 
 ### Wikilinks
 
@@ -239,7 +245,7 @@ On the Linux console, a non-UTF-8 locale, a legacy console font or a screen read
 
 ### Math and emoji
 
-Inline `$E=mc^2$` and block `$$...$$` math render in code style, and `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
+Inline `$E=mc^2$`, block `$$...$$` and ```` ```math ```` render as Unicode text: `$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$` reads `x = (-b ± √(b² - 4ac))/2a`. Greek letters, operators, `\mathbb{R}` → ℝ, super- and subscripts, fractions, roots, and matrix, `cases` and `aligned` environments (drawn on several lines with brackets) are covered; anything else is shown as written. A lone `$` in prose (`costs $5 and $10`) stays a dollar sign. With `--ascii` the LaTeX source is shown instead. `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
 
 ### Presentation mode
 
@@ -252,6 +258,8 @@ ink --slides deck.md
 ### Works as a pager
 
 Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly. When stdout is not a terminal, `ink file.md` behaves like `ink --plain file.md`, as `bat` and `glow` do.
+
+`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted. It always prints plain output.
 
 Color follows `--color <auto|always|never>` (default `auto`). In `auto` mode, `--plain` and `ink diff` emit color and OSC 8 hyperlinks only when stdout is a terminal, so redirects, pipes, and `git` textconv get clean text. Precedence: an explicit `--color` wins; then `NO_COLOR` turns color off; then `CLICOLOR_FORCE=1` or `FORCE_COLOR` turns it on; then `TERM=dumb` turns it off; then the terminal check. Tools that display ANSI from a pipe need `--color=always`:
 
@@ -353,7 +361,7 @@ spacing = "normal"
 # Show table of contents on startup
 toc = false
 
-# Show YAML/TOML frontmatter
+# Show YAML/TOML/JSON frontmatter as a metadata box at the top
 frontmatter = false
 
 # Behavior
@@ -420,7 +428,9 @@ Options:
       --image-protocol <P>  auto | kitty | iterm2 | sixel | halfblocks
       --list-themes      List available themes and exit
       --no-pager         Never page --plain output, even on a TTY
-      --frontmatter      Show YAML/TOML frontmatter
+      --frontmatter      Show YAML/TOML/JSON frontmatter as a metadata box
+      --line-range <START:END>  Render only these source lines (N, START:, :END;
+                         repeatable; implies --plain)
       --spacing <MODE>   Line spacing: compact, normal, relaxed
       --no-mouse         Don't capture the mouse (overrides mouse_capture in config)
       --ascii            Draw borders, bullets and markers in plain ASCII
