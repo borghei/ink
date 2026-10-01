@@ -297,15 +297,58 @@ mod term_signal {
             if let Ok(mut held) = flags.interrupt.lock() {
                 *held = ids;
             }
+            let _ = std::thread::Builder::new()
+                .name("ink-signal-watchdog".into())
+                .spawn(watchdog);
             flags
         });
     }
 
+    /// Set while an external editor owns the terminal.
+    static SUSPENDED: AtomicBool = AtomicBool::new(false);
+
+    /// How long a signal may stay pending before the watchdog gives up on
+    /// the event loop.
+    const GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
+    /// The event loop notices a signal within one 50 ms poll — unless it is
+    /// stuck where it cannot look. crossterm's event reader spins forever on
+    /// a terminal that has hung up (a closed SSH session, a killed tmux):
+    /// its read loop never sees `WouldBlock` again. The SIGHUP that came
+    /// with the hangup then sat unread and ink burned a core indefinitely.
+    /// If a signal is still pending after `GRACE`, restore what can be
+    /// restored and exit with the status the loop would have used.
+    fn watchdog() {
+        let tick = std::time::Duration::from_millis(100);
+        let mut pending_for = std::time::Duration::ZERO;
+        loop {
+            std::thread::sleep(tick);
+            if pending().is_none() || SUSPENDED.load(Ordering::Relaxed) {
+                pending_for = std::time::Duration::ZERO;
+                continue;
+            }
+            pending_for += tick;
+            if pending_for >= GRACE {
+                // The restore writes to stdout, whose lock the stuck thread
+                // might hold: give it a moment, never wait on it.
+                let (done, wait) = std::sync::mpsc::channel();
+                std::thread::spawn(move || {
+                    let _ = super::restore_terminal();
+                    let _ = done.send(());
+                });
+                let _ = wait.recv_timeout(std::time::Duration::from_millis(300));
+                std::process::exit(128 + pending().unwrap_or(0));
+            }
+        }
+    }
+
     /// While an external editor runs in cooked mode, Ctrl-C sends SIGINT to
     /// the whole foreground process group — ink included. It is meant for
-    /// the editor: ignore it until `resume_interrupt`. (SIGTERM and SIGHUP
-    /// still end ink, after the editor returns.)
-    pub fn pause_interrupt() {
+    /// the editor: ignore it until `resume`. SIGTERM and SIGHUP still end
+    /// ink, but only once the editor has returned (the watchdog waits too),
+    /// so ink never exits underneath a running editor.
+    pub fn suspend() {
+        SUSPENDED.store(true, Ordering::Relaxed);
         if let Some(flags) = FLAGS.get() {
             if let Ok(mut held) = flags.interrupt.lock() {
                 for id in held.drain(..) {
@@ -315,13 +358,14 @@ mod term_signal {
         }
     }
 
-    pub fn resume_interrupt() {
+    pub fn resume() {
         if let Some(flags) = FLAGS.get() {
             let ids = register(signal_hook::consts::SIGINT, flags);
             if let Ok(mut held) = flags.interrupt.lock() {
                 held.extend(ids);
             }
         }
+        SUSPENDED.store(false, Ordering::Relaxed);
     }
 
     pub fn pending() -> Option<i32> {
@@ -1683,12 +1727,12 @@ fn run_suspended(
 ) -> Result<std::process::ExitStatus, String> {
     let _ = restore_terminal();
     #[cfg(unix)]
-    term_signal::pause_interrupt();
+    term_signal::suspend();
     let status = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .status();
     #[cfg(unix)]
-    term_signal::resume_interrupt();
+    term_signal::resume();
     let back = enter_tui(mouse_capture).and_then(|()| {
         // Everything on screen is gone: a fresh terminal has no previous
         // frame to diff against, so the next draw repaints every cell.
