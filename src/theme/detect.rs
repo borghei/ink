@@ -132,8 +132,7 @@ fn skip_reason_for(term: &str, wt_session: bool, windows: bool) -> Option<&'stat
 /// time on the rare terminal that answers nothing — but across SSH the round
 /// trip itself can take longer.
 fn query_timeout() -> Duration {
-    let ssh = std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some();
-    if ssh {
+    if crate::platform::is_ssh() {
         Duration::from_millis(400)
     } else {
         Duration::from_millis(100)

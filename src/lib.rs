@@ -11,6 +11,7 @@ pub mod input;
 pub mod layout;
 pub mod net;
 pub mod parser;
+pub mod platform;
 pub mod render;
 pub mod sanitize;
 pub mod search;

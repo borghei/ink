@@ -609,7 +609,7 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # How copied text reaches the clipboard:
 #   auto   - OSC 52 escape (works over SSH) and a native helper, if present
 #   osc52  - escape sequence only
-#   native - pbcopy / wl-copy / xclip / xsel / clip.exe only
+#   native - pbcopy / wl-copy / xclip / xsel / clip.exe / termux-clipboard-set only
 #   off    - copying is disabled
 # clipboard = "auto"
 
