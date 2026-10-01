@@ -16,6 +16,7 @@ mod er;
 mod flowchart;
 mod gantt;
 mod graph;
+mod mindmap;
 mod state;
 mod text;
 
@@ -56,7 +57,15 @@ pub fn render_mermaid_with(
             }
         }
     }
-    lines
+    // The sequence and pie renderers lay out for 56 columns (and the ASCII
+    // note marker is wider than the icon): wrap what does not fit.
+    let bar = if ascii { "|" } else { "│" };
+    fit_lines(
+        lines,
+        margin + width,
+        &format!("{}{bar}    ", " ".repeat(margin)),
+        &theme.colors.table_border,
+    )
 }
 
 /// ASCII stand-ins for every drawing character the diagram renderers emit
@@ -161,6 +170,34 @@ fn split_source(src: &str) -> Source {
     }
 }
 
+/// Diagram types mermaid knows that are not drawn here: shown as source.
+const UNSUPPORTED: &[&str] = &[
+    "journey",
+    "gitGraph",
+    "timeline",
+    "quadrantChart",
+    "sankey-beta",
+    "sankey",
+    "requirementDiagram",
+    "xychart-beta",
+    "xychart",
+    "block-beta",
+    "block",
+    "packet-beta",
+    "packet",
+    "kanban",
+    "architecture-beta",
+    "architecture",
+    "C4Context",
+    "C4Container",
+    "C4Component",
+    "C4Dynamic",
+    "C4Deployment",
+    "zenuml",
+    "radar-beta",
+    "treemap-beta",
+];
+
 fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
     let cleaned = text::clean_source(source);
     let src = split_source(&cleaned);
@@ -174,7 +211,11 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
     let chart_width = width.min(56);
     // The legacy renderers below read the source from its first line.
     let legacy = || {
-        let mut s = format!("{} {}\n", src.keyword, src.header);
+        // `pie title X` carries the title on the first line.
+        let mut s = match src.header.strip_prefix("title ") {
+            Some(t) if src.keyword == "pie" => format!("pie\ntitle {t}\n"),
+            _ => format!("{} {}\n", src.keyword, src.header),
+        };
         for l in &src.body {
             s.push_str(l);
             s.push('\n');
@@ -185,7 +226,7 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
     if let Some((g, title)) = parse_graph(&src) {
         return render_graph(&g, &title, theme, width, margin);
     }
-    match src.keyword.as_str() {
+    let mut lines = match src.keyword.as_str() {
         "sequenceDiagram" => render_sequence(
             &legacy(),
             diagram_color,
@@ -199,19 +240,110 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
         "gantt" => {
             let (title, rows) =
                 gantt::render(src.title.clone(), &src.body, width.saturating_sub(4));
-            let mut lines = framed(&title, &rows, &[], theme, width, margin);
-            lines.push(StyledLine::empty());
-            lines
+            framed(&title, &rows, &[], theme, width, margin)
         }
-        _ => render_unknown(
-            &legacy(),
-            border_color,
-            text_color,
-            diagram_color,
-            &margin_str,
-            chart_width,
-        ),
+        "mindmap" => {
+            let rows = mindmap::render(&src.body, width.saturating_sub(4));
+            let title = src.title.clone().unwrap_or_else(|| "mindmap".to_string());
+            framed_left(&title, &rows, theme, width, margin)
+        }
+        _ => unsupported(&src, theme, width, margin),
+    };
+    if lines.last().is_some_and(|l| !l.spans.is_empty()) {
+        lines.push(StyledLine::empty());
     }
+    lines
+}
+
+/// A diagram type that is not drawn: its source in a titled box.
+fn unsupported(src: &Source, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
+    let inner = width.saturating_sub(4).max(1);
+    let kind = if src.keyword.is_empty() {
+        "diagram".to_string()
+    } else if UNSUPPORTED.contains(&src.keyword.as_str()) {
+        src.keyword.clone()
+    } else {
+        text::truncate(&src.keyword, 24)
+    };
+    let title = format!("mermaid: {kind} (not rendered)");
+    let mut rows: Vec<Vec<(String, Class)>> = Vec::new();
+    let header = format!("{} {}", src.keyword, src.header);
+    for line in std::iter::once(header.trim_end()).chain(src.body.iter().map(|l| l.trim_end())) {
+        // Hard-wrap, keeping indentation (this is code, not prose).
+        let mut piece = String::new();
+        let mut w = 0;
+        for g in unicode_segmentation::UnicodeSegmentation::graphemes(line, true) {
+            let gw = UnicodeWidthStr::width(g);
+            if w + gw > inner && w > 0 {
+                rows.push(vec![(std::mem::take(&mut piece), Class::Plain)]);
+                w = 0;
+            }
+            piece.push_str(g);
+            w += gw;
+        }
+        rows.push(vec![(piece, Class::Plain)]);
+    }
+    while rows
+        .last()
+        .is_some_and(|r| r.iter().all(|(t, _)| t.trim().is_empty()))
+    {
+        rows.pop();
+    }
+    framed_left(&title, &rows, theme, width, margin)
+}
+
+/// Wrap any line wider than `max` columns: the overflow continues on the
+/// next line behind the left border.
+fn fit_lines(lines: Vec<StyledLine>, max: usize, lead: &str, border: &str) -> Vec<StyledLine> {
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        if line.width() <= max {
+            out.push(line);
+            continue;
+        }
+        let lead_w = UnicodeWidthStr::width(lead);
+        let mut cur = StyledLine::new();
+        let mut w = 0;
+        for span in line.spans {
+            let mut piece = String::new();
+            for g in span.text.graphemes(true) {
+                let gw = UnicodeWidthStr::width(g);
+                if w + gw > max {
+                    if !piece.is_empty() {
+                        cur.push(StyledSpan {
+                            text: std::mem::take(&mut piece),
+                            style: span.style.clone(),
+                        });
+                    }
+                    out.push(std::mem::take(&mut cur));
+                    cur.push(StyledSpan {
+                        text: lead.to_string(),
+                        style: SpanStyle {
+                            fg: Some(border.to_string()),
+                            ..Default::default()
+                        },
+                    });
+                    w = lead_w;
+                    if w + gw > max {
+                        // Not even one more grapheme fits behind the border.
+                        w = 0;
+                        cur = StyledLine::new();
+                    }
+                }
+                piece.push_str(g);
+                w += gw;
+            }
+            if !piece.is_empty() {
+                cur.push(StyledSpan {
+                    text: piece,
+                    style: span.style,
+                });
+            }
+        }
+        out.push(cur);
+    }
+    out
 }
 
 /// Parse a node-and-edge diagram into the graph model, with its title.
@@ -374,6 +506,17 @@ fn edge_list(
     framed(title, &out, &g.notes, theme, width, margin)
 }
 
+/// [`framed`] with the rows left-aligned (text, not a drawing).
+fn framed_left(
+    title: &str,
+    rows: &[Vec<(String, Class)>],
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+) -> Vec<StyledLine> {
+    framed_impl(title, rows, &[], theme, width, margin, false)
+}
+
 /// Wrap drawn rows in the diagram frame: a titled top border, `│` sides and
 /// a bottom border, as wide as the content needs (at most `width`). Notes
 /// follow the rows inside the frame.
@@ -384,6 +527,18 @@ fn framed(
     theme: &Theme,
     width: usize,
     margin: usize,
+) -> Vec<StyledLine> {
+    framed_impl(title, rows, notes, theme, width, margin, true)
+}
+
+fn framed_impl(
+    title: &str,
+    rows: &[Vec<(String, Class)>],
+    notes: &[String],
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+    center: bool,
 ) -> Vec<StyledLine> {
     let border = &theme.colors.table_border;
     let margin_str = " ".repeat(margin);
@@ -429,7 +584,11 @@ fn framed(
         line.push(side(" │"));
         lines.push(line);
     };
-    let offset = (inner.saturating_sub(content_w)) / 2;
+    let offset = if center {
+        (inner.saturating_sub(content_w)) / 2
+    } else {
+        0
+    };
     for r in rows {
         let w = row_w(r);
         let mut runs = Vec::new();
@@ -620,7 +779,8 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
     ));
 
     // Render as horizontal bar chart
-    let max_bar = 30usize;
+    // 30 cells at the usual 56-column chart width; less when narrower.
+    let max_bar = 30usize.min(width.saturating_sub(26)).max(1);
     for (i, (label, value)) in slices.iter().enumerate() {
         let pct = if total > 0.0 {
             value / total * 100.0
@@ -665,59 +825,6 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
     }
 
     lines.push(make_footer(border_color, margin, width));
-    lines.push(StyledLine::empty());
-
-    lines
-}
-
-fn render_unknown(
-    source: &str,
-    border_color: &str,
-    text_color: &str,
-    title_color: &str,
-    margin: &str,
-    width: usize,
-) -> Vec<StyledLine> {
-    let mut lines = Vec::new();
-
-    lines.push(make_header(
-        "mermaid diagram",
-        border_color,
-        title_color,
-        margin,
-        width,
-    ));
-
-    for raw_line in source.lines() {
-        let mut line = StyledLine::new();
-        push_margin(&mut line, margin);
-        line.push(StyledSpan {
-            text: "│ ".to_string(),
-            style: SpanStyle {
-                fg: Some(border_color.to_string()),
-                ..Default::default()
-            },
-        });
-        line.push(StyledSpan {
-            text: raw_line.to_string(),
-            style: SpanStyle {
-                fg: Some(text_color.to_string()),
-                ..Default::default()
-            },
-        });
-        lines.push(line);
-    }
-
-    let mut footer = StyledLine::new();
-    push_margin(&mut footer, margin);
-    footer.push(StyledSpan {
-        text: format!("╰{}╯", "─".repeat(55)),
-        style: SpanStyle {
-            fg: Some(border_color.to_string()),
-            ..Default::default()
-        },
-    });
-    lines.push(footer);
     lines.push(StyledLine::empty());
 
     lines

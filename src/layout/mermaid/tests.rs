@@ -389,6 +389,73 @@ fn gantt_bars_on_a_scaled_axis() {
     );
 }
 
+// ── Everything else ──
+
+#[test]
+fn unsupported_types_show_their_source_in_a_titled_box() {
+    expect(
+        "gitGraph\n    commit\n    branch develop",
+        40,
+        r"
+╭─ mermaid: gitGraph (not rendered) ─╮
+│ gitGraph                           │
+│     commit                         │
+│     branch develop                 │
+╰────────────────────────────────────╯",
+    );
+    let out = render("somethingNew\nfoo --> bar", 40);
+    assert!(
+        out.starts_with("╭─ mermaid: somethingNew (not render"),
+        "{out}"
+    );
+}
+
+#[test]
+fn mindmaps_are_trees() {
+    expect(
+        "mindmap\n  root((Plan))\n    Goals\n      Ship\n    Risks",
+        40,
+        r"
+╭─ mindmap ────────╮
+│ Plan             │
+│ ├─ Goals         │
+│ │  └─ Ship       │
+│ └─ Risks         │
+╰──────────────────╯",
+    );
+}
+
+#[test]
+fn sequence_and_pie_wrap_when_narrow_and_keep_their_form_when_not() {
+    let seq = "sequenceDiagram\n    Alice->>John: Hello John, how are you?";
+    expect(
+        seq,
+        60,
+        r"
+╭─ sequence diagram ───────────────────────────────────╮
+│  Alice ──▶ John: Hello John, how are you?
+╰──────────────────────────────────────────────────────╯",
+    );
+    for line in render(seq, 24).lines() {
+        assert!(text::width(line) <= 24, "{line}");
+    }
+    let pie = "pie title Pets\n    \"Dogs\" : 3\n    \"Cats\" : 1";
+    expect(
+        pie,
+        60,
+        r"
+╭─ Pets ───────────────────────────────────────────────╮
+│          Dogs ██████████████████████ 75.0%
+│          Cats ███████ 25.0%
+╰──────────────────────────────────────────────────────╯",
+    );
+}
+
+#[test]
+fn corpus_is_big_enough() {
+    assert!(corpus().len() >= 20, "{} diagrams", corpus().len());
+}
+
 // ── Properties over the corpus ──
 
 const WIDTHS: [usize; 5] = [24, 40, 60, 80, 120];
