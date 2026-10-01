@@ -15,7 +15,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Markdown file path(s) or URL (reads stdin if omitted)
+    /// Markdown file path(s) or URL (reads stdin if omitted or `-`)
     #[arg(value_name = "FILE|URL")]
     pub input: Vec<String>,
 
@@ -31,9 +31,16 @@ pub struct Cli {
     #[arg(short, long)]
     pub slides: bool,
 
-    /// Plain output mode (no TUI, pipe-friendly)
+    /// Plain output mode (no TUI, pipe-friendly); automatic when stdout is
+    /// not a terminal
     #[arg(short, long)]
     pub plain: bool,
+
+    /// When to emit color and hyperlinks in --plain and diff output.
+    /// `auto`: only when stdout is a terminal, honoring NO_COLOR,
+    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t, global = true)]
+    pub color: theme::caps::ColorChoice,
 
     /// Watch file for changes and re-render
     #[arg(long)]
@@ -205,6 +212,11 @@ pub fn run() -> Result<()> {
     }
     input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
 
+    // Escape sequences only when wanted: `--color`, then NO_COLOR, the
+    // force variables, TERM=dumb, and finally whether stdout is a terminal.
+    let stdout_tty = std::io::stdout().is_terminal();
+    let color = theme::caps::color_enabled(cli.color, stdout_tty);
+
     // Handle subcommands
     if let Some(cmd) = &cli.command {
         return match cmd {
@@ -221,7 +233,7 @@ pub fn run() -> Result<()> {
             Commands::Diff { file_a, file_b } => {
                 let source_a = read_file(file_a)?;
                 let source_b = read_file(file_b)?;
-                stats::print_diff(&source_a, &source_b, file_a, file_b);
+                stats::print_diff(&source_a, &source_b, file_a, file_b, color);
                 Ok(())
             }
             Commands::ShellSetup { shell } => {
@@ -292,12 +304,23 @@ pub fn run() -> Result<()> {
     // unknown theme warns here instead of inside the alternate screen.
     let _ = theme::resolve_theme(&theme);
 
+    // `ink -` means stdin: a lone `-` takes the same path as no argument
+    // (but never opens the file browser, even when stdin is a terminal).
+    let stdin_dash = cli.input == ["-"];
+    let inputs = if stdin_dash {
+        Vec::new()
+    } else {
+        cli.input.clone()
+    };
+
     let args = Args {
-        inputs: cli.input.clone(),
+        inputs,
         theme,
         width,
         slides: cli.slides,
-        plain: cli.plain,
+        // The interactive reader needs a terminal: with stdout piped or
+        // redirected (`ink file.md | cat`), render plain output instead.
+        plain: cli.plain || !stdout_tty,
         watch: cli.watch,
         toc,
         images: if cli.no_images {
@@ -330,7 +353,7 @@ pub fn run() -> Result<()> {
 
     // Check if input is a directory or no input with a TTY → launch file browser
     let browse_dir = if args.inputs.is_empty() {
-        if std::io::stdin().is_terminal() {
+        if std::io::stdin().is_terminal() && !stdin_dash {
             Some(std::env::current_dir()?)
         } else {
             None
@@ -370,7 +393,7 @@ pub fn run() -> Result<()> {
             let mut file_args = args.clone();
             file_args.inputs = vec![selected.to_string_lossy().to_string()];
             if file_args.plain {
-                let rendered = render::plain::render_plain(&source, &file_args)?;
+                let rendered = render::plain::render_plain_with_color(&source, &file_args, color)?;
                 write_stdout(&rendered);
                 break;
             }
@@ -392,7 +415,9 @@ pub fn run() -> Result<()> {
         let sources = read_all_inputs(&args)?;
         let mut rendered = String::new();
         for source in &sources {
-            rendered.push_str(&render::plain::render_plain(source, &args)?);
+            rendered.push_str(&render::plain::render_plain_with_color(
+                source, &args, color,
+            )?);
         }
         emit_plain(&rendered, cli.no_pager);
         return Ok(());
@@ -461,21 +486,32 @@ fn write_stdout(s: &str) {
     }
 }
 
-/// Read every input for --plain: all named files/URLs, or stdin when none.
+/// Read every input for --plain: all named files/URLs (`-` is stdin), or
+/// stdin when none.
 fn read_all_inputs(args: &Args) -> Result<Vec<String>> {
     if args.inputs.is_empty() {
         return Ok(vec![read_input(args)?]);
     }
-    args.inputs
-        .iter()
-        .map(|input| {
-            if input.starts_with("http://") || input.starts_with("https://") {
-                crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
-            } else {
-                read_file(input)
-            }
-        })
-        .collect()
+    args.inputs.iter().map(|input| read_source(input)).collect()
+}
+
+/// Read one input: `-` is stdin, `http(s)://` is fetched, anything else is
+/// a file.
+fn read_source(input: &str) -> Result<String> {
+    if input == "-" {
+        read_stdin()
+    } else if input.starts_with("http://") || input.starts_with("https://") {
+        crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
+    } else {
+        read_file(input)
+    }
+}
+
+fn read_stdin() -> Result<String> {
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 /// Read a file as UTF-8, falling back to a lossy decode (with a stderr note)
@@ -682,11 +718,12 @@ alias md="ink"
 # Browse markdown files in current directory
 alias mdb="ink ."
 
-# Use ink for fzf markdown preview
-export FZF_DEFAULT_OPTS='--preview "ink --plain {{}} 2>/dev/null"'
+# Use ink for fzf markdown preview (fzf pipes the preview, so ask for color)
+export FZF_DEFAULT_OPTS='--preview "ink --plain --color=always {{}} 2>/dev/null"'
 
-# Use ink as a git pager for markdown diffs
-# git config --global diff.markdown.textconv "ink --plain""#
+# Render markdown in git diffs (piped output is escape-free by default)
+# git config --global diff.markdown.textconv "ink --plain"
+# echo '*.md diff=markdown' >> ~/.gitattributes"#
             );
         }
         "fish" => {
@@ -711,17 +748,8 @@ alias mdb "ink .""#
 }
 
 fn read_input(args: &Args) -> Result<String> {
-    if args.inputs.is_empty() {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        return Ok(buf);
-    }
-
-    let input = &args.inputs[0];
-    if input.starts_with("http://") || input.starts_with("https://") {
-        crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
-    } else {
-        read_file(input)
+    match args.inputs.first() {
+        None => read_stdin(),
+        Some(input) => read_source(input),
     }
 }

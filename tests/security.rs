@@ -162,15 +162,34 @@ fn diff_strips_escapes_from_document_lines() {
     let b = dir.path().join("b.md");
     std::fs::write(&a, "# plain\n").unwrap();
     std::fs::write(&b, HOSTILE_DOC).unwrap();
-    let out = ink_cmd().arg("diff").arg(&a).arg(&b).output().unwrap();
+    // Piped stdout: no styling, so no ESC may appear at all.
+    let out = ink_cmd()
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("FORCE_COLOR")
+        .arg("diff")
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(
         stdout.contains("body [2J text"),
         "line text kept: {stdout:?}"
     );
+    assert!(!stdout.contains('\x1b'), "ESC leaked: {stdout:?}");
     assert!(!stdout.contains('\x07'), "BEL leaked: {stdout:?}");
-    // Only ink's own SGR styling may remain — no OSC, no injected CSI.
+    // With color forced, only ink's own SGR styling may appear — no OSC, no
+    // injected CSI.
+    let out = ink_cmd()
+        .args(["diff", "--color=always"])
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("\x1b[32m"), "styled: {stdout:?}");
+    assert!(!stdout.contains('\x07'), "BEL leaked: {stdout:?}");
     assert!(!stdout.contains("\x1b]"), "OSC leaked: {stdout:?}");
     assert!(!stdout.contains("\x1b[2J"), "CSI leaked: {stdout:?}");
 }

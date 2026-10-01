@@ -41,7 +41,7 @@ cargo install ink-md
 
 ink README.md            # read a file
 ink .                    # browse markdown files in current directory
-ink --plain file.md      # pipe-friendly ANSI output (pages via $PAGER on a TTY)
+ink --plain file.md      # pipe-friendly output (pages via $PAGER on a TTY; no escapes in a pipe unless --color=always)
 ink --slides deck.md     # presentation mode
 ink --watch draft.md     # auto-reload on changes
 ink --remote-images x.md # allow remote images (off by default)
