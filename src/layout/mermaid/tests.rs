@@ -307,7 +307,7 @@ fn state_diagram_start_end_fork_and_back_edge() {
     );
 }
 
-// ── Class diagrams ──
+// ── Class and ER diagrams ──
 
 #[test]
 fn class_diagram_compartments_and_relationship_glyphs() {
@@ -342,6 +342,30 @@ fn class_diagram_compartments_and_relationship_glyphs() {
 │                                               │
 │ △ inheritance · ◆ composition · ▶ association │
 ╰───────────────────────────────────────────────╯",
+    );
+}
+
+#[test]
+fn er_diagram_attributes_and_cardinalities() {
+    expect(
+        "erDiagram\nCUSTOMER ||--o{ ORDER : places\nCUSTOMER {\n  string name PK\n}",
+        50,
+        r"
+╭─ ER diagram ───────╮
+│ ┌────────────────┐ │
+│ │    CUSTOMER    │ │
+│ ├────────────────┤ │
+│ │ string name PK │ │
+│ └───────┬────────┘ │
+│         │          │
+│         1          │
+│       places       │
+│        0..*        │
+│         │          │
+│     ┌───┴───┐      │
+│     │ ORDER │      │
+│     └───────┘      │
+╰────────────────────╯",
     );
 }
 

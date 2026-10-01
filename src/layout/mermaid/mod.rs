@@ -12,6 +12,7 @@
 mod canvas;
 mod class;
 mod engine;
+mod er;
 mod flowchart;
 mod graph;
 mod state;
@@ -214,6 +215,7 @@ fn parse_graph(src: &Source) -> Option<(Graph, String)> {
         }
         "stateDiagram" | "stateDiagram-v2" => (state::parse(&src.body), "state diagram"),
         "classDiagram" | "classDiagram-v2" => (class::parse(&src.body), "class diagram"),
+        "erDiagram" => (er::parse(&src.body), "ER diagram"),
         _ => return None,
     };
     Some((g, src.title.clone().unwrap_or_else(|| kind.to_string())))
