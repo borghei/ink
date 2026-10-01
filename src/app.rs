@@ -630,6 +630,18 @@ fn run_inner(
             }
         }
 
+        // The sidebar is not drawn (the window shrank, or it was hidden):
+        // a focused TOC would take keys for an invisible cursor and keep its
+        // key reminder in the status bar. Give focus back to the document.
+        {
+            let width = terminal.size()?.width;
+            let toc = &mut tabs[active_tab].toc;
+            if toc.nav.focused && !sidebar_shown(toc.visible, width) {
+                toc.leave();
+                dirty = true;
+            }
+        }
+
         // A copy message is worth two seconds of the status bar, no longer.
         if let Some((_, at)) = flash {
             if at.elapsed() >= Duration::from_secs(2) {
@@ -725,7 +737,7 @@ fn run_inner(
                     tab_info,
                 );
 
-                let (toc_area, doc_area) = if tab.toc.visible && main_area.width > 40 {
+                let (toc_area, doc_area) = if sidebar_shown(tab.toc.visible, main_area.width) {
                     let horizontal = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
@@ -1226,7 +1238,7 @@ fn run_inner(
                     let tab = &mut tabs[active_tab];
                     if tab.toc.headings.is_empty() {
                         flash = Some(("no headings in this document".into(), Instant::now()));
-                    } else if width <= 40 {
+                    } else if !sidebar_shown(true, width) {
                         flash = Some((
                             "window too narrow for the table of contents".into(),
                             Instant::now(),
@@ -2191,22 +2203,29 @@ fn restore_nav_entry(
         .min(tab.ratatui_lines.len().saturating_sub(1));
 }
 
-/// Rebuild one tab for the current width/theme, preserving scroll and TOC
-/// visibility. Only the tab the user is looking at is rebuilt eagerly; the
-/// rest are refreshed lazily the next time they're switched to.
+/// Whether the TOC sidebar is drawn at this terminal width: it must be
+/// open and the window wider than 40 columns. The one rule for the draw,
+/// the layout width, focusing it, and dropping focus on a resize.
+fn sidebar_shown(toc_visible: bool, width: u16) -> bool {
+    toc_visible && width > 40
+}
+
 /// The width the document is actually laid out in: the TOC pane (when open
 /// on a wide-enough terminal, mirroring the draw-time gate) takes its columns
 /// out of the budget. Toggling the TOC previously kept the full-width layout
 /// and truncated every line at draw time.
 fn effective_width(full: u16, toc_visible: bool) -> u16 {
     const TOC_PANE: u16 = 30;
-    if toc_visible && full > 40 {
+    if sidebar_shown(toc_visible, full) {
         full.saturating_sub(TOC_PANE)
     } else {
         full
     }
 }
 
+/// Rebuild one tab for the current width/theme, preserving scroll and TOC
+/// visibility. Only the tab the user is looking at is rebuilt eagerly; the
+/// rest are refreshed lazily the next time they're switched to.
 fn rebuild_tab(
     tab: &mut Tab,
     args: &Args,
