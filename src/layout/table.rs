@@ -509,30 +509,24 @@ fn extract_table_data<'a>(node: &'a AstNode<'a>) -> (Vec<String>, Vec<Vec<String
 }
 
 fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
-    let mut text = String::new();
-    collect_cell_text_inner(node, &mut text);
-    text
-}
-
-fn collect_cell_text_inner<'a>(node: &'a AstNode<'a>, buf: &mut String) {
-    let data = node.data.borrow();
-    match &data.value {
-        NodeValue::Text(t) => buf.push_str(t),
-        NodeValue::Code(c) => {
-            buf.push('`');
-            buf.push_str(&c.literal);
-            buf.push('`');
+    // Iterative pre-order walk: inline nesting can be thousands deep.
+    let mut buf = String::new();
+    for inner in node.descendants() {
+        match &inner.data.borrow().value {
+            NodeValue::Text(t) => buf.push_str(t),
+            NodeValue::Code(c) => {
+                buf.push('`');
+                buf.push_str(&c.literal);
+                buf.push('`');
+            }
+            NodeValue::SoftBreak => buf.push(' '),
+            // A hard break makes the cell multi-line (`wrap_text` splits on it).
+            NodeValue::LineBreak => buf.push('\n'),
+            NodeValue::HtmlInline(html) if super::html::is_br_tag(html) => buf.push('\n'),
+            _ => {}
         }
-        NodeValue::SoftBreak => buf.push(' '),
-        // A hard break makes the cell multi-line (`wrap_text` splits on it).
-        NodeValue::LineBreak => buf.push('\n'),
-        NodeValue::HtmlInline(html) if super::html::is_br_tag(html) => buf.push('\n'),
-        _ => {}
     }
-    drop(data);
-    for child in node.children() {
-        collect_cell_text_inner(child, buf);
-    }
+    buf
 }
 
 #[cfg(test)]

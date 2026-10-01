@@ -162,6 +162,7 @@ pub fn layout_document<'a>(
         width: width as usize,
         indent: 0,
         list_depth: 0,
+        block_depth: 0,
         spacing,
         margin: center_margin,
         syntax_set: crate::highlight::syntax_set(),
@@ -207,6 +208,9 @@ struct LayoutContext<'a> {
     width: usize,
     indent: usize,
     list_depth: usize,
+    /// How many blockquotes/lists enclose this walk. Layout recurses once per
+    /// level, so it is capped at `MAX_BLOCK_DEPTH` (see `layout_flattened`).
+    block_depth: usize,
     spacing: Spacing,
     margin: usize,
     syntax_set: &'a SyntaxSet,
@@ -980,12 +984,44 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
     add_spacing(ctx, lines);
 }
 
+/// Deepest blockquote/list nesting that gets its own bar or indent. Layout
+/// recurses once per level, and a 20 KB file of `>` is 20000 levels — enough
+/// to overflow the stack. Content nested deeper is still shown, flattened at
+/// this depth.
+const MAX_BLOCK_DEPTH: usize = 32;
+
+/// Lay out a container's blocks without nesting any further: walks the
+/// subtree with an explicit stack, descends through blockquotes and lists
+/// (dropping their bars and markers) and lays out every other block as is.
+fn layout_flattened<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
+    let mut stack: Vec<&'a AstNode<'a>> = node.reverse_children().collect();
+    while let Some(child) = stack.pop() {
+        let is_container = matches!(
+            child.data.borrow().value,
+            NodeValue::BlockQuote
+                | NodeValue::List(_)
+                | NodeValue::Item(_)
+                | NodeValue::TaskItem(_)
+                | NodeValue::FootnoteDefinition(_)
+        );
+        if is_container {
+            stack.extend(child.reverse_children());
+        } else {
+            layout_node(child, ctx, lines);
+        }
+    }
+}
+
 fn layout_blockquote<'a>(
     node: &'a AstNode<'a>,
     ctx: &LayoutContext,
     lines: &mut Vec<StyledLine>,
     depth: usize,
 ) {
+    if ctx.block_depth >= MAX_BLOCK_DEPTH {
+        layout_flattened(node, ctx, lines);
+        return;
+    }
     // Check first child for admonition pattern [!TYPE]
     let admonition = detect_admonition(node);
 
@@ -1045,6 +1081,7 @@ fn layout_blockquote<'a>(
         width: ctx.width.saturating_sub(4),
         indent: 0,
         list_depth: ctx.list_depth,
+        block_depth: ctx.block_depth + 1,
         spacing: ctx.spacing,
         margin: 0, // margin handled by parent
         syntax_set: ctx.syntax_set,
@@ -1148,11 +1185,17 @@ fn layout_list<'a>(
     ctx: &LayoutContext,
     lines: &mut Vec<StyledLine>,
 ) {
+    if ctx.block_depth >= MAX_BLOCK_DEPTH {
+        layout_flattened(node, ctx, lines);
+        add_spacing(ctx, lines);
+        return;
+    }
     let inner_ctx = LayoutContext {
         theme: ctx.theme,
         width: ctx.width.saturating_sub(4),
         indent: ctx.indent + 4,
         list_depth: ctx.list_depth + 1,
+        block_depth: ctx.block_depth + 1,
         spacing: ctx.spacing,
         margin: 0,
         syntax_set: ctx.syntax_set,
@@ -1282,16 +1325,38 @@ fn layout_hr(ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
 
 fn collect_inline_spans<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext) -> Vec<StyledSpan> {
     let mut spans = Vec::new();
-    collect_inlines(node, ctx, &mut spans, &SpanStyle::default());
+    collect_inlines(node, ctx, &mut spans, &SpanStyle::default(), 0);
     spans
 }
+
+/// Deepest inline nesting (emphasis in emphasis in ...) styled one level at
+/// a time; past it the text is collected flat, so a line of 20000 `*` cannot
+/// recurse the layout off the end of the stack.
+const MAX_INLINE_DEPTH: usize = 64;
 
 fn collect_inlines<'a>(
     node: &'a AstNode<'a>,
     ctx: &LayoutContext,
     spans: &mut Vec<StyledSpan>,
     outer_style: &SpanStyle,
+    depth: usize,
 ) {
+    if depth >= MAX_INLINE_DEPTH {
+        for inner in node.descendants().skip(1) {
+            let text = match &inner.data.borrow().value {
+                NodeValue::Text(t) => t.clone(),
+                NodeValue::Code(c) => c.literal.clone(),
+                NodeValue::SoftBreak => " ".to_string(),
+                NodeValue::LineBreak => "\n".to_string(),
+                _ => continue,
+            };
+            spans.push(StyledSpan {
+                text,
+                style: outer_style.clone(),
+            });
+        }
+        return;
+    }
     // Inline HTML arrives one tag per node (`<kbd>`, text, `</kbd>`), so the
     // tags open among these siblings style the siblings that follow them.
     let mut html_styles = html::HtmlStyles::default();
@@ -1338,7 +1403,7 @@ fn collect_inlines<'a>(
                     ..parent_style.clone()
                 };
                 drop(data);
-                collect_inlines(child, ctx, spans, &style);
+                collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
             NodeValue::Strong => {
@@ -1348,7 +1413,7 @@ fn collect_inlines<'a>(
                     ..parent_style.clone()
                 };
                 drop(data);
-                collect_inlines(child, ctx, spans, &style);
+                collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
             NodeValue::Strikethrough => {
@@ -1358,7 +1423,7 @@ fn collect_inlines<'a>(
                     ..parent_style.clone()
                 };
                 drop(data);
-                collect_inlines(child, ctx, spans, &style);
+                collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
             NodeValue::Link(link) => {
@@ -1370,7 +1435,7 @@ fn collect_inlines<'a>(
                     ..parent_style.clone()
                 };
                 drop(data);
-                collect_inlines(child, ctx, spans, &style);
+                collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
             NodeValue::Image(img) => {
@@ -1420,7 +1485,7 @@ fn collect_inlines<'a>(
             }
             _ => {
                 drop(data);
-                collect_inlines(child, ctx, spans, parent_style);
+                collect_inlines(child, ctx, spans, parent_style, depth + 1);
                 continue;
             }
         }
@@ -1486,15 +1551,12 @@ fn split_text_with_urls(
 }
 
 fn collect_child_text<'a>(node: &'a AstNode<'a>) -> String {
+    // Iterative pre-order walk: inline nesting can be thousands deep.
     let mut text = String::new();
-    for child in node.children() {
-        let data = child.data.borrow();
-        if let NodeValue::Text(ref t) = data.value {
+    for inner in node.descendants().skip(1) {
+        if let NodeValue::Text(ref t) = inner.data.borrow().value {
             text.push_str(t);
         }
-        drop(data);
-        let child_text = collect_child_text(child);
-        text.push_str(&child_text);
     }
     text
 }
@@ -2274,5 +2336,77 @@ mod html_rendering {
         let result = layout_src("<pre>\n  indented\n    more\n</pre>\n", 60, ImageMode::Off);
         assert_eq!(result.code_blocks.len(), 1);
         assert_eq!(result.code_blocks[0].source, "  indented\n    more");
+    }
+}
+
+/// A 20 KB file of `>` is 20000 nested blockquotes; layout used to recurse
+/// once per level and abort with a stack overflow. Nesting is now capped at
+/// `MAX_BLOCK_DEPTH` and deeper content is flattened, not dropped.
+#[cfg(test)]
+mod deep_nesting {
+    use super::*;
+    use comrak::{parse_document, Arena};
+
+    fn layout_on_small_stack(src: String) -> Vec<String> {
+        // 1 MB: well under the 2 MB default test-thread stack and the 8 MB
+        // main-thread stack, so a per-level recursion cannot hide here.
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(move || {
+                let arena = Arena::new();
+                let root = parse_document(&arena, &src, &crate::parser::options_for(&src));
+                let theme = crate::theme::resolve_theme("dark");
+                let result = layout_document(
+                    root,
+                    &theme,
+                    60,
+                    Spacing::Normal,
+                    0,
+                    None,
+                    ImageMode::Off,
+                    None,
+                );
+                line_strings(&result.lines)
+            })
+            .unwrap()
+            .join()
+            .expect("layout overflowed or panicked")
+    }
+
+    #[test]
+    fn twenty_thousand_nested_blockquotes() {
+        for src in [
+            format!("{} deep\n", ">".repeat(20000)),
+            format!("{}deep\n", "> ".repeat(20000)),
+        ] {
+            let lines = layout_on_small_stack(src);
+            let content = lines.iter().find(|l| l.contains("deep")).unwrap();
+            // Bars stop at the cap; the text is still there.
+            assert_eq!(content.matches('│').count(), MAX_BLOCK_DEPTH);
+        }
+    }
+
+    #[test]
+    fn five_thousand_nested_lists() {
+        let lines = layout_on_small_stack(format!("{}deep\n", "- ".repeat(5000)));
+        assert!(lines.iter().any(|l| l.contains("deep")), "content dropped");
+    }
+
+    #[test]
+    fn twenty_thousand_nested_emphasis_markers() {
+        let src = format!("{}deep{}\n", "*".repeat(20000), "*".repeat(20000));
+        let lines = layout_on_small_stack(src);
+        assert!(lines.iter().any(|l| l.contains("deep")), "content dropped");
+    }
+
+    #[test]
+    fn nesting_below_the_cap_is_unchanged() {
+        let lines = render_text_lines("> a\n> > b\n> > > c\n", 60);
+        assert!(lines.iter().any(|l| l.trim() == "│ a"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.trim() == "│   │ b"), "{lines:#?}");
+        assert!(
+            lines.iter().any(|l| l.trim() == "│   │   │ c"),
+            "{lines:#?}"
+        );
     }
 }

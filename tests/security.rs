@@ -159,3 +159,21 @@ fn raw_html_cannot_smuggle_escapes_or_unsafe_links() {
     assert!(!out.contains("ok.example"));
     assert!(!out.contains("inline.example"));
 }
+
+#[test]
+fn absurdly_deep_nesting_cannot_crash_the_renderer() {
+    // 50 KB of `>` is 50000 nested blockquotes. Layout caps its own
+    // recursion; comrak's footnote pass recurses per level too, so the parse
+    // turns footnotes off for such input (`parser::options_for`). Run the
+    // whole pipeline on a 1 MB stack so a per-level recursion cannot hide.
+    let out = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let source = format!("{} deep\n", ">".repeat(50_000));
+            render_plain(&source, &args()).unwrap()
+        })
+        .unwrap()
+        .join()
+        .expect("renderer overflowed its stack");
+    assert!(out.contains("deep"));
+}

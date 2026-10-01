@@ -18,7 +18,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let content = crate::wikilink::process_wikilinks(&content);
 
     let arena = Arena::new();
-    let options = parser::options();
+    let options = parser::options_for(&content);
     let root = parse_document(&arena, &content, &options);
     let t = theme::resolve_theme(&args.theme);
     // `width` is the total output width; reserve the left margin from it so the
