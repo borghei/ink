@@ -49,6 +49,12 @@ Water is H~2~O, e = mc^2^, ~~struck~~ and ||a spoiler||.
 Term
 : Its definition.
 
+Math $x^2 + \alpha$ costs $5 and $10.
+
+$$
+\left( \frac{a}{b} \right)\,dx
+$$
+
 ---
 
 The end.

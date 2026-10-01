@@ -1,5 +1,6 @@
 mod frontmatter;
 pub mod html;
+mod math;
 pub mod mermaid;
 mod scripts;
 pub mod table;
@@ -563,10 +564,77 @@ fn layout_paragraph<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut 
         }
     }
 
+    // `$$…$$` gets lines of its own: the paragraph is split around it.
+    let is_display =
+        |n: &'a AstNode<'a>| matches!(&n.data.borrow().value, NodeValue::Math(m) if m.display_math);
+    if node.children().any(is_display) {
+        let mut run: Vec<&'a AstNode<'a>> = Vec::new();
+        let flush = |run: &mut Vec<&'a AstNode<'a>>, lines: &mut Vec<StyledLine>| {
+            let mut spans = Vec::new();
+            collect_inline_seq(run.drain(..), ctx, &mut spans, &SpanStyle::default(), 0);
+            // The line breaks around the display block are not text.
+            while spans.first().is_some_and(|s| s.text.trim().is_empty()) {
+                spans.remove(0);
+            }
+            while spans.last().is_some_and(|s| s.text.trim().is_empty()) {
+                spans.pop();
+            }
+            if let Some(first) = spans.first_mut() {
+                first.text = first.text.trim_start().to_string();
+            }
+            if let Some(last) = spans.last_mut() {
+                last.text = last.text.trim_end().to_string();
+            }
+            if !spans.is_empty() {
+                lines.extend(wrap_spans(spans, ctx.width, ctx.indent, ctx.margin));
+            }
+        };
+        for child in node.children() {
+            if is_display(child) {
+                flush(&mut run, lines);
+                if let NodeValue::Math(ref m) = child.data.borrow().value {
+                    layout_display_math(&m.literal, ctx, lines);
+                }
+            } else {
+                run.push(child);
+            }
+        }
+        flush(&mut run, lines);
+        add_spacing(ctx, lines);
+        return;
+    }
+
     let spans = collect_inline_spans(node, ctx);
     let wrapped = wrap_spans(spans, ctx.width, ctx.indent, ctx.margin);
     lines.extend(wrapped);
     add_spacing(ctx, lines);
+}
+
+/// Display math (`$$…$$`, ```` ```math ````): the Unicode approximation on
+/// lines of its own, indented, in the code colour. Lines too wide for the
+/// view are broken, never clipped.
+fn layout_display_math(latex: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
+    const INDENT: usize = 4;
+    let style = SpanStyle {
+        fg: Some(ctx.theme.colors.code_fg.clone()),
+        ..Default::default()
+    };
+    let room = ctx.width.saturating_sub(INDENT).max(1);
+    for row in math::render_display(latex, crate::glyphs::current().ascii) {
+        for part in split_by_width(&row, room) {
+            let mut line = StyledLine::new();
+            ctx.add_margin(&mut line);
+            line.push(StyledSpan {
+                text: " ".repeat(INDENT),
+                style: SpanStyle::default(),
+            });
+            line.push(StyledSpan {
+                text: part,
+                style: style.clone(),
+            });
+            lines.push(line);
+        }
+    }
 }
 
 /// An image a paragraph can render as a block: source, alt text, and the
@@ -925,6 +993,22 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
     if lang == crate::parser::frontmatter::FENCE_INFO {
         let format = info.split_whitespace().nth(1).unwrap_or("");
         frontmatter::layout_frontmatter(format, literal, ctx, lines);
+        return;
+    }
+
+    // ```math: display math. `c` still copies the LaTeX source.
+    if lang == "math" {
+        let start_line = lines.len();
+        layout_display_math(literal, ctx, lines);
+        if ctx.record_headings && lines.len() > start_line {
+            ctx.code_blocks.borrow_mut().push(CodeBlockSpec {
+                line_index: start_line,
+                rows: lines.len() - start_line,
+                lang: "math".to_string(),
+                source: literal.trim_end_matches('\n').to_string(),
+            });
+        }
+        add_spacing(ctx, lines);
         return;
     }
 
@@ -1835,10 +1919,10 @@ fn collect_inline_seq<'a>(
                 });
             }
             NodeValue::Math(ref math) => {
-                // No LaTeX rendering in a terminal; show the literal in code
-                // style so `$E=mc^2$` reads as math rather than vanishing.
+                // LaTeX approximated in Unicode (see `math`), in code colour.
+                // Display math met here shares a line with text: one line.
                 spans.push(StyledSpan {
-                    text: math.literal.clone(),
+                    text: math::render_inline(&math.literal, crate::glyphs::current().ascii),
                     style: SpanStyle {
                         fg: Some(ctx.theme.colors.code_fg.clone()),
                         italic: true,

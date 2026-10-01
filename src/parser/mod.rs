@@ -39,7 +39,10 @@ pub fn options() -> Options<'static> {
     opts.extension.tasklist = true;
     opts.extension.footnotes = true;
     opts.extension.header_ids = Some(String::new());
+    // `$…$`, `$$…$$` (GitHub's rules: `$5 and $10` is not math), and
+    // `` $`…`$ `` / ```` ```math ````.
     opts.extension.math_dollars = true;
+    opts.extension.math_code = true;
     // `^sup^`, `~sub~` (`~~strike~~` stays strikethrough), `||spoiler||`,
     // and definition lists (`Term` then `: definition`). Not `underline`:
     // it turns `__bold__` into underlined text.

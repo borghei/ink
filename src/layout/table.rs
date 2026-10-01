@@ -585,6 +585,10 @@ fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
                 skip_until = Some(inner);
             }
             NodeValue::SpoileredText => buf.push_str("||"),
+            NodeValue::Math(m) => buf.push_str(&super::math::render_inline(
+                &m.literal,
+                crate::glyphs::current().ascii,
+            )),
             NodeValue::Text(t) => buf.push_str(t),
             NodeValue::Code(c) => {
                 buf.push('`');

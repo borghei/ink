@@ -258,3 +258,15 @@ fn extension_text_cannot_inject_escapes() {
     assert_only_ink_escapes(&out);
     assert!(!out.contains("\x1b[2J") && !out.contains("\x1b]52") && !out.contains("\x1b]0"));
 }
+
+/// Math is rendered from document text: `\text{…}`, unknown commands and
+/// environment cells all pass through the sanitizer.
+#[test]
+fn math_text_cannot_inject_escapes() {
+    let source = "Inline $\\text{\x1b[2J} \\foo{\x1b]0;t\x07} x^{\x1b[31m}$.\n\n\
+        $$\n\\begin{pmatrix} \x1b[2J & b \\\\ c & \x1b]52;c;AA==\x07 \\end{pmatrix}\n$$\n\n\
+        ```math\n\\text{\x1b[2J}\n```\n\n| m |\n|---|\n| $\\text{\x1b[2J}$ |\n";
+    let out = render_plain(source, &args()).unwrap();
+    assert_only_ink_escapes(&out);
+    assert!(!out.contains("\x1b[2J") && !out.contains("\x1b]0") && !out.contains("\x1b]52"));
+}

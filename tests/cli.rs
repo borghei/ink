@@ -583,9 +583,10 @@ fn plain_keeps_256_colours_on_xterm_256color() {
 /// nested lists, an ordered list, a task list, a table that wraps, a fenced
 /// code block, nested blockquotes, admonitions and callouts with titles,
 /// super/subscripts, a spoiler, a definition list, a rule and (shown with
-/// `--frontmatter`) YAML frontmatter. In ASCII mode
+/// `--frontmatter`) YAML frontmatter, and inline and display math. In
+/// ASCII mode
 /// every byte ink prints for it must be 7-bit. Nothing is exempt for this
-/// fixture; images (named, not drawn) and math are not covered by it.
+/// fixture; images (named, not drawn) are not covered by it.
 #[test]
 fn ascii_mode_plain_output_is_seven_bit() {
     let source = std::fs::read("tests/fixtures/ascii.md").unwrap();
@@ -628,6 +629,9 @@ fn ascii_mode_extension_fallbacks() {
         "| Callout body.",
         "Water is H_(2)O, e = mc^(2), struck and ||a spoiler||.",
         "  Term\n    > Its definition.",
+        // Math: the cleaned LaTeX source, never Unicode.
+        "Math x^2 + \\alpha costs $5 and $10.",
+        "      ( \\frac{a}{b} ) dx",
     ] {
         assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }

@@ -349,3 +349,80 @@ fn frontmatter_box_wraps_long_values_within_the_width() {
     }
     assert!(out.lines().filter(|l| l.contains('│')).count() > 1, "{out}");
 }
+
+// ── Math ──
+
+#[test]
+fn lone_dollar_signs_are_not_math() {
+    let out = render("It costs $5 and $10, or $ 20.\n");
+    assert!(out.contains("It costs $5 and $10, or $ 20."), "{out}");
+}
+
+#[test]
+fn inline_math_renders_in_unicode_and_code_colour() {
+    let out = render("Energy $E=mc^2$ with $\\alpha_i \\leq \\beta$ and $`x^2`$.\n");
+    assert!(out.contains("Energy E=mc² with αᵢ ≤ β and x²."), "{out}");
+    let lines = layout("Energy $E=mc^2$ here.\n");
+    let theme = ink_md::theme::resolve_theme("dark");
+    assert_eq!(
+        find_span(&lines, "E=mc²").style.fg.as_deref(),
+        Some(theme.colors.code_fg.as_str())
+    );
+}
+
+#[test]
+fn display_math_gets_its_own_indented_lines() {
+    let out =
+        render("The formula\n$$\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\nsolves it.\n");
+    assert!(
+        out.contains("  The formula\n      x = (-b ± √(b² - 4ac))/2a\n  solves it.\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn display_matrix_and_math_fence() {
+    let out = render("$$\nA = \\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}\n$$\n");
+    assert!(
+        out.contains("      A = ⎛ a  b ⎞\n          ⎝ c  d ⎠\n"),
+        "{out}"
+    );
+    let out = render("```math\n\\sum_{i=1}^{n} i\n```\n");
+    assert!(out.contains("      ∑ᵢ₌₁ⁿ i\n"), "{out}");
+    assert!(!out.contains("─ math ─"), "not a code box: {out}");
+}
+
+#[test]
+fn math_fence_copies_its_latex_source() {
+    let src = "```math\n\\frac{a}{b}\n```\n";
+    let arena = comrak::Arena::new();
+    let root = comrak::parse_document(&arena, src, &ink_md::parser::options_for(src));
+    let result = ink_md::layout::layout_document(
+        root,
+        &ink_md::theme::resolve_theme("dark"),
+        80,
+        Spacing::Normal,
+        0,
+        None,
+        ink_md::image::ImageMode::Off,
+        None,
+    );
+    assert_eq!(result.code_blocks.len(), 1);
+    assert_eq!(result.code_blocks[0].lang, "math");
+    assert_eq!(result.code_blocks[0].source, "\\frac{a}{b}");
+}
+
+#[test]
+fn math_in_table_cells() {
+    let out = render("| f | v |\n|---|--:|\n| $\\sqrt{2}$ | $\\approx 1.41$ |\n");
+    assert_eq!(table_rows(&out)[1], "│ √2 │ ≈ 1.41 │");
+}
+
+#[test]
+fn display_math_wider_than_the_view_is_broken_not_clipped() {
+    let long = "x + ".repeat(30);
+    let out = render_with(&format!("$$\n{long}y\n$$\n"), |a| a.width = Some(40));
+    for line in out.lines() {
+        assert!(line.width() <= 40, "{line:?}");
+    }
+}
