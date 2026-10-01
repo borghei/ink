@@ -548,43 +548,11 @@ fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
     use comrak::arena_tree::NodeEdge;
     // Iterative pre-order walk: inline nesting can be thousands deep.
     let mut buf = String::new();
-    // A raised/lowered run is converted as a whole; its subtree is skipped.
-    let mut skip_until: Option<&'a AstNode<'a>> = None;
     for edge in node.traverse() {
-        let inner = match edge {
-            NodeEdge::Start(n) => n,
-            NodeEdge::End(n) => {
-                if skip_until.is_some_and(|s| std::ptr::eq(s, n)) {
-                    skip_until = None;
-                } else if skip_until.is_none()
-                    && matches!(n.data.borrow().value, NodeValue::SpoileredText)
-                {
-                    buf.push_str("||");
-                }
-                continue;
-            }
-        };
-        if skip_until.is_some() {
+        let NodeEdge::Start(inner) = edge else {
             continue;
-        }
+        };
         match &inner.data.borrow().value {
-            NodeValue::Superscript | NodeValue::Subscript => {
-                let sup = matches!(inner.data.borrow().value, NodeValue::Superscript);
-                let mut text = String::new();
-                for d in inner.descendants() {
-                    if let NodeValue::Text(t) = &d.data.borrow().value {
-                        text.push_str(t);
-                    }
-                }
-                let ascii = crate::glyphs::current().ascii;
-                buf.push_str(&if sup {
-                    super::scripts::superscript(&text, ascii, false)
-                } else {
-                    super::scripts::subscript(&text, ascii, false)
-                });
-                skip_until = Some(inner);
-            }
-            NodeValue::SpoileredText => buf.push_str("||"),
             NodeValue::Math(m) => buf.push_str(&super::math::render_inline(
                 &m.literal,
                 crate::glyphs::current().ascii,

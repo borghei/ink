@@ -1824,55 +1824,6 @@ fn collect_inline_seq<'a>(
                 collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
-            NodeValue::Superscript | NodeValue::Subscript => {
-                let sup = matches!(data.value, NodeValue::Superscript);
-                drop(data);
-                // Raised/lowered text is one run of characters: inner markup
-                // is flattened (Unicode forms have no bold or italic).
-                let text = collect_child_text(child);
-                let ascii = crate::glyphs::current().ascii;
-                spans.push(StyledSpan {
-                    text: if sup {
-                        scripts::superscript(&text, ascii, false)
-                    } else {
-                        scripts::subscript(&text, ascii, false)
-                    },
-                    style: parent_style.clone(),
-                });
-                continue;
-            }
-            NodeValue::SpoileredText => {
-                drop(data);
-                // `||text||`: the bars stay visible (dim) so the spoiler is
-                // marked even without colour; the text itself is drawn in its
-                // background colour, a solid bar until selected or copied.
-                let bars = SpanStyle {
-                    dim: true,
-                    ..parent_style.clone()
-                };
-                let hidden = SpanStyle {
-                    fg: Some(ctx.theme.colors.code_bg.clone()),
-                    bg: Some(ctx.theme.colors.code_bg.clone()),
-                    dim: true,
-                    ..parent_style.clone()
-                };
-                spans.push(StyledSpan {
-                    text: "||".to_string(),
-                    style: bars.clone(),
-                });
-                let first = spans.len();
-                collect_inlines(child, ctx, spans, &hidden, depth + 1);
-                // Inner links/code set their own colours: conceal them too.
-                for span in &mut spans[first..] {
-                    span.style.fg = hidden.fg.clone();
-                    span.style.bg = hidden.bg.clone();
-                }
-                spans.push(StyledSpan {
-                    text: "||".to_string(),
-                    style: bars,
-                });
-                continue;
-            }
             NodeValue::Link(link) => {
                 let url = link.url.clone();
                 let style = SpanStyle {

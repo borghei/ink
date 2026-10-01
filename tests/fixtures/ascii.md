@@ -44,7 +44,7 @@ fn main() {
 > [!info]- An Obsidian callout
 > Callout body.
 
-Water is H<sub>2</sub>O, e = mc^2^, ~~struck~~, ~struck~ and ||a spoiler||.
+Water is H<sub>2</sub>O, e = mc<sup>2</sup>, ~~struck~~, ~struck~ and 2^10 (a||b).
 
 Term
 : Its definition.

@@ -145,16 +145,38 @@ fn find_span<'l>(
 }
 
 #[test]
-fn superscript_and_html_subscript_use_unicode_forms() {
-    let out = render("H<sub>2</sub>O, e = mc^2^, x^n+1^ and a<sub>ij</sub>.\n");
+fn html_superscript_and_subscript_use_unicode_forms() {
+    let out = render("H<sub>2</sub>O, e = mc<sup>2</sup>, x<sup>n+1</sup> and a<sub>ij</sub>.\n");
     assert!(out.contains("H₂O, e = mc², xⁿ⁺¹ and aᵢⱼ."), "{out}");
 }
 
 #[test]
-fn superscript_without_a_unicode_form_falls_back() {
+fn html_superscript_without_a_unicode_form_falls_back() {
     // No superscript `q`; no subscript `b`: the whole run falls back.
-    let out = render("x^q^ and y<sub>ab</sub>\n");
+    let out = render("x<sup>q</sup> and y<sub>ab</sub>\n");
     assert!(out.contains("x^(q) and y_(ab)"), "{out}");
+}
+
+// Regression: the `superscript` and `spoiler` extensions paired carets and
+// double bars in ordinary prose (`2^(10 and 3)5`, a hidden `b) or (c`).
+// Neither syntax is GitHub markdown; both are off and prose is verbatim.
+#[test]
+fn carets_and_double_bars_in_prose_render_verbatim() {
+    for src in [
+        "Compute 2^10 and 3^5 here. Also x^2 + y^2 = z^2.",
+        "if (a||b) or (c||d) then",
+        "Not syntax: ^x^ and ||x||.",
+    ] {
+        let out = render(&format!("{src}\n"));
+        assert!(out.contains(src), "{src:?} became:\n{out}");
+        let lines = layout(&format!("{src}\n"));
+        for span in lines.iter().flat_map(|l| &l.spans) {
+            assert!(
+                span.style.fg.is_none() || span.style.fg != span.style.bg,
+                "concealed span {span:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -174,18 +196,6 @@ fn double_underscore_stays_bold() {
     let lines = layout("__bold__ text\n");
     let span = find_span(&lines, "bold");
     assert!(span.style.bold && !span.style.underline, "{span:?}");
-}
-
-#[test]
-fn spoiler_text_is_concealed_between_visible_bars() {
-    let out = render("Vader is ||his father||.\n");
-    assert!(out.contains("Vader is ||his father||."), "{out}");
-    let lines = layout("Vader is ||his *father*||.\n");
-    for word in ["his ", "father"] {
-        let span = find_span(&lines, word);
-        assert!(span.style.fg.is_some() && span.style.fg == span.style.bg);
-    }
-    assert!(find_span(&lines, "||").style.dim);
 }
 
 #[test]
@@ -251,10 +261,10 @@ fn bracketed_text_that_is_not_a_type_stays_a_quote() {
 }
 
 #[test]
-fn table_cells_render_scripts_and_spoilers() {
-    let out = render("| a | b |\n|---|---|\n| x^2^ | ||s|| |\n");
+fn table_cells_keep_carets_verbatim() {
+    let out = render("| a | b |\n|---|---|\n| 2^10 | x^2^ |\n");
     let rows = table_rows(&out);
-    assert_eq!(rows[1], "│ x² │ ||s|| │");
+    assert_eq!(rows[1], "│ 2^10 │ x^2^ │");
 }
 
 // ── Frontmatter ──

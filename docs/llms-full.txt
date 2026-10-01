@@ -17,7 +17,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Ordered and unordered lists with nesting
 - Task lists with checkbox rendering
 - Footnotes
-- Superscript ^x^ and <sup>x</sup>, subscript <sub>x</sub> (Unicode forms, ^(x)/_(x) fallback); ~x~ and ~~x~~ are strikethrough as on GitHub; ||spoilers||, definition lists (Term / : definition)
+- Superscript <sup>x</sup> and subscript <sub>x</sub> (Unicode forms, ^(x)/_(x) fallback); ^x^ and ||x|| are not syntax (carets and double bars in prose are shown as written); ~x~ and ~~x~~ are strikethrough as on GitHub; definition lists (Term / : definition)
 - Horizontal rules
 - Inline/block math ($...$, $$...$$, ```math) rendered as Unicode text: Greek letters, operators, \mathbb/\mathcal letters, super/subscripts, \frac as a/b, \sqrt, matrix/cases/aligned environments on several lines; unknown commands kept as written; ASCII mode shows the LaTeX source. A lone $ in prose stays a dollar sign. :emoji: shortcodes resolved to glyphs
 - HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped, <sub>/<sup> as Unicode sub/superscripts

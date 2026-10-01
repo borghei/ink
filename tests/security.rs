@@ -261,9 +261,9 @@ fn diff_strips_escapes_from_document_lines() {
     assert!(!stdout.contains("\x1b[2J"), "CSI leaked: {stdout:?}");
 }
 
-/// Text carried by the markdown extensions (callout titles, spoilers,
-/// super/subscripts, definition terms, aligned table cells) goes through the
-/// same sanitizer as everything else.
+/// Text carried by the markdown extensions (callout titles, definition
+/// terms, aligned table cells) and by caret/bar runs shown verbatim goes
+/// through the same sanitizer as everything else.
 #[test]
 fn extension_text_cannot_inject_escapes() {
     let source = "> [!NOTE] title \x1b]52;c;SGVsbG8=\x07 \x1b[2J\n> body\n\n\
