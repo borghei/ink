@@ -367,6 +367,23 @@ fn strip_leading_osc_reply(events: Vec<Event>) -> Vec<Event> {
     }
 }
 
+/// The next raw event, for screens that read events themselves (the file
+/// browser): events held back by [`discard_late_reply`] first, then the
+/// terminal, waiting up to `timeout`. Key releases are dropped, as in
+/// [`poll_action`].
+pub fn next_event(timeout: std::time::Duration) -> std::io::Result<Option<Event>> {
+    let queued = PENDING.lock().ok().and_then(|mut p| p.pop_front());
+    let event = match queued {
+        Some(e) => e,
+        None if event::poll(timeout)? => event::read()?,
+        None => return Ok(None),
+    };
+    match &event {
+        Event::Key(key) if !is_actionable_key(key) => Ok(None),
+        _ => Ok(Some(event)),
+    }
+}
+
 pub fn poll_action(timeout: std::time::Duration, mode: InputMode) -> Option<Action> {
     let queued = PENDING.lock().ok().and_then(|mut p| p.pop_front());
     if let Some(event) = queued {
