@@ -48,7 +48,6 @@ impl Dir {
 }
 
 /// How a node is drawn.
-#[allow(dead_code)] // glyph shapes arrive with state diagrams
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     Rect,

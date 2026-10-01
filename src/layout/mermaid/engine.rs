@@ -1053,13 +1053,20 @@ pub fn layout(g: &Graph, p: &Params, avail: usize) -> Result<Drawn, Fail> {
         }
         out
     };
+    // A row at the top of the gap for markers at upper nodes, and to show
+    // the line leaving a bare glyph (`●`) before it turns.
     let has_upper_marker = |gi: usize| {
         gap_segs[gi].iter().any(|&s| {
             let sg = &segs[s];
-            matches!(lnodes[sg.up].kind, Kind::Real(_)) && {
-                let e = &g.edges[sg.edge];
-                end_marker(e.start, e.end, info(sg.edge).rev, true) != Marker::None
-            }
+            let Kind::Real(v) = lnodes[sg.up].kind else {
+                return false;
+            };
+            let e = &g.edges[sg.edge];
+            end_marker(e.start, e.end, info(sg.edge).rev, true) != Marker::None
+                || (g.nodes[v].shape.is_glyph() && {
+                    let (a, b) = seg_cols(s);
+                    a != b
+                })
         })
     };
     for row in rows_at(0, true) {

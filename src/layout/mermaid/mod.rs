@@ -13,6 +13,7 @@ mod canvas;
 mod engine;
 mod flowchart;
 mod graph;
+mod state;
 mod text;
 
 #[cfg(test)]
@@ -209,6 +210,7 @@ fn parse_graph(src: &Source) -> Option<(Graph, String)> {
         "graph" | "flowchart" | "flowchart-elk" => {
             (flowchart::parse(&src.header, &src.body), "flowchart")
         }
+        "stateDiagram" | "stateDiagram-v2" => (state::parse(&src.body), "state diagram"),
         _ => return None,
     };
     Some((g, src.title.clone().unwrap_or_else(|| kind.to_string())))

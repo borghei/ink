@@ -277,6 +277,36 @@ fn control_bytes_in_labels_never_reach_the_output() {
     }
 }
 
+// ── State diagrams ──
+
+#[test]
+fn state_diagram_start_end_fork_and_back_edge() {
+    expect(
+        "stateDiagram-v2\n[*] --> Still\nStill --> Moving : push\nMoving --> Still\nMoving --> [*]\nstate fork <<fork>>\nStill --> fork",
+        40,
+        r"
+╭─ state diagram ───╮
+│        ●          │
+│        │          │
+│        ▼          │
+│    ┌───────┐      │
+│    │ Still │      │
+│    └──┬────┘      │
+│       │ ▲         │
+│    ┌──┴─┼─────┐   │
+│   push  │     │   │
+│    │ ┌──┘     │   │
+│    ▼ │        ▼   │
+│ ┌────┴───┐  ━━━━━ │
+│ │ Moving │        │
+│ └───┬────┘        │
+│     │             │
+│     ▼             │
+│     ◉             │
+╰───────────────────╯",
+    );
+}
+
 // ── Properties over the corpus ──
 
 const WIDTHS: [usize; 5] = [24, 40, 60, 80, 120];
