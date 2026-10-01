@@ -162,7 +162,7 @@ Remote (`http`/`https`) images are **not** fetched by default — a document you
 
 ### Mermaid diagrams
 
-Flowcharts, sequence diagrams, pie charts, and Gantt charts rendered as ASCII art. No external tools needed.
+Flowcharts (every node shape, link style and direction, with subgraphs drawn as frames), state diagrams, class diagrams and ER diagrams are laid out as real box-and-arrow drawings that fit your terminal width; Gantt charts get a scaled time axis, mindmaps a tree, and sequence diagrams and pie charts a compact text form. Other diagram types show their source in a labelled box. Box-drawing characters by default, plain ASCII with `--ascii`. No external tools needed.
 
 ### GitHub-style admonitions
 

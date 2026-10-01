@@ -1,0 +1,8 @@
+flowchart TD
+    A[User Request] --> B{Auth Check}
+    B -->|Valid| C[Process Request]
+    B -->|Invalid| D[Return 401]
+    C --> E[Query Database]
+    E --> F{Results?}
+    F -->|Found| G[Return Data]
+    F -->|Empty| H[Return 404]

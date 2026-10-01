@@ -1,0 +1,18 @@
+erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    CUSTOMER {
+        string name
+        string custNumber PK
+        string sector
+    }
+    ORDER ||--|{ LINE-ITEM : contains
+    ORDER {
+        int orderNumber PK
+        string deliveryAddress
+    }
+    LINE-ITEM {
+        string productCode FK
+        int quantity
+        float pricePerUnit
+    }
+    p[Person] |o--o| CAR : "drives"

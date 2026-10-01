@@ -1,0 +1,15 @@
+%%{init: {"flowchart": {"htmlLabels": false}} }%%
+---
+title: Labels and entities
+---
+graph BT
+    %% comments are ignored
+    q["A label with (parens) and [brackets]"] --> e["Entity #quot;codes#quot; &amp; more"]
+    e --> br["First line<br/>Second line"]
+    br --> md["`**Markdown** string`"]
+    md --> q
+    classDef green fill:#9f6,stroke:#333,stroke-width:2px;
+    class q green
+    style e fill:#f9f
+    linkStyle 0 stroke:#ff3
+    click q callback "Tooltip"

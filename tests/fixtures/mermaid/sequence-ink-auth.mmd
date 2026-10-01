@@ -1,0 +1,8 @@
+sequenceDiagram
+    Client->>API Gateway: POST /auth/login
+    API Gateway->>Auth Service: Validate Credentials
+    Auth Service->>Database: Query User
+    Database-->>Auth Service: User Record
+    Auth Service-->>API Gateway: JWT Token
+    API Gateway-->>Client: 200 OK + Token
+    Note over Client,API Gateway: The token is cached for an hour

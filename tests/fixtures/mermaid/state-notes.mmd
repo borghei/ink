@@ -1,0 +1,11 @@
+stateDiagram
+    direction LR
+    state "This is a state description" as s2
+    [*] --> s2 : start
+    s2 --> s3 : next
+    note right of s2 : Important information! You can write notes.
+    note left of s3
+        A note can also
+        be defined like this
+    end note
+    s3 --> [*]
