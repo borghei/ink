@@ -10,7 +10,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 - Displays inline images using terminal graphics protocols (Kitty, iTerm2, Sixel) where supported, falling back to Unicode half-block characters (any true-color terminal); --image-protocol selects the renderer
 - Renders mermaid diagrams (flowcharts, sequence diagrams, pie charts, Gantt charts) as ASCII art
 - Supports GitHub-style admonitions (NOTE, TIP, IMPORTANT, WARNING, CAUTION) with custom titles, and Obsidian callouts
-- YAML, TOML and JSON frontmatter: hidden by default, shown as a key/value box with --frontmatter
+- YAML and TOML frontmatter: hidden by default, shown as a key/value box with --frontmatter (JSON frontmatter is never hidden; with --frontmatter it gets the box when markdown follows it)
 - Supports wikilink syntax: [[page]] and [[page|display text]]
 - Renders inline/block math ($...$, $$...$$, ```math) as Unicode text (Greek, operators, super/subscripts, fractions, roots, matrices, cases) and resolves :emoji: shortcodes
 - Interactive TUI with multi-tab support, in-document search (n/N to cycle matches), keyboard link opening (press f), a help overlay (?), and a table of contents sidebar

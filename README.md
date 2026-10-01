@@ -170,7 +170,7 @@ Flowcharts (every node shape, link style and direction, with subgraphs drawn as 
 
 ### Frontmatter
 
-YAML (`---`), TOML (`+++`) and JSON (`{`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown.
+YAML (`---`) and TOML (`+++`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown. A leading JSON object (`{` on the first line) is never hidden: with `--frontmatter` it gets the same box when markdown follows it, and otherwise it is shown as document text.
 
 ### Wikilinks
 

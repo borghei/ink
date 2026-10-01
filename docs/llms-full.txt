@@ -21,7 +21,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Horizontal rules
 - Inline/block math ($...$, $$...$$, ```math) rendered as Unicode text: Greek letters, operators, \mathbb/\mathcal letters, super/subscripts, \frac as a/b, \sqrt, matrix/cases/aligned environments on several lines; unknown commands kept as written; ASCII mode shows the LaTeX source. A lone $ in prose stays a dollar sign. :emoji: shortcodes resolved to glyphs
 - HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped, <sub>/<sup> as Unicode sub/superscripts
-- YAML, TOML and JSON frontmatter: stripped by default; --frontmatter shows it as a key/value box
+- YAML and TOML frontmatter: stripped by default; --frontmatter shows it as a key/value box. A leading JSON object is never stripped; with --frontmatter it is shown as the box only when markdown follows it
 
 ### Images
 - Real pixel rendering via terminal graphics protocols (Kitty graphics, iTerm2 inline, Sixel), auto-detected at startup; --image-protocol auto|kitty|iterm2|sixel|halfblocks

@@ -278,7 +278,6 @@ fn frontmatter_hidden_by_default() {
     for src in [
         "---\ntitle: Hello\nauthor: me\n---\n# Doc\n",
         "+++\ntitle = \"Hello\"\n+++\n# Doc\n",
-        "{\n  \"title\": \"Hello\"\n}\n# Doc\n",
     ] {
         let out = render(src);
         assert!(
@@ -326,6 +325,33 @@ fn json_frontmatter_renders_as_a_metadata_box() {
     assert!(out.contains("│ tags   a, b     │"), "{out}");
     assert!(out.contains("│ o      {\"k\": 1} │"), "{out}");
     assert!(!out.contains("\"title\""), "{out}");
+}
+
+// Regression: a file that is a JSON object rendered as nothing, its
+// "frontmatter" stripped. A leading JSON object is document text unless
+// `--frontmatter` is on and markdown follows it.
+#[test]
+fn json_documents_are_never_hidden() {
+    let json = "{\n  \"name\": \"ink\",\n  \"version\": 1\n}\n";
+    for out in [render(json), with_frontmatter(json)] {
+        // Shown as markdown text, as in v0.9.0 (smart quotes, one paragraph).
+        assert!(out.contains("name") && out.contains("version"), "{out}");
+        assert!(!out.contains("frontmatter"), "{out}");
+    }
+    // A markdown file opening with a bare JSON sample keeps it by default.
+    let src = "{\n  \"title\": \"Hello\"\n}\n# Doc\n";
+    let out = render(src);
+    assert!(
+        out.contains("title") && out.contains("Hello") && out.contains("Doc"),
+        "{out}"
+    );
+    assert!(!out.contains("frontmatter"), "{out}");
+    // With --frontmatter and markdown after it, it is the metadata box.
+    let out = with_frontmatter(src);
+    assert!(
+        out.contains("╭─ frontmatter") && out.contains("│ title  Hello   │"),
+        "{out}"
+    );
 }
 
 #[test]
