@@ -1,6 +1,6 @@
 use crate::{app, browser, config, input, render, stats, theme};
 use anyhow::Result;
-use clap::{Parser as ClapParser, Subcommand};
+use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -23,9 +23,9 @@ pub struct Cli {
     #[arg(short, long, default_value = "auto")]
     pub theme: String,
 
-    /// Max rendering width in columns (or: narrow, wide, full)
-    #[arg(short, long)]
-    pub width: Option<String>,
+    /// Max rendering width in columns, 20-1000 (or: narrow, wide, full)
+    #[arg(short, long, value_parser = parse_width)]
+    pub width: Option<WidthArg>,
 
     /// Presentation mode (split on ---)
     #[arg(short, long)]
@@ -52,8 +52,8 @@ pub struct Cli {
     pub remote_images: bool,
 
     /// Image rendering protocol: auto, kitty, iterm2, sixel, halfblocks
-    #[arg(long, default_value = "auto")]
-    pub image_protocol: String,
+    #[arg(long, default_value = "auto", value_parser = parse_protocol)]
+    pub image_protocol: crate::graphics::ProtocolChoice,
 
     /// List available themes and exit
     #[arg(long)]
@@ -67,9 +67,42 @@ pub struct Cli {
     #[arg(long)]
     pub frontmatter: bool,
 
-    /// Line spacing: compact, normal, relaxed [default: normal]
-    #[arg(long)]
-    pub spacing: Option<String>,
+    /// Line spacing [default: normal]
+    #[arg(long, value_enum)]
+    pub spacing: Option<Spacing>,
+}
+
+/// A parsed `--width` value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WidthArg {
+    /// A column count (`narrow` = 60, `wide` = 100).
+    Columns(u16),
+    /// `full`: no width cap.
+    Full,
+}
+
+/// `--width` parser: a column count in [`config::WIDTH_RANGE`] or a keyword.
+fn parse_width(s: &str) -> Result<WidthArg, String> {
+    let (lo, hi) = (config::WIDTH_RANGE.start(), config::WIDTH_RANGE.end());
+    match s {
+        "narrow" => Ok(WidthArg::Columns(60)),
+        "wide" => Ok(WidthArg::Columns(100)),
+        "full" => Ok(WidthArg::Full),
+        _ => s
+            .parse::<u16>()
+            .ok()
+            .filter(|n| config::WIDTH_RANGE.contains(n))
+            .map(WidthArg::Columns)
+            .ok_or_else(|| {
+                format!("expected a column count from {lo} to {hi}, or one of: narrow, wide, full")
+            }),
+    }
+}
+
+/// `--image-protocol` parser (keeps the aliases `ProtocolChoice::parse` accepts).
+fn parse_protocol(s: &str) -> Result<crate::graphics::ProtocolChoice, String> {
+    crate::graphics::ProtocolChoice::parse(s)
+        .ok_or_else(|| "valid values: auto, kitty, iterm2, sixel, halfblocks".to_string())
 }
 
 #[derive(Subcommand, Debug)]
@@ -149,7 +182,7 @@ pub struct Args {
     pub clipboard: crate::clipboard::ClipboardMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum Spacing {
     Compact,
     Normal,
@@ -161,7 +194,15 @@ pub fn run() -> Result<()> {
 
     // Load config + initialize keymap up front so subcommands (e.g. `keybindings`)
     // can read the resolved map.
-    let user_config = config::load_config();
+    // Config problems are reported here, on stderr, before any alternate
+    // screen can hide them; the valid keys still apply.
+    let config::ConfigLoad {
+        config: user_config,
+        warnings,
+    } = config::load_config_with_warnings();
+    for w in &warnings {
+        eprintln!("{w}");
+    }
     input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
 
     // Handle subcommands
@@ -224,16 +265,14 @@ pub fn run() -> Result<()> {
 
     let width = resolve_width(&cli.width, &user_config);
     // CLI flag wins; otherwise the config file's key; otherwise the default.
-    let spacing_choice = cli
+    // (config values were validated on load, so the parse cannot fail).
+    let spacing = cli
         .spacing
-        .clone()
-        .or_else(|| user_config.as_ref().and_then(|c| c.spacing.clone()))
-        .unwrap_or_else(|| "normal".to_string());
-    let spacing = match spacing_choice.as_str() {
-        "compact" => Spacing::Compact,
-        "relaxed" => Spacing::Relaxed,
-        _ => Spacing::Normal,
-    };
+        .or_else(|| {
+            let s = user_config.as_ref()?.spacing.as_deref()?;
+            Spacing::from_str(s, false).ok()
+        })
+        .unwrap_or(Spacing::Normal);
     let cfg_flag = |get: fn(&config::Config) -> Option<bool>| {
         user_config.as_ref().and_then(get).unwrap_or(false)
     };
@@ -268,8 +307,7 @@ pub fn run() -> Result<()> {
         } else {
             crate::image::ImageMode::LocalOnly
         },
-        image_protocol: crate::graphics::ProtocolChoice::parse(&cli.image_protocol)
-            .unwrap_or(crate::graphics::ProtocolChoice::Auto),
+        image_protocol: cli.image_protocol,
         frontmatter,
         spacing,
         mouse_capture: user_config
@@ -455,20 +493,12 @@ fn read_file(path: &str) -> Result<String> {
     }
 }
 
-fn resolve_width(width_str: &Option<String>, config: &Option<config::Config>) -> Option<u16> {
-    if let Some(w) = width_str {
-        match w.as_str() {
-            "narrow" => return Some(60),
-            "wide" => return Some(100),
-            "full" => return None,
-            _ => {
-                if let Ok(n) = w.parse::<u16>() {
-                    return Some(n);
-                }
-            }
-        }
+fn resolve_width(width: &Option<WidthArg>, config: &Option<config::Config>) -> Option<u16> {
+    match width {
+        Some(WidthArg::Columns(n)) => Some(*n),
+        Some(WidthArg::Full) => None,
+        None => config.as_ref().and_then(|c| c.width),
     }
-    config.as_ref().and_then(|c| c.width)
 }
 
 fn config_init(force: bool) -> Result<()> {
@@ -489,7 +519,7 @@ fn config_init(force: bool) -> Result<()> {
     Ok(())
 }
 
-const STARTER_CONFIG: &str = r#"# ink configuration
+pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # https://github.com/borghei/ink
 
 # Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
