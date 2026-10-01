@@ -1,12 +1,8 @@
 use crate::theme;
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-};
+use crossterm::event::{self, EnableMouseCapture, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use std::io;
@@ -38,13 +34,8 @@ pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
 
     let result = browse_inner(&mut terminal, dir, &files, theme_name);
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    crate::app::restore_terminal()?;
+    crate::app::exit_if_signalled();
 
     result
 }
@@ -61,6 +52,9 @@ fn browse_inner(
     let mut filter_active = false;
 
     loop {
+        if crate::app::termination_requested() {
+            return Ok(None);
+        }
         // Build filtered index list
         let filtered: Vec<usize> = if filter.is_empty() {
             (0..files.len()).collect()

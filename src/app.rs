@@ -119,6 +119,23 @@ pub enum AppExit {
     BackToBrowser,
 }
 
+/// Put the terminal back the way the shell expects it: cooked mode, main
+/// screen, no mouse reporting, visible cursor.
+///
+/// The single restore sequence shared by normal exit, the panic hook and the
+/// signal path, in both the reader and the file browser. Every step is
+/// attempted even if an earlier one fails; the first error is returned.
+pub(crate) fn restore_terminal() -> io::Result<()> {
+    let raw = disable_raw_mode();
+    let screen = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    raw.and(screen)
+}
+
 /// Restore the terminal before a panic reaches the default handler.
 ///
 /// The normal restore path runs after `run_inner` returns, which a panic skips
@@ -130,11 +147,91 @@ pub(crate) fn install_panic_hook() {
     ONCE.call_once(|| {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+            let _ = restore_terminal();
             default_hook(info);
         }));
     });
+    install_signal_handlers();
+}
+
+/// Termination signals (SIGTERM, SIGHUP from a closed SSH session, a SIGINT
+/// sent with `kill` — raw mode turns Ctrl-C into a key) only set a flag. The
+/// event loops poll every 50ms, see it via `termination_requested`, and return
+/// through the normal restore path; `exit_if_signalled` then exits with the
+/// conventional 128+signal status. The default action would kill the process
+/// mid-frame and leave the shell raw inside the alternate screen.
+#[cfg(unix)]
+mod term_signal {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    struct Flags {
+        which: Arc<AtomicUsize>,
+        any: Arc<AtomicBool>,
+    }
+
+    static FLAGS: OnceLock<Flags> = OnceLock::new();
+
+    pub fn install() {
+        FLAGS.get_or_init(|| {
+            use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+            let flags = Flags {
+                which: Arc::new(AtomicUsize::new(0)),
+                any: Arc::new(AtomicBool::new(false)),
+            };
+            for sig in [SIGTERM, SIGHUP, SIGINT] {
+                // A second signal while the first is still pending (the loop
+                // is stuck) terminates at once instead of being swallowed.
+                let _ = signal_hook::flag::register_conditional_shutdown(
+                    sig,
+                    128 + sig,
+                    Arc::clone(&flags.any),
+                );
+                let _ = signal_hook::flag::register(sig, Arc::clone(&flags.any));
+                let _ =
+                    signal_hook::flag::register_usize(sig, Arc::clone(&flags.which), sig as usize);
+            }
+            flags
+        });
+    }
+
+    pub fn pending() -> Option<i32> {
+        let flags = FLAGS.get()?;
+        if !flags.any.load(Ordering::Relaxed) {
+            return None;
+        }
+        match flags.which.load(Ordering::Relaxed) {
+            0 => None,
+            sig => Some(sig as i32),
+        }
+    }
+}
+
+fn install_signal_handlers() {
+    #[cfg(unix)]
+    term_signal::install();
+}
+
+/// A termination signal arrived; event loops should return so the terminal
+/// gets restored. Always false on Windows.
+pub(crate) fn termination_requested() -> bool {
+    #[cfg(unix)]
+    {
+        term_signal::pending().is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// After the terminal is restored: if a termination signal ended the event
+/// loop, exit with 128+signal like the default action would have.
+pub(crate) fn exit_if_signalled() {
+    #[cfg(unix)]
+    if let Some(sig) = term_signal::pending() {
+        std::process::exit(128 + sig);
+    }
 }
 
 pub fn run(source: String, args: Args) -> Result<AppExit> {
@@ -161,12 +258,8 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
 
     let result = run_inner(&mut terminal, source, args, &graphics);
 
-    disable_raw_mode()?;
-    if mouse_capture {
-        execute!(terminal.backend_mut(), DisableMouseCapture)?;
-    }
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    restore_terminal()?;
+    exit_if_signalled();
 
     result
 }
@@ -280,6 +373,9 @@ fn run_inner(
     let mut resize_pending: Option<std::time::Instant> = None;
 
     loop {
+        if termination_requested() {
+            return Ok(AppExit::Quit);
+        }
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
 
         // --watch: if the current doc is the watched file and it changed, rebuild it.
