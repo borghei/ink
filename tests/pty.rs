@@ -253,3 +253,28 @@ fn no_mouse_also_applies_to_the_file_browser() {
         assert!(!contains(&s.output, seq));
     }
 }
+
+/// Time from launch until the reader enters the alternate screen, on a
+/// terminal that answers no queries at all.
+fn startup_time(envs: &[(&str, &str)]) -> Duration {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test.md");
+    let mut up_at = None;
+    let mut quit = quit_when_up();
+    run_in_pty(&["--theme", "dark", fixture], envs, |out, t| {
+        if up_at.is_none() && contains(out, b"\x1b[?1049h") {
+            up_at = Some(t);
+        }
+        quit(out, t)
+    });
+    up_at.expect("reader never started")
+}
+
+#[test]
+fn terminals_without_graphics_skip_the_image_query() {
+    // Terminal.app never answers the graphics probe; asking would stall
+    // startup for the probe's full ~2 s timeout.
+    let t = startup_time(&[("TERM_PROGRAM", "Apple_Terminal")]);
+    assert!(t < Duration::from_millis(1500), "startup took {t:?}");
+    let t = startup_time(&[("TERM", "linux")]);
+    assert!(t < Duration::from_millis(1500), "startup took {t:?}");
+}
