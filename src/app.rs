@@ -1804,11 +1804,7 @@ fn build_tab(
     } else {
         None
     };
-    let (_, content) = if args.frontmatter {
-        (None, source.to_string())
-    } else {
-        frontmatter::strip_frontmatter(&source)
-    };
+    let content = frontmatter::prepare(&source, args.frontmatter);
 
     // Pre-process wikilinks before parsing
     let content = crate::wikilink::process_wikilinks(&content);

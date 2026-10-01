@@ -253,3 +253,99 @@ fn table_cells_render_scripts_and_spoilers() {
     let rows = table_rows(&out);
     assert_eq!(rows[1], "│ x² │ ||s|| │");
 }
+
+// ── Frontmatter ──
+
+fn with_frontmatter(src: &str) -> String {
+    render_with(src, |a| a.frontmatter = true)
+}
+
+#[test]
+fn frontmatter_hidden_by_default() {
+    for src in [
+        "---\ntitle: Hello\nauthor: me\n---\n# Doc\n",
+        "+++\ntitle = \"Hello\"\n+++\n# Doc\n",
+        "{\n  \"title\": \"Hello\"\n}\n# Doc\n",
+    ] {
+        let out = render(src);
+        assert!(
+            !out.contains("Hello") && !out.contains("frontmatter"),
+            "{out}"
+        );
+        assert!(out.contains("Doc"), "{out}");
+    }
+}
+
+#[test]
+fn yaml_frontmatter_renders_as_a_metadata_box() {
+    let out = with_frontmatter(
+        "---\ntitle: \"Hello: world\"\nauthor: me\ntags: [a, b]\nmeta:\n  draft: true\n---\n# Doc\n",
+    );
+    let want = "  ╭─ frontmatter ────────╮\n\
+                \x20 │ title   Hello: world │\n\
+                \x20 │ author  me           │\n\
+                \x20 │ tags    a, b         │\n\
+                \x20 │ meta    draft: true  │\n\
+                \x20 ╰──────────────────────╯\n";
+    assert!(out.starts_with(want), "{out}");
+    // Not read as markdown: no rule, no setext heading made of the keys.
+    assert!(!out.contains("◆"), "{out}");
+    assert!(out.contains("█ Doc"), "{out}");
+}
+
+#[test]
+fn toml_frontmatter_renders_as_a_metadata_box() {
+    let out = with_frontmatter(
+        "+++\ntitle = \"T\"\ntags = [\"x\", \"y\"]\n[params]\ndraft = false\n+++\nBody\n",
+    );
+    assert!(out.contains("│ title         T     │"), "{out}");
+    assert!(out.contains("│ tags          x, y  │"), "{out}");
+    assert!(out.contains("│ params.draft  false │"), "{out}");
+    assert!(!out.contains("+++"), "{out}");
+}
+
+#[test]
+fn json_frontmatter_renders_as_a_metadata_box() {
+    let out = with_frontmatter(
+        "{\n  \"title\": \"J\",\n  \"tags\": [\"a\", \"b\"],\n  \"o\": {\"k\": 1}\n}\nBody\n",
+    );
+    assert!(out.contains("│ title  J        │"), "{out}");
+    assert!(out.contains("│ tags   a, b     │"), "{out}");
+    assert!(out.contains("│ o      {\"k\": 1} │"), "{out}");
+    assert!(!out.contains("\"title\""), "{out}");
+}
+
+#[test]
+fn unterminated_frontmatter_falls_back_to_markdown() {
+    // No closing delimiter: rendered as markdown, exactly as before.
+    let src = "---\ntitle: Hello\n\nBody text\n";
+    assert_eq!(with_frontmatter(src), render(src));
+    assert!(render(src).contains("Body text"));
+    let src = "{\n\"title\": \"x\"\nBody\n";
+    assert_eq!(with_frontmatter(src), render(src));
+}
+
+#[test]
+fn frontmatter_values_are_sanitized() {
+    let src = "---\ntitle: evil \x1b]52;c;SGVsbG8=\x07 \x1b[2J value\n\x1b[31mkey: v\n---\nBody\n";
+    let mut a = args();
+    a.frontmatter = true;
+    let out = render_plain_with_color(src, &a, true).unwrap();
+    assert!(!out.contains("\x1b]52") && !out.contains("\x1b[2J") && !out.contains('\x07'));
+    assert!(out.contains("evil"), "{out}");
+}
+
+#[test]
+fn frontmatter_box_wraps_long_values_within_the_width() {
+    let out = render_with(
+        "---\ndescription: one two three four five six seven eight nine ten eleven\n---\n",
+        |a| {
+            a.frontmatter = true;
+            a.width = Some(40);
+        },
+    );
+    for line in out.lines() {
+        assert!(line.width() <= 40, "{line:?}");
+    }
+    assert!(out.lines().filter(|l| l.contains('│')).count() > 1, "{out}");
+}

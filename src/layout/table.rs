@@ -238,7 +238,7 @@ fn render_transposed(
 /// Measures grapheme clusters, never splitting inside one: per-char sums
 /// disagree with the rendered width for emoji (VS16, ZWJ sequences), which
 /// used to return labels wider than the column.
-fn fit_label(s: &str, w: usize) -> String {
+pub(super) fn fit_label(s: &str, w: usize) -> String {
     if w == 0 {
         return String::new();
     }
@@ -291,7 +291,7 @@ fn cell_width(text: &str) -> usize {
 
 /// Word-wrap text to fit within max_width characters. A `\n` (hard break in
 /// the cell) always starts a new line.
-fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+pub(super) fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     if text.contains('\n') {
         return text
             .split('\n')

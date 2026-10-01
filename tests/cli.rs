@@ -582,16 +582,24 @@ fn plain_keeps_256_colours_on_xterm_256color() {
 /// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
 /// nested lists, an ordered list, a task list, a table that wraps, a fenced
 /// code block, nested blockquotes, admonitions and callouts with titles,
-/// super/subscripts, a spoiler, a definition list and a rule. In ASCII mode
+/// super/subscripts, a spoiler, a definition list, a rule and (shown with
+/// `--frontmatter`) YAML frontmatter. In ASCII mode
 /// every byte ink prints for it must be 7-bit. Nothing is exempt for this
 /// fixture; images (named, not drawn) and math are not covered by it.
 #[test]
 fn ascii_mode_plain_output_is_seven_bit() {
     let source = std::fs::read("tests/fixtures/ascii.md").unwrap();
     assert!(source.is_ascii(), "the fixture itself must be ASCII");
-    for width in ["40", "80"] {
+    for (width, extra) in [("40", "--spacing=normal"), ("80", "--frontmatter")] {
         let out = ink()
-            .args(["--ascii", "--plain", "--color=never", "--width", width])
+            .args([
+                "--ascii",
+                "--plain",
+                "--color=never",
+                "--width",
+                width,
+                extra,
+            ])
             .arg("tests/fixtures/ascii.md")
             .output()
             .unwrap();

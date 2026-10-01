@@ -1,3 +1,4 @@
+mod frontmatter;
 pub mod html;
 pub mod mermaid;
 mod scripts;
@@ -919,6 +920,13 @@ fn expand_tabs(text: &str) -> String {
 fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     let lang = info.split_whitespace().next().unwrap_or("");
     let start_line = lines.len();
+
+    // `--frontmatter`: the metadata box (see `parser::frontmatter::prepare`).
+    if lang == crate::parser::frontmatter::FENCE_INFO {
+        let format = info.split_whitespace().nth(1).unwrap_or("");
+        frontmatter::layout_frontmatter(format, literal, ctx, lines);
+        return;
+    }
 
     // Mermaid diagrams get special rendering
     if lang == "mermaid" {

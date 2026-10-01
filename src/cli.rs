@@ -71,7 +71,8 @@ pub struct Cli {
     #[arg(long)]
     pub no_pager: bool,
 
-    /// Show YAML/TOML frontmatter
+    /// Show YAML/TOML/JSON frontmatter as a metadata box at the top
+    /// (hidden by default)
     #[arg(long)]
     pub frontmatter: bool,
 
@@ -671,7 +672,7 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # Show table of contents on startup
 # toc = false
 
-# Show YAML/TOML frontmatter as a code block at the top of the document
+# Show YAML/TOML/JSON frontmatter as a metadata box at the top of the document
 # frontmatter = false
 
 [behavior]

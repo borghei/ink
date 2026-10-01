@@ -1,3 +1,7 @@
+---
+title: ASCII fixture
+tags: [plain, seven-bit]
+---
 # Heading One
 
 ## Heading Two
