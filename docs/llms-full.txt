@@ -12,15 +12,16 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Bold, italic, strikethrough, inline code
 - Links with OSC 8 hyperlink support (Cmd+Click / Ctrl+Click in supported terminals)
 - Syntax-highlighted code blocks using syntect (supports all major programming languages)
-- Tables with auto-sized columns and word wrapping
+- Tables with auto-sized columns, word wrapping and column alignment (:--, :-:, --:)
 - Blockquotes with nested support and depth-based coloring
 - Ordered and unordered lists with nesting
 - Task lists with checkbox rendering
 - Footnotes
+- Superscript ^x^ and <sup>x</sup>, subscript <sub>x</sub> (Unicode forms, ^(x)/_(x) fallback); ~x~ and ~~x~~ are strikethrough as on GitHub; ||spoilers||, definition lists (Term / : definition)
 - Horizontal rules
-- Inline/block math ($...$, $$...$$) rendered in code style; :emoji: shortcodes resolved to glyphs
-- HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped
-- YAML and TOML frontmatter stripping (optional display)
+- Inline/block math ($...$, $$...$$, ```math) rendered as Unicode text: Greek letters, operators, \mathbb/\mathcal letters, super/subscripts, \frac as a/b, \sqrt, matrix/cases/aligned environments on several lines; unknown commands kept as written; ASCII mode shows the LaTeX source. A lone $ in prose stays a dollar sign. :emoji: shortcodes resolved to glyphs
+- HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped, <sub>/<sup> as Unicode sub/superscripts
+- YAML, TOML and JSON frontmatter: stripped by default; --frontmatter shows it as a key/value box
 
 ### Images
 - Real pixel rendering via terminal graphics protocols (Kitty graphics, iTerm2 inline, Sixel), auto-detected at startup; --image-protocol auto|kitty|iterm2|sixel|halfblocks
@@ -37,7 +38,8 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Unknown diagram types get fallback rendering
 
 ### Admonitions
-- GitHub-style admonition blocks: [!NOTE], [!TIP], [!IMPORTANT], [!WARNING], [!CAUTION]
+- GitHub-style admonition blocks: [!NOTE], [!TIP], [!IMPORTANT], [!WARNING], [!CAUTION], with custom titles ([!NOTE] Title)
+- Obsidian callouts ([!info], [!bug], [!example], ...; +/- fold markers ignored) mapped onto the same colours
 - Each type has a distinct color and icon
 
 ### Wikilinks
@@ -86,6 +88,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - --color auto|always|never (default auto): color and OSC 8 links only when stdout is a terminal; precedence is --color, then NO_COLOR, then CLICOLOR_FORCE/FORCE_COLOR, then TERM=dumb, then the TTY check. Use --color=always for fzf previews or less -R; git textconv (`ink --plain`) gets clean text
 - `ink -` reads the document from stdin
 - Pager mode: on an interactive terminal, --plain pages long output through $PAGER (default less -R), like bat; --no-pager disables it
+- --line-range START:END (also START:, :END, N; repeatable): render only those 1-based source lines; a cut code fence is reopened/closed; implies --plain
 - Document outline: `ink outline <file>` shows heading structure
 - Document stats: `ink stats <file>` shows word count, reading time, element counts
 - Markdown diff: `ink diff <file_a> <file_b>` compares two files with a real Myers line diff

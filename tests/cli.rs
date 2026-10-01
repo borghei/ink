@@ -581,16 +581,26 @@ fn plain_keeps_256_colours_on_xterm_256color() {
 
 /// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
 /// nested lists, an ordered list, a task list, a table that wraps, a fenced
-/// code block, nested blockquotes, an admonition and a rule. In ASCII mode
+/// code block, nested blockquotes, admonitions and callouts with titles,
+/// super/subscripts, a spoiler, a definition list, a rule and (shown with
+/// `--frontmatter`) YAML frontmatter, and inline and display math. In
+/// ASCII mode
 /// every byte ink prints for it must be 7-bit. Nothing is exempt for this
-/// fixture; images (named, not drawn) and math are not covered by it.
+/// fixture; images (named, not drawn) are not covered by it.
 #[test]
 fn ascii_mode_plain_output_is_seven_bit() {
     let source = std::fs::read("tests/fixtures/ascii.md").unwrap();
     assert!(source.is_ascii(), "the fixture itself must be ASCII");
-    for width in ["40", "80"] {
+    for (width, extra) in [("40", "--spacing=normal"), ("80", "--frontmatter")] {
         let out = ink()
-            .args(["--ascii", "--plain", "--color=never", "--width", width])
+            .args([
+                "--ascii",
+                "--plain",
+                "--color=never",
+                "--width",
+                width,
+                extra,
+            ])
             .arg("tests/fixtures/ascii.md")
             .output()
             .unwrap();
@@ -600,6 +610,30 @@ fn ascii_mode_plain_output_is_seven_bit() {
             let text = String::from_utf8_lossy(&out.stdout);
             panic!("non-ASCII byte at {pos} (width {width}):\n{text}");
         }
+    }
+}
+
+/// The markdown extensions fall back to ASCII forms rather than Unicode
+/// super/subscripts or emoji icons.
+#[test]
+fn ascii_mode_extension_fallbacks() {
+    let out = ink()
+        .args(["--ascii", "--plain", "--color=never", "--width", "80"])
+        .arg("tests/fixtures/ascii.md")
+        .output()
+        .unwrap();
+    let text = String::from_utf8(out.stdout).unwrap();
+    for want in [
+        "| (*) A custom title",
+        "| (i) An Obsidian callout",
+        "| Callout body.",
+        "Water is H_(2)O, e = mc^(2), struck, struck and ||a spoiler||.",
+        "  Term\n    > Its definition.",
+        // Math: the cleaned LaTeX source, never Unicode.
+        "Math x^2 + \\alpha costs $5 and $10.",
+        "      ( \\frac{a}{b} ) dx",
+    ] {
+        assert!(text.contains(want), "missing {want:?} in:\n{text}");
     }
 }
 
@@ -643,4 +677,94 @@ fn ascii_config_key_is_accepted() {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(out.stdout.is_ascii());
+}
+
+// ── --line-range ──
+
+const RANGE_DOC: &str =
+    "# One\n\nline three\n\nline five\n\n```rust\nfn a() {}\nfn b() {}\n```\n\nlast line\n";
+
+/// `ink --plain --color=never --line-range …` on `RANGE_DOC` via stdin.
+fn line_range(ranges: &[&str]) -> std::process::Output {
+    let mut cmd = ink();
+    cmd.args(["--plain", "--color=never", "--width", "40"]);
+    for r in ranges {
+        cmd.arg(format!("--line-range={r}"));
+    }
+    cmd.arg("-").write_stdin(RANGE_DOC).output().unwrap()
+}
+
+fn line_range_text(ranges: &[&str]) -> String {
+    let out = line_range(ranges);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn line_range_start_end() {
+    let text = line_range_text(&["3:5"]);
+    assert!(
+        text.contains("line three") && text.contains("line five"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("One") && !text.contains("last line"),
+        "{text}"
+    );
+}
+
+#[test]
+fn line_range_open_ends_and_single_line() {
+    let text = line_range_text(&["12:"]);
+    assert_eq!(text.trim(), "last line");
+    let text = line_range_text(&[":1"]);
+    assert!(
+        text.contains("One") && !text.contains("line three"),
+        "{text}"
+    );
+    let text = line_range_text(&["5"]);
+    assert_eq!(text.trim(), "line five");
+}
+
+#[test]
+fn line_range_is_repeatable() {
+    let text = line_range_text(&["3", "12"]);
+    assert!(
+        text.contains("line three") && text.contains("last line"),
+        "{text}"
+    );
+    assert!(!text.contains("line five"), "{text}");
+}
+
+#[test]
+fn line_range_cutting_a_fence_keeps_the_block() {
+    // Line 9 alone is inside the rust block: it is still a highlighted,
+    // boxed code block with its language label.
+    let text = line_range_text(&["9"]);
+    assert!(text.contains("─ rust ─"), "{text}");
+    assert!(text.contains("│ fn b() {}"), "{text}");
+    assert!(!text.contains("fn a()"), "{text}");
+    // Ending inside the block closes it: the following prose is not swallowed.
+    let text = line_range_text(&["7:8", "12"]);
+    assert!(text.contains("│ fn a() {}"), "{text}");
+    assert!(!text.contains("│ last line"), "{text}");
+    assert!(text.contains("\n  last line"), "{text}");
+}
+
+#[test]
+fn line_range_rejects_invalid_ranges() {
+    for bad in ["0", "5:2", "a:b", ":", "", "1-3"] {
+        let out = line_range(&[bad]);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{bad:?} should be a usage error"
+        );
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(err.contains("--line-range"), "{bad:?}: {err}");
+    }
 }

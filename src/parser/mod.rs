@@ -1,4 +1,5 @@
 pub mod frontmatter;
+pub mod line_range;
 
 use comrak::nodes::{AstNode, NodeValue};
 use comrak::{parse_document, Arena, Options};
@@ -38,7 +39,17 @@ pub fn options() -> Options<'static> {
     opts.extension.tasklist = true;
     opts.extension.footnotes = true;
     opts.extension.header_ids = Some(String::new());
+    // `$…$`, `$$…$$` (GitHub's rules: `$5 and $10` is not math), and
+    // `` $`…`$ `` / ```` ```math ````.
     opts.extension.math_dollars = true;
+    opts.extension.math_code = true;
+    // `^sup^`, `||spoiler||`, and definition lists (`Term` then
+    // `: definition`). Not `subscript`: it turns GitHub's single-tilde
+    // `~strike~` into subscript (`<sub>` still works). Not `underline`: it
+    // turns `__bold__` into underlined text.
+    opts.extension.superscript = true;
+    opts.extension.spoiler = true;
+    opts.extension.description_lists = true;
     // In ASCII mode, an ASCII document must stay ASCII: no `:smile:` → emoji
     // and no smart quotes, dashes or ellipses.
     let ascii = crate::glyphs::current().ascii;
@@ -89,10 +100,14 @@ pub fn options_for(source: &str) -> Options<'static> {
 
 /// Upper bound on AST depth: every nesting level is opened by at least one
 /// of these bytes (`>` blockquotes; `-` `*` `+` `.` `)` list markers; `*`
-/// `_` `~` emphasis and strikethrough; `[` links, images, footnotes), plus
-/// the few fixed levels (document, paragraph, text).
+/// `_` `~` emphasis and strikethrough; `^` superscript; `|`
+/// spoilers; `:` definition lists; `[` links, images, footnotes), plus the
+/// few fixed levels (document, paragraph, text).
 fn nesting_bound(source: &str) -> usize {
-    8 + source.bytes().filter(|b| b"<>*_~[-+.)".contains(b)).count()
+    8 + source
+        .bytes()
+        .filter(|b| b"<>*_~^|:[-+.)".contains(b))
+        .count()
 }
 
 /// Depth of the deepest node, walked without recursion.
@@ -169,6 +184,9 @@ mod tests {
             format!("{}x{}", "*".repeat(20000), "*".repeat(20000)),
             // Openers need not be adjacent to nest.
             format!("{}x{}", "*a _".repeat(2000), "_ a*".repeat(2000)),
+            // Superscripts and spoilers nest like emphasis.
+            format!("{}x{}", "^a *".repeat(2000), "* a^".repeat(2000)),
+            format!("{}x{}", "||a ^".repeat(2000), "^ a||".repeat(2000)),
         ] {
             let src = src + NOTE;
             let arena = Arena::new();

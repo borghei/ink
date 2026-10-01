@@ -1,3 +1,7 @@
+---
+title: ASCII fixture
+tags: [plain, seven-bit]
+---
 # Heading One
 
 ## Heading Two
@@ -33,6 +37,23 @@ fn main() {
 
 > [!NOTE]
 > An admonition.
+
+> [!TIP] A custom title
+> Tip body.
+
+> [!info]- An Obsidian callout
+> Callout body.
+
+Water is H<sub>2</sub>O, e = mc^2^, ~~struck~~, ~struck~ and ||a spoiler||.
+
+Term
+: Its definition.
+
+Math $x^2 + \alpha$ costs $5 and $10.
+
+$$
+\left( \frac{a}{b} \right)\,dx
+$$
 
 ---
 

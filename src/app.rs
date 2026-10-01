@@ -2266,19 +2266,21 @@ fn build_tab(
     } else {
         None
     };
-    let (_, stripped) = if args.frontmatter {
-        (None, source.to_string())
-    } else {
-        frontmatter::strip_frontmatter(&source)
-    };
+    // Frontmatter is stripped, or (with --frontmatter) swapped for a fenced
+    // block the layout draws as a metadata box.
+    let stripped = frontmatter::prepare(&source, args.frontmatter);
 
     // Pre-process wikilinks before parsing
     let content = crate::wikilink::process_wikilinks(&stripped);
-    // Frontmatter comes off the top whole, and wikilinks never add or remove
-    // a line; if either ever stops holding, the mapping is unknown.
+    // Source line = content line + offset. Only the head of the document
+    // changes: stripping removes whole lines, and the metadata box usually
+    // keeps the line count. If the parsed text has MORE lines than the source
+    // (JSON frontmatter gains fence lines), or wikilinks ever change the line
+    // count, the mapping is unknown and no line is passed to the editor.
     let line_offset = source
-        .strip_suffix(stripped.as_str())
-        .map(|head| head.matches('\n').count())
+        .matches('\n')
+        .count()
+        .checked_sub(stripped.matches('\n').count())
         .filter(|_| content.matches('\n').count() == stripped.matches('\n').count());
 
     let arena = Arena::new();
