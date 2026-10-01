@@ -272,7 +272,87 @@ pub fn is_actionable_key(key: &KeyEvent) -> bool {
     key.kind != KeyEventKind::Release
 }
 
+/// Events read ahead of the event loop by [`discard_late_reply`] that were
+/// real input, served before anything new is read.
+static PENDING: std::sync::Mutex<std::collections::VecDeque<Event>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+
+/// Drop a background-colour reply that reached the input queue after the
+/// startup query gave up on it (see `theme::detect::reply_may_arrive_late`).
+/// Reads only what is already buffered; anything that is not part of the
+/// reply is kept and handed to the event loop in order. crossterm already
+/// swallows the DA1 answer (`ESC [ ? … c`) itself; the OSC 11 answer it
+/// would turn into key presses (`Alt-]`, `1`, `1`, `;`, …).
+pub fn discard_late_reply() {
+    let mut events = Vec::new();
+    while event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+        match event::read() {
+            Ok(e) => events.push(e),
+            Err(_) => break,
+        }
+    }
+    let kept = strip_leading_osc_reply(events);
+    if let Ok(mut pending) = PENDING.lock() {
+        pending.extend(kept);
+    }
+}
+
+/// Remove a leading OSC 11 reply (`ESC ] 11 ; … BEL` or `… ESC \`), as
+/// crossterm decodes it into key events, from `events`. A reply cut off
+/// before its terminator is removed too. Anything else is left alone.
+fn strip_leading_osc_reply(events: Vec<Event>) -> Vec<Event> {
+    // Windows reports key releases too; they carry no information here.
+    let presses: Vec<(usize, KeyCode, KeyModifiers)> = events
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| match e {
+            Event::Key(k) if k.kind != KeyEventKind::Release => Some((i, k.code, k.modifiers)),
+            _ => None,
+        })
+        .collect();
+    let starts_reply = matches!(presses.first(), Some((_, KeyCode::Char(']'), m)) if m.contains(KeyModifiers::ALT));
+    if !starts_reply {
+        return events;
+    }
+    // `11;` must follow, as far as the input goes.
+    let prefix: Vec<char> = presses[1..]
+        .iter()
+        .take(3)
+        .map(|(_, c, _)| match c {
+            KeyCode::Char(c) => *c,
+            _ => '\0',
+        })
+        .collect();
+    if !"11;".chars().zip(&prefix).all(|(a, b)| a == *b) {
+        return events;
+    }
+    let end = presses.iter().skip(1).find_map(|(i, c, m)| match c {
+        KeyCode::Char('g') if m.contains(KeyModifiers::CONTROL) => Some(*i),
+        KeyCode::Char('\\') if m.contains(KeyModifiers::ALT) => Some(*i),
+        _ => None,
+    });
+    match end {
+        Some(i) => events.into_iter().skip(i + 1).collect(),
+        // Cut off: only the reply's own characters may follow.
+        None if presses[1..].iter().all(|(_, c, m)| {
+            matches!(c, KeyCode::Char(c) if c.is_ascii_alphanumeric() || ":/;#?".contains(*c))
+                && !m.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        }) =>
+        {
+            events
+                .into_iter()
+                .filter(|e| !matches!(e, Event::Key(_)))
+                .collect()
+        }
+        None => events,
+    }
+}
+
 pub fn poll_action(timeout: std::time::Duration, mode: InputMode) -> Option<Action> {
+    let queued = PENDING.lock().ok().and_then(|mut p| p.pop_front());
+    if let Some(event) = queued {
+        return Some(map_event(event, mode));
+    }
     if event::poll(timeout).ok()? {
         let event = event::read().ok()?;
         if let Event::Key(key) = &event {
@@ -479,5 +559,49 @@ mod tests {
             let ev = Event::Key(key(KeyEventKind::Release));
             assert_eq!(map_event(ev, mode), Action::None);
         }
+    }
+
+    /// Bytes as crossterm decodes them into key events (`ESC x` → Alt-x,
+    /// BEL → Ctrl-g).
+    fn typed(bytes: &[u8]) -> Vec<Event> {
+        let mut out = Vec::new();
+        let mut alt = false;
+        for &b in bytes {
+            let (code, mut mods) = match b {
+                0x1b => {
+                    alt = true;
+                    continue;
+                }
+                0x07 => (KeyCode::Char('g'), KeyModifiers::CONTROL),
+                b if b.is_ascii_uppercase() => (KeyCode::Char(b as char), KeyModifiers::SHIFT),
+                b => (KeyCode::Char(b as char), KeyModifiers::NONE),
+            };
+            if std::mem::take(&mut alt) {
+                mods |= KeyModifiers::ALT;
+            }
+            out.push(Event::Key(KeyEvent::new(code, mods)));
+        }
+        out
+    }
+
+    #[test]
+    fn a_late_osc_11_reply_is_dropped_and_real_keys_are_kept() {
+        // BEL-terminated, followed by a real `j`.
+        let kept = strip_leading_osc_reply(typed(b"\x1b]11;rgb:ffff/FFFF/ffff\x07j"));
+        assert_eq!(kept, typed(b"j"));
+        // ST-terminated.
+        let kept = strip_leading_osc_reply(typed(b"\x1b]11;#1e1e2e\x1b\\q"));
+        assert_eq!(kept, typed(b"q"));
+        // Cut off before the terminator: all of it is reply.
+        assert!(strip_leading_osc_reply(typed(b"\x1b]11;rgb:ff")).is_empty());
+        assert!(strip_leading_osc_reply(typed(b"\x1b]1")).is_empty());
+        // Ordinary input is left alone.
+        assert_eq!(strip_leading_osc_reply(typed(b"jjq")), typed(b"jjq"));
+        assert_eq!(strip_leading_osc_reply(typed(b"\x1b]x")), typed(b"\x1b]x"));
+        assert_eq!(
+            strip_leading_osc_reply(typed(b"q\x1b]11;")),
+            typed(b"q\x1b]11;")
+        );
+        assert!(strip_leading_osc_reply(Vec::new()).is_empty());
     }
 }

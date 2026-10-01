@@ -553,7 +553,7 @@ impl HtmlBlock<'_, '_> {
         match heading {
             Some((level, source_line)) => {
                 let text: String = spans.iter().map(|s| s.text.replace('\n', " ")).collect();
-                layout_heading_spans(level, spans, &text, source_line, self.ctx, lines);
+                layout_heading_spans(level, spans, &text, &text, source_line, self.ctx, lines);
             }
             None => {
                 let ctx = self.ctx;

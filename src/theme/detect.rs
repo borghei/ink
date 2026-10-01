@@ -56,6 +56,15 @@ pub fn is_dark_background() -> bool {
     background().dark
 }
 
+/// True when the OSC 11 query went out and nothing at all came back before
+/// the timeout: a terminal on a very slow link may still deliver the reply
+/// later, as input. The reader then discards it (`input::discard_late_reply`).
+pub fn reply_may_arrive_late() -> bool {
+    BACKGROUND.get().is_some_and(|b| b.query == NO_REPLY)
+}
+
+const NO_REPLY: &str = "no reply";
+
 fn detect(allow_query: bool) -> Background {
     let query = if allow_query {
         match query_skip_reason() {
@@ -127,16 +136,33 @@ fn skip_reason_for(term: &str, wt_session: bool, windows: bool) -> Option<&'stat
     None
 }
 
-/// How long to wait for a terminal that answers neither query. Responsive
-/// terminals end the wait early through the DA1 reply, so this only costs
-/// time on the rare terminal that answers nothing — but across SSH the round
-/// trip itself can take longer.
-fn query_timeout() -> Duration {
-    if crate::platform::is_ssh() {
-        Duration::from_millis(400)
-    } else {
-        Duration::from_millis(100)
+/// How long to wait for the replies. Every real terminal answers the DA1
+/// request that follows the query, and the read loop stops the moment that
+/// answer is in, so on a normal terminal this costs milliseconds; the full
+/// second is only spent on a terminal that answers nothing. It is long so
+/// that slow links nobody flags as remote (`docker exec`, `kubectl exec`,
+/// mosh, serial consoles) still get their reply read here rather than
+/// leaking into the shell or the reader afterwards.
+const QUERY_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Extra time granted, once, when the deadline passes in the middle of the
+/// replies (something arrived, the DA1 answer has not): the rest is in
+/// flight, and leaving it unread would leak it.
+const QUERY_GRACE: Duration = Duration::from_millis(500);
+
+/// Should the read loop stop now? `buf` is everything read so far.
+fn query_done(buf: &[u8], past_deadline: bool, extended: &mut bool) -> bool {
+    if contains_da1_reply(buf) {
+        return true;
     }
+    if !past_deadline {
+        return false;
+    }
+    if buf.is_empty() || *extended {
+        return true;
+    }
+    *extended = true;
+    false
 }
 
 /// The background query, followed by a primary device attributes request
@@ -192,13 +218,18 @@ fn query_background() -> Result<String, String> {
         return Err("skipped (cannot write to terminal)".into());
     }
 
-    let deadline = Instant::now() + query_timeout();
+    let mut deadline = Instant::now() + QUERY_TIMEOUT;
+    let mut extended = false;
     let mut buf: Vec<u8> = Vec::new();
     let mut chunk = [0u8; 256];
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
+        let mut left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            break;
+            if query_done(&buf, true, &mut extended) {
+                break;
+            }
+            deadline = Instant::now() + QUERY_GRACE;
+            left = QUERY_GRACE;
         }
         let mut pfd = libc::pollfd {
             fd,
@@ -214,7 +245,7 @@ fn query_background() -> Result<String, String> {
             break;
         }
         if n == 0 {
-            break;
+            continue; // timed out: the deadline check above decides
         }
         // SAFETY: reading into a stack buffer of the stated length.
         let got = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
@@ -222,12 +253,12 @@ fn query_background() -> Result<String, String> {
             break;
         }
         buf.extend_from_slice(&chunk[..got as usize]);
-        if contains_da1_reply(&buf) {
+        if query_done(&buf, false, &mut extended) {
             break;
         }
     }
     if buf.is_empty() {
-        return Err("no reply".into());
+        return Err(NO_REPLY.into());
     }
     Ok(String::from_utf8_lossy(&buf).into_owned())
 }
@@ -259,12 +290,20 @@ fn query_background() -> Result<String, String> {
     {
         return Err("skipped (cannot write to terminal)".into());
     }
-    let deadline = Instant::now() + query_timeout();
+    let mut deadline = Instant::now() + QUERY_TIMEOUT;
+    let mut extended = false;
     let mut text = String::new();
     loop {
-        let left = deadline.saturating_duration_since(Instant::now());
-        if left.is_zero() || !event::poll(left).unwrap_or(false) {
-            break;
+        let mut left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            if query_done(text.as_bytes(), true, &mut extended) {
+                break;
+            }
+            deadline = Instant::now() + QUERY_GRACE;
+            left = QUERY_GRACE;
+        }
+        if !event::poll(left).unwrap_or(false) {
+            continue; // timed out: the deadline check above decides
         }
         let Ok(Event::Key(k)) = event::read() else {
             continue;
@@ -278,12 +317,12 @@ fn query_background() -> Result<String, String> {
             KeyCode::Char(c) => text.push(c),
             _ => {}
         }
-        if contains_da1_reply(text.as_bytes()) {
+        if query_done(text.as_bytes(), false, &mut extended) {
             break;
         }
     }
     if text.is_empty() {
-        return Err("no reply".into());
+        return Err(NO_REPLY.into());
     }
     Ok(text)
 }
@@ -464,6 +503,33 @@ mod tests {
         assert!(contains_da1_reply(b"\x1b]11;rgb:0/0/0\x07\x1b[?1;2c"));
         assert!(!contains_da1_reply(b"\x1b[?62;22"));
         assert!(!contains_da1_reply(b"\x1b]11;rgb:0/0/0\x07"));
+    }
+
+    #[test]
+    fn the_read_loop_stops_on_da1_and_extends_once_for_a_partial_reply() {
+        let mut ext = false;
+        // DA1 in: done at once, deadline or not.
+        assert!(query_done(
+            b"\x1b]11;rgb:0/0/0\x07\x1b[?62c",
+            false,
+            &mut ext
+        ));
+        // Before the deadline, a partial reply keeps reading.
+        assert!(!query_done(b"\x1b]11;rgb:00", false, &mut ext));
+        // Nothing at all by the deadline: give up.
+        assert!(query_done(b"", true, &mut ext));
+        assert!(!ext);
+        // Partial at the deadline: one extension…
+        assert!(!query_done(b"\x1b]11;rgb:00", true, &mut ext));
+        assert!(ext);
+        // …and the partial OSC 11 is not mistaken for an answer.
+        assert_eq!(parse_osc11_reply("\x1b]11;rgb:00"), None);
+        // …then stop even if still incomplete.
+        assert!(query_done(
+            b"\x1b]11;rgb:0000/0000/0000\x07\x1b[?6",
+            true,
+            &mut ext
+        ));
     }
 
     #[test]

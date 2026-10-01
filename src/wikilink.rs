@@ -16,14 +16,25 @@ pub fn process_wikilinks(source: &str) -> String {
     source.to_string()
 }
 
-/// The file a wikilink target points at: the target itself when it already
-/// has an extension (`doc.pdf`), else `target.md`.
+/// The link a wikilink target points at: the target itself when it already
+/// has an extension (`doc.pdf`), else `target.md`. As in Obsidian, a `#`
+/// starts a section: `[[page#Section]]` → `page.md#Section`, and
+/// `[[#Section]]` is a jump within the document. The section is heading
+/// text; anchors are matched by slugging it the way headings are slugged.
 pub fn resolve_target(target: &str) -> String {
     let target = target.trim();
-    if target.contains('.') {
-        target.to_string()
+    let (page, section) = match target.split_once('#') {
+        Some((page, section)) => (page.trim_end(), Some(section.trim())),
+        None => (target, None),
+    };
+    let file = if page.is_empty() || page.contains('.') {
+        page.to_string()
     } else {
-        format!("{target}.md")
+        format!("{page}.md")
+    };
+    match section {
+        Some(section) => format!("{file}#{section}"),
+        None => file,
     }
 }
 
@@ -94,6 +105,18 @@ mod tests {
             links("See [[target|click here]]"),
             vec![pair("click here", "target.md")]
         );
+    }
+
+    #[test]
+    fn wikilink_sections() {
+        assert_eq!(
+            links("See [[page#Install it]] and [[#Usage|usage]]"),
+            vec![
+                pair("page#Install it", "page.md#Install it"),
+                pair("usage", "#Usage")
+            ]
+        );
+        assert_eq!(resolve_target("doc.md#a"), "doc.md#a");
     }
 
     #[test]
