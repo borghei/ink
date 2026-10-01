@@ -1,0 +1,6 @@
+graph RL
+    Start --> Check{Valid?}
+    Check -->|no| Fix[Fix it]
+    Fix --> Check
+    Check -->|yes| Done((Done))
+    Done --> Done

@@ -1,18 +1,52 @@
+//! Mermaid diagrams drawn as terminal text.
+//!
+//! Flowcharts, state, class and ER diagrams are parsed into one graph model
+//! ([`graph`]) and drawn by a layered layout engine ([`engine`]) on a
+//! character grid ([`canvas`]). Sequence diagrams, pie and Gantt charts and
+//! mindmaps have renderers of their own; other diagram types are shown as
+//! their source in a labelled box.
+//!
+//! Every renderer must fit the width it is given, finish quickly on hostile
+//! input, and produce the same output for the same input.
+
+mod canvas;
+mod engine;
+mod flowchart;
+mod graph;
+mod text;
+
+#[cfg(test)]
+mod tests;
+
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
+use canvas::Class;
+use graph::{Dir, Graph, Marker};
 use unicode_width::UnicodeWidthStr;
 
 /// Parse and render a mermaid diagram as styled terminal text.
-/// This is a built-in ASCII renderer for common diagram types.
 pub fn render_mermaid(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
+    render_mermaid_with(source, theme, width, margin, crate::glyphs::current().ascii)
+}
+
+/// [`render_mermaid`] with the glyph set given explicitly (`ascii`: draw with
+/// 7-bit stand-ins). For tests; the reader uses the process-wide setting.
+#[doc(hidden)]
+pub fn render_mermaid_with(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+    ascii: bool,
+) -> Vec<StyledLine> {
     let mut lines = render_diagram(source, theme, width, margin);
     // The diagram renderers draw with box and arrow characters; in ASCII
     // mode translate them once here rather than in every renderer. (Each
     // stand-in has the same width, except the note icon, which ends a line.)
-    if crate::glyphs::current().ascii {
+    if ascii {
         for line in &mut lines {
             for span in &mut line.spans {
-                if let std::borrow::Cow::Owned(t) = crate::glyphs::asciify(&span.text) {
+                if let std::borrow::Cow::Owned(t) = asciify(&span.text) {
                     span.text = t;
                 }
             }
@@ -21,8 +55,110 @@ pub fn render_mermaid(source: &str, theme: &Theme, width: usize, margin: usize) 
     lines
 }
 
+/// ASCII stand-ins for every drawing character the diagram renderers emit
+/// (each the same width as what it replaces), on top of the shared set in
+/// [`crate::glyphs::asciify`].
+fn asciify(text: &str) -> std::borrow::Cow<'_, str> {
+    fn stand_in(c: char) -> Option<char> {
+        Some(match c {
+            '─' | '┄' | '╌' => '-',
+            '━' | '═' => '=',
+            '│' | '┃' | '║' => '|',
+            '┆' => ':',
+            '┌' | '┐' | '└' | '┘' | '├' | '┤' | '┬' | '┴' | '┼' | '╭' | '╮' | '╰' | '╯' | '╔'
+            | '╗' | '╚' | '╝' | '╤' | '╧' | '╪' | '╟' | '╢' | '╫' => '+',
+            '╱' => '/',
+            '╲' => '\\',
+            '▼' | '▽' => 'v',
+            '▲' | '△' => '^',
+            '▶' | '▷' => '>',
+            '◀' | '◁' => '<',
+            '◆' | '●' | '•' | '◦' => '*',
+            '◇' | '○' => 'o',
+            '◉' => '@',
+            '×' => 'x',
+            '█' | '▌' | '▎' => '#',
+            '▓' => '=',
+            '░' => '.',
+            '…' => '~',
+            '·' => '.',
+            _ => return None,
+        })
+    }
+    let mapped: std::borrow::Cow<'_, str> = if text.chars().any(|c| stand_in(c).is_some()) {
+        std::borrow::Cow::Owned(text.chars().map(|c| stand_in(c).unwrap_or(c)).collect())
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    match crate::glyphs::asciify(&mapped) {
+        std::borrow::Cow::Owned(s) => std::borrow::Cow::Owned(s),
+        std::borrow::Cow::Borrowed(_) => mapped,
+    }
+}
+
+/// The parts of a diagram's source: an optional frontmatter title, the
+/// keyword on its first line, the rest of that line, and the body lines.
+struct Source {
+    title: Option<String>,
+    keyword: String,
+    header: String,
+    body: Vec<String>,
+}
+
+fn split_source(src: &str) -> Source {
+    let mut lines = src.lines().peekable();
+    let mut title = None;
+    // Skip blank lines and directives before a frontmatter block.
+    while lines
+        .peek()
+        .is_some_and(|l| l.trim().is_empty() || l.trim().starts_with("%%"))
+    {
+        lines.next();
+    }
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
+        lines.next();
+        for l in lines.by_ref() {
+            let t = l.trim();
+            if t == "---" {
+                break;
+            }
+            if let Some(v) = t.strip_prefix("title:") {
+                title = Some(text::decode_label(v));
+            }
+        }
+    }
+    let mut keyword = String::new();
+    let mut header = String::new();
+    let mut body = Vec::new();
+    for l in lines {
+        let t = l.trim();
+        if keyword.is_empty() {
+            if t.is_empty() || t.starts_with("%%") {
+                continue;
+            }
+            let (k, rest) = t.split_once(char::is_whitespace).unwrap_or((t, ""));
+            // `graph TD;` / `graph;`
+            let (k, rest) = match k.split_once(';') {
+                Some((k, r)) => (k, format!(";{r} {rest}")),
+                None => (k, rest.to_string()),
+            };
+            keyword = k.to_string();
+            header = rest.trim().to_string();
+            continue;
+        }
+        body.push(l.to_string());
+    }
+    Source {
+        title,
+        keyword,
+        header,
+        body,
+    }
+}
+
 fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
-    let trimmed = source.trim();
+    let cleaned = text::clean_source(source);
+    let src = split_source(&cleaned);
     let diagram_color = &theme.colors.heading2;
     let text_color = &theme.colors.code_fg;
     let border_color = &theme.colors.table_border;
@@ -31,194 +167,287 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
     let margin_str = " ".repeat(margin);
 
     let chart_width = width.min(56);
+    // The legacy renderers below read the source from its first line.
+    let legacy = || {
+        let mut s = format!("{} {}\n", src.keyword, src.header);
+        for l in &src.body {
+            s.push_str(l);
+            s.push('\n');
+        }
+        s
+    };
 
-    // Detect diagram type
-    if trimmed.starts_with("graph") || trimmed.starts_with("flowchart") {
-        render_flowchart(
-            trimmed,
+    if let Some((g, title)) = parse_graph(&src) {
+        return render_graph(&g, &title, theme, width, margin);
+    }
+    match src.keyword.as_str() {
+        "sequenceDiagram" => render_sequence(
+            &legacy(),
             diagram_color,
             text_color,
             border_color,
             arrow_color,
             &margin_str,
             chart_width,
-        )
-    } else if trimmed.starts_with("sequenceDiagram") {
-        render_sequence(
-            trimmed,
-            diagram_color,
-            text_color,
-            border_color,
-            arrow_color,
-            &margin_str,
-            chart_width,
-        )
-    } else if trimmed.starts_with("pie") {
-        render_pie(trimmed, theme, &margin_str, chart_width)
-    } else if trimmed.starts_with("gantt") {
-        render_gantt(trimmed, theme, &margin_str, chart_width)
-    } else {
-        render_unknown(
-            trimmed,
+        ),
+        "pie" => render_pie(&legacy(), theme, &margin_str, chart_width),
+        "gantt" => render_gantt(&legacy(), theme, &margin_str, chart_width),
+        _ => render_unknown(
+            &legacy(),
             border_color,
             text_color,
             diagram_color,
             &margin_str,
             chart_width,
-        )
+        ),
     }
 }
 
-fn render_flowchart(
-    source: &str,
-    diagram_color: &str,
-    text_color: &str,
-    border_color: &str,
-    arrow_color: &str,
-    margin: &str,
+/// Parse a node-and-edge diagram into the graph model, with its title.
+fn parse_graph(src: &Source) -> Option<(Graph, String)> {
+    let (g, kind) = match src.keyword.as_str() {
+        "graph" | "flowchart" | "flowchart-elk" => {
+            (flowchart::parse(&src.header, &src.body), "flowchart")
+        }
+        _ => return None,
+    };
+    Some((g, src.title.clone().unwrap_or_else(|| kind.to_string())))
+}
+
+/// Colour and attributes for a canvas cell class.
+fn class_style(theme: &Theme, class: Class) -> SpanStyle {
+    let c = &theme.colors;
+    let (fg, bold, italic) = match class {
+        Class::Frame => (&c.table_border, false, false),
+        Class::Edge => (&c.heading3, false, false),
+        Class::Node => (&c.heading2, false, false),
+        Class::Text => (&c.code_fg, true, false),
+        Class::Label => (&c.code_fg, false, true),
+        Class::Title => (&c.heading2, true, false),
+    };
+    SpanStyle {
+        fg: Some(fg.clone()),
+        bold,
+        italic,
+        ..Default::default()
+    }
+}
+
+/// Lay out a node-and-edge diagram, trying narrower label wraps and tighter
+/// spacing until it fits; `LR`/`RL` diagrams that cannot fit are drawn top
+/// down, and a diagram that still cannot fit (or is too big to lay out) is
+/// listed edge by edge.
+fn render_graph(
+    g: &Graph,
+    title: &str,
+    theme: &Theme,
     width: usize,
+    margin: usize,
 ) -> Vec<StyledLine> {
-    let mut lines = Vec::new();
-    let mut nodes: Vec<(String, String)> = Vec::new(); // (id, label)
-    let mut edges: Vec<(String, String, String)> = Vec::new(); // (from, to, label)
-
-    for raw_line in source.lines().skip(1) {
-        let l = raw_line.trim();
-        if l.is_empty() {
-            continue;
-        }
-
-        // Parse edges: A --> B, A -->|text| B, A --- B
-        if let Some((from_part, rest)) = split_arrow(l) {
-            let from_id = extract_node_id(&from_part);
-            let from_label = extract_node_label(&from_part);
-            let (edge_label, to_part) = extract_edge_label(rest);
-            let to_id = extract_node_id(&to_part);
-            let to_label = extract_node_label(&to_part);
-
-            // Register nodes
-            if !from_id.is_empty() && !nodes.iter().any(|(id, _)| id == &from_id) {
-                nodes.push((from_id.clone(), from_label));
-            }
-            if !to_id.is_empty() && !nodes.iter().any(|(id, _)| id == &to_id) {
-                nodes.push((to_id.clone(), to_label));
-            }
-            edges.push((from_id, to_id, edge_label));
-        } else if !l.starts_with("graph") && !l.starts_with("flowchart") {
-            // Standalone node definition
-            let id = extract_node_id(l);
-            let label = extract_node_label(l);
-            if !id.is_empty() && !nodes.iter().any(|(nid, _)| nid == &id) {
-                nodes.push((id, label));
-            }
-        }
+    if g.nodes.is_empty() {
+        let mut lines = framed(title, &[], &g.notes, theme, width, margin);
+        lines.push(StyledLine::empty());
+        return lines;
     }
-
-    lines.push(make_header(
-        "flowchart",
-        border_color,
-        diagram_color,
-        margin,
-        width,
-    ));
-
-    // Render nodes vertically with arrows between them
-    for (i, edge) in edges.iter().enumerate() {
-        let from_label = nodes
-            .iter()
-            .find(|(id, _)| id == &edge.0)
-            .map(|(_, l)| l.as_str())
-            .unwrap_or(&edge.0);
-        let to_label = nodes
-            .iter()
-            .find(|(id, _)| id == &edge.1)
-            .map(|(_, l)| l.as_str())
-            .unwrap_or(&edge.1);
-
-        // From node box (only render if first edge or different from previous)
-        if i == 0 || (i > 0 && edges[i - 1].1 != edge.0) {
-            lines.push(make_node_line(from_label, border_color, text_color, margin));
-        }
-
-        // Arrow
-        let mut arrow_line = StyledLine::new();
-        push_margin(&mut arrow_line, margin);
-        arrow_line.push(StyledSpan {
-            text: "│     ".to_string(),
-            style: SpanStyle {
-                fg: Some(border_color.to_string()),
-                ..Default::default()
-            },
-        });
-
-        let arrow_text = if edge.2.is_empty() {
-            "  │".to_string()
-        } else {
-            format!("  │ {}", edge.2)
-        };
-        arrow_line.push(StyledSpan {
-            text: arrow_text,
-            style: SpanStyle {
-                fg: Some(arrow_color.to_string()),
-                ..Default::default()
-            },
-        });
-        lines.push(arrow_line);
-
-        let mut arrow_head = StyledLine::new();
-        push_margin(&mut arrow_head, margin);
-        arrow_head.push(StyledSpan {
-            text: "│     ".to_string(),
-            style: SpanStyle {
-                fg: Some(border_color.to_string()),
-                ..Default::default()
-            },
-        });
-        arrow_head.push(StyledSpan {
-            text: "  ▼".to_string(),
-            style: SpanStyle {
-                fg: Some(arrow_color.to_string()),
-                ..Default::default()
-            },
-        });
-        lines.push(arrow_head);
-
-        // To node box
-        lines.push(make_node_line(to_label, border_color, text_color, margin));
+    if let Some(drawn) = lay_out(g, width) {
+        let mut notes = drawn.notes;
+        notes.extend(g.notes.iter().cloned());
+        let mut lines = framed(title, &drawn.rows, &notes, theme, width, margin);
+        lines.push(StyledLine::empty());
+        return lines;
     }
-
-    if edges.is_empty() {
-        for (_, label) in &nodes {
-            lines.push(make_node_line(label, border_color, text_color, margin));
-        }
-    }
-
-    lines.push(make_footer(border_color, margin, width));
+    let mut lines = edge_list(g, title, theme, width, margin);
     lines.push(StyledLine::empty());
-
     lines
 }
 
-fn make_node_line(label: &str, border_color: &str, text_color: &str, margin: &str) -> StyledLine {
-    // Single-line box representation: │     [ Label ]
-    let mut result = StyledLine::new();
-    push_margin(&mut result, margin);
-    result.push(StyledSpan {
-        text: "│     ".to_string(),
+/// The layout attempts for a graph at `width` (the frame included): the
+/// first that fits, or `None` when the diagram has to be listed instead.
+fn lay_out(g: &Graph, width: usize) -> Option<engine::Drawn> {
+    let avail = width.saturating_sub(4);
+    let mut dirs = vec![g.dir];
+    if g.dir.horizontal() {
+        dirs.push(Dir::Down);
+    }
+    let attempts: [(usize, usize); 5] = [(28, 2), (20, 2), (14, 1), (10, 1), (6, 1)];
+    for dir in dirs {
+        for (wrap, sep) in attempts {
+            let sep = if dir.horizontal() { 1 } else { sep };
+            let p = engine::Params { wrap, sep, dir };
+            match engine::layout(g, &p, avail) {
+                Ok(drawn) => return Some(drawn),
+                Err(engine::Fail::TooBig) => return None,
+                Err(engine::Fail::TooWide(_)) => {}
+            }
+        }
+    }
+    None
+}
+
+/// The last-resort form: every node with its outgoing edges, one per line.
+fn edge_list(
+    g: &Graph,
+    title: &str,
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+) -> Vec<StyledLine> {
+    let inner = width.saturating_sub(4).max(8);
+    let mut out: Vec<Vec<(String, Class)>> = Vec::new();
+    let one_line = |s: &str| s.replace('\n', " ");
+    let push_wrapped =
+        |out: &mut Vec<Vec<(String, Class)>>, indent: usize, parts: Vec<(String, Class)>| {
+            // Wrap the concatenated text, keeping the first part's class for
+            // the arrow and the last for the target.
+            let full: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+            let lines = text::wrap(&full, inner.saturating_sub(indent).max(4));
+            for (i, l) in lines.into_iter().enumerate() {
+                let pad = " ".repeat(if i == 0 { indent } else { indent + 2 });
+                let class = if i == 0 {
+                    parts[0].1
+                } else {
+                    parts[parts.len() - 1].1
+                };
+                if i == 0 && parts.len() > 1 {
+                    // Re-split the first line at the arrow boundary when it is intact.
+                    let head = &parts[0].0;
+                    if let Some(rest) = l.strip_prefix(head.as_str()) {
+                        out.push(vec![
+                            (pad, Class::Frame),
+                            (head.clone(), parts[0].1),
+                            (rest.to_string(), parts[1].1),
+                        ]);
+                        continue;
+                    }
+                }
+                out.push(vec![(pad, Class::Frame), (l, class)]);
+            }
+        };
+    let mut has_edges = vec![false; g.nodes.len()];
+    for e in &g.edges {
+        has_edges[e.from] = true;
+        has_edges[e.to] = true;
+    }
+    for (i, n) in g.nodes.iter().enumerate() {
+        let outgoing: Vec<&graph::Edge> = g.edges.iter().filter(|e| e.from == i).collect();
+        if outgoing.is_empty() && has_edges[i] {
+            continue;
+        }
+        push_wrapped(&mut out, 0, vec![(one_line(&n.label), Class::Text)]);
+        for e in outgoing {
+            let head = if e.end == Marker::None {
+                "──"
+            } else {
+                "──▶"
+            };
+            let arrow = if e.label.is_empty() {
+                format!("{head} ")
+            } else {
+                format!("──{}{} ", one_line(&e.label), head)
+            };
+            push_wrapped(
+                &mut out,
+                2,
+                vec![
+                    (arrow, Class::Edge),
+                    (one_line(&g.nodes[e.to].label), Class::Text),
+                ],
+            );
+        }
+    }
+    framed(title, &out, &g.notes, theme, width, margin)
+}
+
+/// Wrap drawn rows in the diagram frame: a titled top border, `│` sides and
+/// a bottom border, as wide as the content needs (at most `width`). Notes
+/// follow the rows inside the frame.
+fn framed(
+    title: &str,
+    rows: &[Vec<(String, Class)>],
+    notes: &[String],
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+) -> Vec<StyledLine> {
+    let border = &theme.colors.table_border;
+    let margin_str = " ".repeat(margin);
+    let row_w = |r: &Vec<(String, Class)>| r.iter().map(|(t, _)| text::width(t)).sum::<usize>();
+    let content_w = rows.iter().map(row_w).max().unwrap_or(0);
+    let note_lines: Vec<String> = notes
+        .iter()
+        .flat_map(|n| text::wrap(n, width.saturating_sub(4).max(4)))
+        .collect();
+    let notes_w = note_lines.iter().map(|l| text::width(l)).max().unwrap_or(0);
+    let title_w = text::width(title);
+    let frame_w = (content_w.max(notes_w) + 4)
+        .max(title_w + 6)
+        .max(20)
+        .min(width);
+    let inner = frame_w.saturating_sub(4);
+    let title = text::truncate(title, frame_w.saturating_sub(6));
+    let mut lines = vec![make_header(
+        &title,
+        border,
+        &theme.colors.heading2,
+        &margin_str,
+        frame_w,
+    )];
+    let side = |s: &str| StyledSpan {
+        text: s.to_string(),
         style: SpanStyle {
-            fg: Some(border_color.to_string()),
+            fg: Some(border.clone()),
             ..Default::default()
         },
-    });
-    result.push(StyledSpan {
-        text: format!("[ {} ]", label),
-        style: SpanStyle {
-            fg: Some(text_color.to_string()),
-            bold: true,
-            ..Default::default()
-        },
-    });
-    result
+    };
+    let mut emit = |runs: Vec<StyledSpan>, w: usize| {
+        let mut line = StyledLine::new();
+        push_margin(&mut line, &margin_str);
+        line.push(side("│ "));
+        for r in runs {
+            line.push(r);
+        }
+        line.push(StyledSpan {
+            text: " ".repeat(inner.saturating_sub(w)),
+            style: SpanStyle::default(),
+        });
+        line.push(side(" │"));
+        lines.push(line);
+    };
+    let offset = (inner.saturating_sub(content_w)) / 2;
+    for r in rows {
+        let w = row_w(r);
+        let mut runs = Vec::new();
+        if offset > 0 {
+            runs.push(StyledSpan {
+                text: " ".repeat(offset),
+                style: SpanStyle::default(),
+            });
+        }
+        // Trailing blanks are padding; keep rows within the frame.
+        for (t, class) in r {
+            runs.push(StyledSpan {
+                text: t.clone(),
+                style: class_style(theme, *class),
+            });
+        }
+        emit(runs, w + offset);
+    }
+    if !note_lines.is_empty() && !rows.is_empty() {
+        emit(Vec::new(), 0);
+    }
+    for l in note_lines {
+        let l = text::truncate(&l, inner);
+        let w = text::width(&l);
+        emit(
+            vec![StyledSpan {
+                text: l,
+                style: class_style(theme, Class::Label),
+            }],
+            w,
+        );
+    }
+    lines.push(make_footer(border, &margin_str, frame_w));
+    lines
 }
 
 fn render_sequence(
@@ -627,59 +856,6 @@ fn push_margin(line: &mut StyledLine, margin: &str) {
     }
 }
 
-fn split_arrow(line: &str) -> Option<(String, &str)> {
-    let arrows = ["-->", "---", "-.-", "==>", "-.->", "->>"];
-    for arrow in &arrows {
-        if let Some(pos) = line.find(arrow) {
-            let from = line[..pos].trim().to_string();
-            let rest = &line[pos + arrow.len()..];
-            return Some((from, rest.trim()));
-        }
-    }
-    None
-}
-
-fn extract_node_id(s: &str) -> String {
-    let s = s.trim();
-    // Handle A[Label], A(Label), A{Label}, A((Label))
-    if let Some(pos) = s.find(['[', '(', '{']) {
-        s[..pos].trim().to_string()
-    } else {
-        s.to_string()
-    }
-}
-
-fn extract_node_label(s: &str) -> String {
-    let s = s.trim();
-    // Extract label from brackets: A[Label] -> Label
-    for (open, close) in &[('[', ']'), ('(', ')'), ('{', '}')] {
-        if let Some(start) = s.find(*open) {
-            if let Some(end) = s.rfind(*close) {
-                if end > start {
-                    let label = &s[start + 1..end];
-                    // Handle double brackets ((Label))
-                    let label = label.trim_start_matches('(').trim_end_matches(')');
-                    return label.to_string();
-                }
-            }
-        }
-    }
-    extract_node_id(s)
-}
-
-fn extract_edge_label(rest: &str) -> (String, String) {
-    let rest = rest.trim();
-    // Handle |label| syntax
-    if let Some(rest_after_pipe) = rest.strip_prefix('|') {
-        if let Some(end) = rest_after_pipe.find('|') {
-            let label = rest_after_pipe[..end].to_string();
-            let to = rest_after_pipe[end + 1..].trim().to_string();
-            return (label, to);
-        }
-    }
-    (String::new(), rest.to_string())
-}
-
 fn parse_sequence_line(line: &str) -> (String, String, String, String) {
     let arrows = ["-->>", "->>", "-->", "->"];
     for arrow in &arrows {
@@ -706,7 +882,7 @@ fn parse_sequence_line(line: &str) -> (String, String, String, String) {
 }
 
 #[cfg(test)]
-mod tests {
+mod header_tests {
     use super::*;
 
     fn line_width(line: &StyledLine) -> usize {

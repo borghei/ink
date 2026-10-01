@@ -1,0 +1,9 @@
+flowchart LR
+    A[Push Code] --> B[Run Tests]
+    B --> C{Tests Pass?}
+    C -->|Yes| D[Build Docker]
+    C -->|No| E[Notify Team]
+    D --> F[Deploy Staging]
+    F --> G{QA Approved?}
+    G -->|Yes| H[Deploy Production]
+    G -->|No| E
