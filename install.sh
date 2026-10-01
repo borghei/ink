@@ -5,7 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 #
 # Environment:
-#   INK_VERSION=v0.8.0                   install a specific release (default: latest)
+#   INK_VERSION=v0.9.0                   install a specific release (default: latest)
 #   INK_INSTALL_DIR="$HOME/.local/bin"   install somewhere else (default: /usr/local/bin)
 #
 # Options:
@@ -277,10 +277,10 @@ main() {
     case "$asset" in
       *-musl)
         if [ -n "${INK_VERSION:-}" ]; then
-          err "Static musl builds first shipped in the release after v0.8.0; $version predates them."
+          err "Static musl builds first shipped in v0.9.0; $version predates them."
           err "Unset INK_VERSION (or pick a newer one) to get it."
         else
-          err "Static musl builds first ship in the release after v0.8.0, which is not out yet."
+          err "Static musl builds first shipped in v0.9.0; the latest release has none."
         fi
         ;;
     esac

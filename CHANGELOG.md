@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.9.0 — 2026-10-01
+
+### Added
+- **More platforms.** Static musl builds for x86_64, ARM64 and ARMv7 — Alpine, Debian 11, Ubuntu 20.04, RHEL 8, NixOS, containers and 32-bit Raspberry Pi — and a native Windows ARM64 build. The Windows binaries no longer need the Visual C++ runtime. (#19)
+- **Smarter installers.** `install.sh` picks the right binary for your libc and CPU, supports `INK_VERSION` pinning, works with `wget`, and no longer depends on the rate-limited GitHub API. New `install.ps1` for Windows. (#19)
+- **Man page and shell completions** ship in the `.deb`/`.rpm` and in new `.tar.gz`/`.zip` release archives. Release assets carry a build-provenance attestation (`gh attestation verify`). (#19)
+- **`--color auto|always|never`.** Piped `--plain` output is clean text by default, `ink file.md | cat` prints the document instead of failing, and `ink -` reads stdin. Previews that want colour in a pipe (fzf, `less -R`) pass `--color=always`. (#17)
+- **Anchor links.** `#heading` and `file.md#heading` jump to the heading, as do `[[page#section]]` and `[[#section]]` wikilinks, and every followed link goes into back/forward history with its scroll position. A link that cannot be followed now says so. (#16, #21)
+- **Light/dark auto-detection** by asking the terminal for its background colour, so light-profile terminals get a light theme without configuration. (#20)
+- **`--ascii` mode and a 16-colour tier** for the Linux console, legacy console fonts and screen readers; both switch on automatically where needed. With `--color=never` or `NO_COLOR` the reader uses no colour at all. (#20)
+- **`--no-mouse`** leaves the mouse to the terminal for one session, and the file browser now honours `mouse_capture`. (#20)
+- **`ink doctor` reports the whole environment** — colour, theme, clipboard, input, config and multiplexer facts, with home paths and session values redacted. (#20)
+
+### Fixed
+- **Every key acted twice on Windows.** Key-release events are now ignored. (#16)
+- **Hard line breaks glued words together** (`hard⏎break` rendered as `hardbreak`); they now start a new line, in tables too. (#18)
+- **HTML blocks no longer lose text or print raw tags.** Headings, links, images, `<details>`, `<kbd>`, `<br>` and entities render; comments are dropped. A GitHub-style centered README header now reads as a title. (#18)
+- **Wikilinks inside code are left untouched**, and targets with spaces or parentheses work. (#18)
+- **The terminal is restored after SIGTERM, SIGHUP and SIGINT** instead of being left in raw mode. (#16)
+- **The file browser no longer hangs on symlink loops.** (#16)
+- **Config and flag errors are reported.** A bad line in `config.toml` prints a warning and the rest still applies; invalid `--width`, `--spacing` and `--image-protocol` values are errors. (#17)
+- **Copying non-ASCII text works on Windows and WSL**; Termux and GNU screen clipboards are supported. (#20)
+- **No startup stall** in Apple Terminal or on the Linux console, where the image-protocol probe is now skipped. (#20)
+
+### Security
+- **Deeply nested documents can no longer crash ink** with a stack overflow; a 20 KB file used to. (#18)
+- **Image decode limits** stop decompression bombs: a document with six hostile inline images went from 2.2 GB of memory to 34 MB. Tall screenshots and large photos still decode. (#17, #21)
+- **`ink outline` and `ink diff` no longer pass escape sequences** from the document to the terminal. (#17)
+
+### Changed
+- `NO_COLOR` now also drops bold and underline in `--plain`.
+- The unused C regex dependency (oniguruma) is gone; syntax highlighting runs on the pure-Rust engine.
+- The minimum supported Rust version is declared as 1.90.
+
 ## 0.8.0 — 2026-10-01
 
 ### Added

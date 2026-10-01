@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 The installer picks the right binary for your OS, CPU and libc (static musl build on Alpine, Raspberry Pi and older-glibc systems), checks it against `SHA256SUMS` and installs to `/usr/local/bin` (using `sudo` only if it has to). Pin a version with `INK_VERSION=v0.8.0` or change the target with `INK_INSTALL_DIR="$HOME/.local/bin"`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.8.0 INK_INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.9.0 INK_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 ### Quick install (Windows PowerShell)
@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_V
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 ```
 
-Installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.8.0"` first to pin a version.
+Installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.9.0"` first to pin a version.
 
 ### Homebrew (macOS / Linux)
 
@@ -107,7 +107,7 @@ The glibc builds need glibc 2.35 or newer; older and musl-based systems use the 
 gh attestation verify ink-linux-amd64 --repo borghei/ink
 ```
 
-The static musl builds and Windows ARM64 binaries are new after v0.8.0; earlier releases only have the glibc, macOS and Windows x64 binaries.
+The static musl builds and Windows ARM64 binaries are new in v0.9.0; earlier releases only have the glibc, macOS and Windows x64 binaries.
 
 ### From source
 
