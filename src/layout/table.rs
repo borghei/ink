@@ -24,11 +24,11 @@ pub fn layout_table<'a>(
     let num_cols = headers.len();
 
     // Calculate ideal column widths from content
-    let mut col_widths: Vec<usize> = headers.iter().map(|h| h.width()).collect();
+    let mut col_widths: Vec<usize> = headers.iter().map(|h| cell_width(h)).collect();
     for row in &rows {
         for (i, cell) in row.iter().enumerate() {
             if i < col_widths.len() {
-                col_widths[i] = col_widths[i].max(cell.width());
+                col_widths[i] = col_widths[i].max(cell_width(cell));
             }
         }
     }
@@ -154,6 +154,9 @@ fn render_transposed(
     let border_color = &theme.colors.table_border;
 
     // Label column: the widest header, capped so values keep a usable width.
+    // A hard break in a header has no second line to go to in the label
+    // column; it reads as a space there.
+    let headers: Vec<String> = headers.iter().map(|h| h.replace('\n', " ")).collect();
     let max_hdr = headers.iter().map(|h| h.width()).max().unwrap_or(0);
     let label_w = max_hdr
         .min(max_width.saturating_sub(INDENT + GAP + 8))
@@ -271,8 +274,20 @@ fn wrap_row(cells: &[String], widths: &[usize]) -> Vec<Vec<String>> {
     wrapped_cols
 }
 
-/// Word-wrap text to fit within max_width characters.
+/// Display width of a cell: its widest hard-broken line.
+fn cell_width(text: &str) -> usize {
+    text.split('\n').map(|l| l.width()).max().unwrap_or(0)
+}
+
+/// Word-wrap text to fit within max_width characters. A `\n` (hard break in
+/// the cell) always starts a new line.
 fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
+    if text.contains('\n') {
+        return text
+            .split('\n')
+            .flat_map(|seg| wrap_text(seg.trim(), max_width))
+            .collect();
+    }
     if max_width == 0 {
         return vec![text.to_string()];
     }
@@ -508,7 +523,10 @@ fn collect_cell_text_inner<'a>(node: &'a AstNode<'a>, buf: &mut String) {
             buf.push_str(&c.literal);
             buf.push('`');
         }
-        NodeValue::SoftBreak | NodeValue::LineBreak => buf.push(' '),
+        NodeValue::SoftBreak => buf.push(' '),
+        // A hard break makes the cell multi-line (`wrap_text` splits on it).
+        NodeValue::LineBreak => buf.push('\n'),
+        NodeValue::HtmlInline(html) if super::html::is_br_tag(html) => buf.push('\n'),
         _ => {}
     }
     drop(data);

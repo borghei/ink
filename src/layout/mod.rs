@@ -1,3 +1,4 @@
+pub mod html;
 pub mod mermaid;
 pub mod table;
 
@@ -1448,10 +1449,9 @@ fn collect_inlines<'a>(
                     });
                     continue;
                 }
-                let tag = html.trim().to_ascii_lowercase();
-                if tag == "<br>" || tag == "<br/>" || tag == "<br />" {
+                if html::is_br_tag(html) {
                     spans.push(StyledSpan {
-                        text: " ".to_string(),
+                        text: "\n".to_string(),
                         style: parent_style.clone(),
                     });
                 }
@@ -1611,6 +1611,17 @@ fn wrap_spans(
 ) -> Vec<StyledLine> {
     let effective_width = max_width.saturating_sub(indent);
     if effective_width == 0 || spans.is_empty() {
+        // No room to wrap: a hard break degrades to a space rather than being
+        // stripped by the sanitizer (which would glue the words together).
+        let spans = spans
+            .into_iter()
+            .map(|mut s| {
+                if s.text.contains('\n') {
+                    s.text = s.text.replace('\n', " ");
+                }
+                s
+            })
+            .collect();
         let mut line = StyledLine { spans };
         if margin > 0 {
             line.spans.insert(
@@ -1661,72 +1672,88 @@ fn wrap_spans(
         l
     };
 
+    // Set by a hard break, cleared by the next word: a break with nothing
+    // after it must not leave a trailing blank line.
+    let mut after_break = false;
     for span in spans {
-        let words: Vec<&str> = span.text.split(' ').collect();
-        for (i, word) in words.iter().enumerate() {
-            let w = word.width();
-            if w == 0 && i > 0 {
-                // Empty word means a literal space here (trailing space of this
-                // span, or a run of consecutive spaces). Emit it so spacing is
-                // preserved across span boundaries — e.g. "word **bold**" must
-                // not collapse to "wordbold".
-                if col > 0 && col < effective_width {
+        // A `\n` inside a span is a hard line break (`LineBreak` or `<br>`):
+        // it ends the visual line no matter how much room is left.
+        for (seg_idx, segment) in span.text.split('\n').enumerate() {
+            if seg_idx > 0 {
+                lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                col = 0;
+                after_break = true;
+            }
+            let words: Vec<&str> = segment.split(' ').collect();
+            for (i, word) in words.iter().enumerate() {
+                let w = word.width();
+                if w == 0 && i > 0 {
+                    // Empty word means a literal space here (trailing space of this
+                    // span, or a run of consecutive spaces). Emit it so spacing is
+                    // preserved across span boundaries — e.g. "word **bold**" must
+                    // not collapse to "wordbold".
+                    if col > 0 && col < effective_width {
+                        current.push(StyledSpan {
+                            text: " ".to_string(),
+                            style: span.style.clone(),
+                        });
+                        col += 1;
+                    }
+                    continue;
+                }
+
+                // A single token wider than the line can't be wrapped on a space —
+                // hard-break it into width-sized chunks so it never overflows.
+                if w > effective_width {
+                    if col > 0 {
+                        lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                        col = 0;
+                    }
+                    for chunk in split_by_width(word, effective_width) {
+                        if col > 0 {
+                            lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                            col = 0;
+                        }
+                        let cw = chunk.width();
+                        current.push(StyledSpan {
+                            text: chunk,
+                            style: span.style.clone(),
+                        });
+                        col += cw;
+                    }
+                    after_break = false;
+                    continue;
+                }
+
+                let need_space = col > 0 && i > 0;
+                let total = col + w + if need_space { 1 } else { 0 };
+
+                if total > effective_width && col > 0 {
+                    lines.push(std::mem::replace(&mut current, new_prefixed_line()));
+                    col = 0;
+                }
+
+                if col > 0 && need_space {
                     current.push(StyledSpan {
                         text: " ".to_string(),
                         style: span.style.clone(),
                     });
                     col += 1;
                 }
-                continue;
-            }
 
-            // A single token wider than the line can't be wrapped on a space —
-            // hard-break it into width-sized chunks so it never overflows.
-            if w > effective_width {
-                if col > 0 {
-                    lines.push(std::mem::replace(&mut current, new_prefixed_line()));
-                    col = 0;
-                }
-                for chunk in split_by_width(word, effective_width) {
-                    if col > 0 {
-                        lines.push(std::mem::replace(&mut current, new_prefixed_line()));
-                        col = 0;
-                    }
-                    let cw = chunk.width();
-                    current.push(StyledSpan {
-                        text: chunk,
-                        style: span.style.clone(),
-                    });
-                    col += cw;
-                }
-                continue;
-            }
-
-            let need_space = col > 0 && i > 0;
-            let total = col + w + if need_space { 1 } else { 0 };
-
-            if total > effective_width && col > 0 {
-                lines.push(std::mem::replace(&mut current, new_prefixed_line()));
-                col = 0;
-            }
-
-            if col > 0 && need_space {
                 current.push(StyledSpan {
-                    text: " ".to_string(),
+                    text: word.to_string(),
                     style: span.style.clone(),
                 });
-                col += 1;
+                col += w;
+                if w > 0 {
+                    after_break = false;
+                }
             }
-
-            current.push(StyledSpan {
-                text: word.to_string(),
-                style: span.style.clone(),
-            });
-            col += w;
         }
     }
 
-    if !current.spans.is_empty() {
+    if !current.spans.is_empty() && !(after_break && col == 0) {
         lines.push(current);
     }
 
@@ -2012,5 +2039,120 @@ mod heading_sanitization {
         );
         assert_eq!(result.headings[0].text, "He[2Jading");
         assert!(!result.headings[0].text.contains('\u{1b}'));
+    }
+}
+
+/// Rendered text of a document, one string per display line, trailing
+/// whitespace trimmed. Shared by the behaviour tests below.
+#[cfg(test)]
+fn render_text_lines(src: &str, width: u16) -> Vec<String> {
+    use comrak::{parse_document, Arena};
+    let arena = Arena::new();
+    let root = parse_document(&arena, src, &crate::parser::options());
+    let theme = crate::theme::resolve_theme("dark");
+    layout_document(
+        root,
+        &theme,
+        width,
+        Spacing::Normal,
+        0,
+        None,
+        ImageMode::Off,
+        None,
+    )
+    .lines
+    .iter()
+    .map(|l| {
+        l.spans
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    })
+    .collect()
+}
+
+/// Hard line breaks (two trailing spaces, a trailing backslash, `<br>`) must
+/// start a new visual line — they used to be emitted as a `\n` the wrapper
+/// ignored and the sanitizer then stripped, gluing the words together.
+#[cfg(test)]
+mod hard_breaks {
+    use super::render_text_lines;
+
+    fn has_line(lines: &[String], want: &str) -> bool {
+        lines.iter().any(|l| l.trim() == want)
+    }
+
+    fn assert_split(src: &str, first: &str, second: &str) {
+        let lines = render_text_lines(src, 60);
+        assert!(
+            has_line(&lines, first) && has_line(&lines, second),
+            "expected {first:?} and {second:?} on separate lines for {src:?}, got {lines:#?}"
+        );
+    }
+
+    #[test]
+    fn paragraph_trailing_spaces() {
+        assert_split("hard  \nbreak\n", "hard", "break");
+    }
+
+    #[test]
+    fn paragraph_trailing_backslash() {
+        assert_split(
+            "Roses are red\\\nViolets are blue\n",
+            "Roses are red",
+            "Violets are blue",
+        );
+    }
+
+    #[test]
+    fn soft_break_is_still_a_space() {
+        let lines = render_text_lines("soft\nbreak\n", 60);
+        assert!(has_line(&lines, "soft break"), "{lines:#?}");
+    }
+
+    #[test]
+    fn list_item_both_syntaxes() {
+        assert_split("- item  \n  two\n", "◦ item", "two");
+        assert_split("- item\\\n  two\n", "◦ item", "two");
+    }
+
+    #[test]
+    fn blockquote_both_syntaxes() {
+        assert_split("> quote  \n> line\n", "│ quote", "│ line");
+        assert_split("> quote\\\n> line\n", "│ quote", "│ line");
+    }
+
+    #[test]
+    fn inline_br_tags_in_any_case() {
+        for br in ["<br>", "<br/>", "<br />", "<BR>", "<Br />"] {
+            assert_split(&format!("left{br}right\n"), "left", "right");
+        }
+    }
+
+    #[test]
+    fn heading_with_br() {
+        let lines = render_text_lines("# top<br>bottom\n", 60);
+        assert!(lines.iter().any(|l| l.ends_with("top")), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.trim() == "bottom"), "{lines:#?}");
+    }
+
+    #[test]
+    fn table_cell_break_makes_a_multi_line_cell() {
+        for br in ["<br>", "<br/>", "<BR />"] {
+            let src = format!("| a | b |\n|---|---|\n| x{br}y | z |\n");
+            let lines = render_text_lines(&src, 60);
+            assert!(lines.iter().any(|l| l.contains("│ x │ z │")), "{lines:#?}");
+            assert!(lines.iter().any(|l| l.contains("│ y │   │")), "{lines:#?}");
+            assert!(!lines.iter().any(|l| l.contains("xy")), "{lines:#?}");
+        }
+    }
+
+    #[test]
+    fn a_trailing_br_leaves_no_blank_line() {
+        let lines = render_text_lines("end<br>\n", 60);
+        assert_eq!(lines[0], "end");
+        assert!(lines[1..].iter().all(|l| l.is_empty()));
     }
 }
