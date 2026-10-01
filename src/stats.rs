@@ -1,7 +1,12 @@
 use crate::parser;
 use crate::parser::frontmatter;
+use crate::sanitize::sanitize_text;
 
 /// Print document outline (heading structure).
+///
+/// Every document-derived string printed by this module goes through
+/// [`sanitize_text`]: these subcommands write straight to the terminal, so a
+/// heading like `# a\x1b]0;TITLE\x07` must not reach it as an escape.
 pub fn print_outline(source: &str) {
     let (_, content) = frontmatter::strip_frontmatter(source);
     let doc = parser::parse(&content);
@@ -19,7 +24,7 @@ pub fn print_outline(source: &str) {
             3 => "▎",
             _ => "·",
         };
-        println!("{indent}{marker} {}", h.text);
+        println!("{indent}{marker} {}", sanitize_text(&h.text));
     }
 }
 
@@ -39,7 +44,7 @@ pub fn print_stats(source: &str, filename: &str) {
     let image_count = count_pattern(&content, "![");
     let table_count = content.lines().filter(|l| l.contains("---|")).count();
 
-    println!("╭─ {} ─╮", filename);
+    println!("╭─ {} ─╮", sanitize_text(filename));
     println!("│");
     println!("│  Words:         {words}");
     println!("│  Characters:    {chars}");
@@ -63,13 +68,14 @@ pub fn print_stats(source: &str, filename: &str) {
 pub fn print_diff(source_a: &str, source_b: &str, name_a: &str, name_b: &str) {
     use similar::{ChangeTag, TextDiff};
 
+    let (name_a, name_b) = (sanitize_text(name_a), sanitize_text(name_b));
     println!("\x1b[1m--- {name_a}\x1b[0m");
     println!("\x1b[1m+++ {name_b}\x1b[0m");
     println!();
 
     let diff = TextDiff::from_lines(source_a, source_b);
     for change in diff.iter_all_changes() {
-        let line = change.value().trim_end_matches('\n');
+        let line = sanitize_text(change.value().trim_end_matches('\n'));
         match change.tag() {
             ChangeTag::Delete => println!("\x1b[31m- {line}\x1b[0m"),
             ChangeTag::Insert => println!("\x1b[32m+ {line}\x1b[0m"),
