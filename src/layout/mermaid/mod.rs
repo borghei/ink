@@ -14,6 +14,7 @@ mod class;
 mod engine;
 mod er;
 mod flowchart;
+mod gantt;
 mod graph;
 mod state;
 mod text;
@@ -195,7 +196,13 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
             chart_width,
         ),
         "pie" => render_pie(&legacy(), theme, &margin_str, chart_width),
-        "gantt" => render_gantt(&legacy(), theme, &margin_str, chart_width),
+        "gantt" => {
+            let (title, rows) =
+                gantt::render(src.title.clone(), &src.body, width.saturating_sub(4));
+            let mut lines = framed(&title, &rows, &[], theme, width, margin);
+            lines.push(StyledLine::empty());
+            lines
+        }
         _ => render_unknown(
             &legacy(),
             border_color,
@@ -231,6 +238,8 @@ fn class_style(theme: &Theme, class: Class) -> SpanStyle {
         Class::Text => (&c.code_fg, true, false),
         Class::Label => (&c.code_fg, false, true),
         Class::Title => (&c.heading2, true, false),
+        Class::Plain => (&c.code_fg, false, false),
+        Class::Alert => (&c.admonition_warning, true, false),
     };
     SpanStyle {
         fg: Some(fg.clone()),
@@ -652,90 +661,6 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
                 ..Default::default()
             },
         });
-        lines.push(line);
-    }
-
-    lines.push(make_footer(border_color, margin, width));
-    lines.push(StyledLine::empty());
-
-    lines
-}
-
-fn render_gantt(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<StyledLine> {
-    let mut lines = Vec::new();
-    let border_color = &theme.colors.table_border;
-    let text_color = &theme.colors.code_fg;
-    let colors = [
-        &theme.colors.heading1,
-        &theme.colors.heading2,
-        &theme.colors.heading3,
-    ];
-
-    let mut title = "Gantt Chart".to_string();
-    let mut tasks: Vec<String> = Vec::new();
-    let mut current_section;
-
-    for raw_line in source.lines().skip(1) {
-        let l = raw_line.trim();
-        if l.starts_with("title ") {
-            title = l.strip_prefix("title ").unwrap_or("").to_string();
-        } else if l.starts_with("section ") {
-            current_section = l.strip_prefix("section ").unwrap_or("").to_string();
-            tasks.push(format!("§{current_section}"));
-        } else if l.contains(':') && !l.starts_with("dateFormat") && !l.starts_with("axisFormat") {
-            let parts: Vec<&str> = l.splitn(2, ':').collect();
-            tasks.push(parts[0].trim().to_string());
-        }
-    }
-
-    lines.push(make_header(
-        &title,
-        border_color,
-        &theme.colors.heading2,
-        margin,
-        width,
-    ));
-
-    let mut color_idx = 0;
-    for task in &tasks {
-        let mut line = StyledLine::new();
-        push_margin(&mut line, margin);
-        line.push(StyledSpan {
-            text: "│  ".to_string(),
-            style: SpanStyle {
-                fg: Some(border_color.to_string()),
-                ..Default::default()
-            },
-        });
-
-        if let Some(section) = task.strip_prefix('§') {
-            line.push(StyledSpan {
-                text: format!("  ── {section} ──"),
-                style: SpanStyle {
-                    fg: Some(text_color.to_string()),
-                    bold: true,
-                    ..Default::default()
-                },
-            });
-        } else {
-            let color = colors[color_idx % colors.len()];
-            let bar_len = 8 + (task.len() % 8); // Vary bar width
-            line.push(StyledSpan {
-                text: format!("  {:>16} ", task),
-                style: SpanStyle {
-                    fg: Some(text_color.to_string()),
-                    ..Default::default()
-                },
-            });
-            line.push(StyledSpan {
-                text: "█".repeat(bar_len),
-                style: SpanStyle {
-                    fg: Some(color.clone()),
-                    ..Default::default()
-                },
-            });
-            color_idx += 1;
-        }
         lines.push(line);
     }
 

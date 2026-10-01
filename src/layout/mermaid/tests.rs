@@ -369,6 +369,26 @@ fn er_diagram_attributes_and_cardinalities() {
     );
 }
 
+// ── Gantt charts ──
+
+#[test]
+fn gantt_bars_on_a_scaled_axis() {
+    expect(
+        "gantt\ntitle Release\ndateFormat YYYY-MM-DD\nsection Build\nDesign :done, d1, 2024-03-04, 5d\nCode :active, c1, after d1, 10d\nReview :crit, after c1, 3d\nShip :milestone, after c1, 0d",
+        50,
+        r"
+╭─ Release ──────────────────────────────────────╮
+│           03-04         03-11         03-18    │
+│           ├─────────────┼─────────────┼──────┤ │
+│ Build                                          │
+│   Design  ██████████                           │
+│   Code              ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓       │
+│   Review                                ░░░░░░ │
+│   Ship                                  ◆      │
+╰────────────────────────────────────────────────╯",
+    );
+}
+
 // ── Properties over the corpus ──
 
 const WIDTHS: [usize; 5] = [24, 40, 60, 80, 120];

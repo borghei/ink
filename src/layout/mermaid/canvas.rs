@@ -27,6 +27,10 @@ pub enum Class {
     Label,
     /// Titles (subgraph names, class names, section headers).
     Title,
+    /// Ordinary text (Gantt task names).
+    Plain,
+    /// Highlighted items (critical Gantt tasks).
+    Alert,
 }
 
 #[derive(Debug, Clone)]
