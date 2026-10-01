@@ -38,7 +38,8 @@ pub struct Cli {
 
     /// When to emit color and hyperlinks in --plain and diff output.
     /// `auto`: only when stdout is a terminal, honoring NO_COLOR,
-    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb
+    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb. `never` (or NO_COLOR) also
+    /// draws the reader without colour
     #[arg(long, value_enum, value_name = "WHEN", default_value_t, global = true)]
     pub color: theme::caps::ColorChoice,
 
@@ -223,6 +224,10 @@ pub fn run() -> Result<()> {
     // force variables, TERM=dumb, and finally whether stdout is a terminal.
     let stdout_tty = std::io::stdout().is_terminal();
     let color = theme::caps::color_enabled(cli.color, stdout_tty);
+    // The reader always draws on a terminal, so it asks the same question as
+    // if stdout were one: `--color=never`, NO_COLOR and TERM=dumb turn its
+    // colours off (attributes only).
+    theme::caps::set_tui_level(theme::caps::color_enabled(cli.color, true));
 
     let (theme, theme_origin) = theme_choice(&cli.theme, &user_config);
     // `auto` asks the terminal for its background colour (OSC 11) once, now,

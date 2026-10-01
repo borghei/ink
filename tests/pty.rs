@@ -35,6 +35,10 @@ fn run_in_pty(
         .env_remove("STY")
         .env_remove("NO_COLOR")
         .env_remove("COLORTERM")
+        .env_remove("TERM_PROGRAM")
+        .env_remove("LC_TERMINAL")
+        .env_remove("ITERM_SESSION_ID")
+        .env_remove("WT_SESSION")
         .stdin(Stdio::from(slave.try_clone().unwrap()))
         .stdout(Stdio::from(slave.try_clone().unwrap()))
         .stderr(Stdio::from(slave.try_clone().unwrap()));
@@ -252,6 +256,103 @@ fn no_mouse_also_applies_to_the_file_browser() {
     for seq in MOUSE_ON {
         assert!(!contains(&s.output, seq));
     }
+}
+
+/// Any extended (256 / 24-bit) colour selection in the output?
+/// The parameter lists of every SGR (`CSI … m`) sequence in the output.
+fn sgr_params(out: &[u8]) -> Vec<Vec<u16>> {
+    let text = String::from_utf8_lossy(out);
+    text.split("\x1b[")
+        .skip(1)
+        .filter_map(|seq| {
+            let end = seq.find(|c: char| !(c.is_ascii_digit() || c == ';'))?;
+            if !seq[end..].starts_with('m') {
+                return None;
+            }
+            Some(
+                seq[..end]
+                    .split(';')
+                    .filter_map(|p| p.parse().ok())
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Any 24-bit colour, or a 256-palette colour beyond the 16 ANSI ones?
+/// (crossterm writes even the named colours as `38;5;0`–`38;5;15`, which
+/// select the terminal's own ANSI palette entries.)
+fn has_extended_colour(out: &[u8]) -> bool {
+    sgr_params(out).iter().any(|p| {
+        p.windows(3)
+            .any(|w| matches!(w[0], 38 | 48) && (w[1] == 2 || (w[1] == 5 && w[2] >= 16)))
+    })
+}
+
+/// Any SGR foreground/background colour at all (other than the 39/49
+/// "default colour" resets)?
+fn has_any_colour(out: &[u8]) -> bool {
+    sgr_params(out)
+        .iter()
+        .flatten()
+        .any(|p| matches!(p, 30..=38 | 40..=48 | 90..=97 | 100..=107))
+}
+
+#[test]
+fn colour_never_draws_the_reader_with_attributes_only() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test.md");
+    let mut step = 0;
+    let s = run_in_pty(
+        &[
+            "--color=never",
+            "--theme",
+            "dark",
+            "--image-protocol",
+            "halfblocks",
+            fixture,
+        ],
+        &[("COLORTERM", "truecolor")],
+        |out, t| {
+            // Once up: select the current line (V), then leave (Esc, q).
+            let up = contains(out, b"\x1b[?1049h");
+            let keys: &[u8] = match step {
+                0 if up => b"V",
+                1 if t > Duration::from_millis(1200) => b"j",
+                2 if t > Duration::from_millis(1600) => b"\x1b",
+                3 if t > Duration::from_millis(2000) => b"q",
+                _ => return None,
+            };
+            step += 1;
+            Some(keys.to_vec())
+        },
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    assert!(!has_any_colour(&s.output), "colour escapes were written");
+    // The selection is still visible: reverse video.
+    assert!(
+        contains(&s.output, b"\x1b[7m"),
+        "no reverse-video selection"
+    );
+}
+
+#[test]
+fn a_16_colour_terminal_gets_only_ansi_colours() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test.md");
+    let s = run_in_pty(
+        &["--theme", "dark", "--image-protocol", "halfblocks", fixture],
+        &[("TERM", "xterm")],
+        quit_when_up(),
+    );
+    assert!(
+        contains(&s.output, b"\x1b[?1049l"),
+        "reader did not exit: {:?}",
+        String::from_utf8_lossy(&s.output[s.output.len().saturating_sub(600)..])
+    );
+    assert!(has_any_colour(&s.output), "expected ANSI colours");
+    assert!(
+        !has_extended_colour(&s.output),
+        "256/24-bit colour on TERM=xterm"
+    );
 }
 
 /// Time from launch until the reader enters the alternate screen, on a

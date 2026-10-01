@@ -534,3 +534,47 @@ fn valid_config_is_quiet() {
         .success()
         .stderr(predicate::str::is_empty());
 }
+
+/// `ink --plain --color=always` with a scrubbed terminal environment.
+fn plain_colour(term: &str) -> String {
+    let out = ink()
+        .args([
+            "--plain",
+            "--color=always",
+            "--theme",
+            "dark",
+            "--width",
+            "80",
+        ])
+        .arg("tests/fixtures/test.md")
+        .env("TERM", term)
+        .env_remove("COLORTERM")
+        .env_remove("TERM_PROGRAM")
+        .env_remove("WT_SESSION")
+        .env_remove("TMUX")
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn plain_uses_ansi_16_codes_on_a_16_colour_terminal() {
+    for term in ["linux", "xterm", "vt100"] {
+        let text = plain_colour(term);
+        assert!(!text.contains("38;5;") && !text.contains("38;2;"), "{term}");
+        assert!(!text.contains("48;5;") && !text.contains("48;2;"), "{term}");
+        assert!(
+            ["\x1b[3", "\x1b[9"].iter().any(|p| text.contains(p)),
+            "{term}: no ANSI colour at all"
+        );
+    }
+}
+
+#[test]
+fn plain_keeps_256_colours_on_xterm_256color() {
+    let text = plain_colour("xterm-256color");
+    assert!(text.contains("38;5;"));
+    assert!(!text.contains("38;2;"));
+}

@@ -202,6 +202,8 @@ Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, and Solarized. Pre
 
 With no theme set, ink asks the terminal for its background colour (an OSC 11 query, answered by nearly every modern terminal and passed through by tmux) and picks Light or Dark to match, falling back to `COLORFGBG` and then Dark. An explicit `--theme` or `theme =` in the config always wins, and never triggers the query.
 
+Themes adapt to what the terminal can show: 24-bit colour where it is advertised, the 256-colour palette on `*-256color` terminals, and the 16 ANSI colours on the Linux console and other 16-colour terminals (`TERM=linux`, `xterm`, `vt100`, `screen`, …) — there ink uses your terminal's own palette, so your colour scheme applies. With `--color=never` or `NO_COLOR` the reader draws without colour at all, using bold, underline and reverse video for headings, links, search hits and selections.
+
 ### Math and emoji
 
 Inline `$E=mc^2$` and block `$$...$$` math render in code style, and `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).

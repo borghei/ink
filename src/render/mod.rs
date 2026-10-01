@@ -239,10 +239,15 @@ pub fn render_document_with_search(
                 let width = plain.get(abs).map(|p| crate::selection::line_width(p));
                 match (width, sel.highlight_span(abs, width.unwrap_or(0))) {
                     (Some(_), Some((from, to))) => {
-                        let (bg, fg) = t.colors.selection();
-                        let style = Style::default()
-                            .bg(theme::hex_to_color(&bg))
-                            .fg(theme::hex_to_color(&fg));
+                        let style = if theme::colorless() {
+                            // No colours to paint with: reverse video.
+                            Style::default().add_modifier(Modifier::REVERSED)
+                        } else {
+                            let (bg, fg) = t.colors.selection();
+                            Style::default()
+                                .bg(theme::hex_to_color(&bg))
+                                .fg(theme::hex_to_color(&fg))
+                        };
                         restyle_columns(&line, from, to, style)
                     }
                     _ => line,
@@ -552,7 +557,10 @@ pub fn render_code_hints(
         .as_ref()
         .map(|b| theme::hex_to_color(b))
         .unwrap_or_else(|| theme::hex_to_color(&t.colors.fg));
-    let style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+    let mut style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+    if theme::colorless() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
 
     for (label, row, col) in hints {
         if *row >= area.height {
