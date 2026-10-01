@@ -161,7 +161,9 @@ Press `/` to search within a document. Matches highlight inline; press Enter to 
 
 ink captures the mouse for wheel-scroll, which used to mean giving up your terminal's own text
 selection. Now it does the job itself, and does it better — it knows where a code block starts and
-where ink's own decoration ends.
+where ink's own decoration ends. If you'd rather keep your terminal's own selection and link
+clicking, run `ink --no-mouse` (one session) or set `mouse_capture = false` (always); both apply to
+the reader and the file browser.
 
 - **`v`** starts a character-wise selection, **`V`** a line-wise one. Move with `h j k l`, arrows,
   `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
@@ -381,6 +383,7 @@ Options:
       --no-pager         Never page --plain output, even on a TTY
       --frontmatter      Show YAML/TOML frontmatter
       --spacing <MODE>   Line spacing: compact, normal, relaxed
+      --no-mouse         Don't capture the mouse (overrides mouse_capture in config)
 
 Subcommands:
   outline      Show document heading structure

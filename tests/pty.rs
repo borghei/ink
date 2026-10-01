@@ -188,3 +188,68 @@ fn the_reader_uses_the_light_theme_and_leaves_no_reply_on_screen() {
         String::from_utf8_lossy(&s.output[s.output.len().saturating_sub(400)..]).into_owned();
     assert!(contains(&s.output, b"\x1b[?1049l"), "{tail:?}");
 }
+
+/// Quits the reader (`q`) once it has entered the alternate screen, retrying
+/// in case a slow start swallowed the key.
+fn quit_when_up() -> impl FnMut(&[u8], Duration) -> Option<Vec<u8>> {
+    let mut last = Duration::ZERO;
+    move |out, t| {
+        if contains(out, b"\x1b[?1049h") && t > last + Duration::from_millis(500) {
+            last = t;
+            Some(b"q".to_vec())
+        } else {
+            None
+        }
+    }
+}
+
+const MOUSE_ON: [&[u8]; 3] = [b"\x1b[?1000h", b"\x1b[?1002h", b"\x1b[?1006h"];
+
+#[test]
+fn no_mouse_never_enables_mouse_reporting() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test.md");
+    // Control: by default the reader does capture the mouse.
+    let s = run_in_pty(
+        &["--theme", "dark", "--image-protocol", "halfblocks", fixture],
+        &[],
+        quit_when_up(),
+    );
+    assert!(MOUSE_ON.iter().all(|seq| contains(&s.output, seq)));
+
+    let s = run_in_pty(
+        &[
+            "--no-mouse",
+            "--theme",
+            "dark",
+            "--image-protocol",
+            "halfblocks",
+            fixture,
+        ],
+        &[],
+        quit_when_up(),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    for seq in MOUSE_ON {
+        assert!(
+            !contains(&s.output, seq),
+            "{:?} was written",
+            String::from_utf8_lossy(seq)
+        );
+    }
+}
+
+#[test]
+fn no_mouse_also_applies_to_the_file_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# a\n").unwrap();
+    let path = dir.path().to_str().unwrap();
+    let s = run_in_pty(
+        &["--no-mouse", "--theme", "dark", path],
+        &[],
+        quit_when_up(),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "browser did not exit");
+    for seq in MOUSE_ON {
+        assert!(!contains(&s.output, seq));
+    }
+}

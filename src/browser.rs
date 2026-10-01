@@ -19,7 +19,12 @@ struct FileEntry {
 ///
 /// Returns `Some(path)` if the user selected a file, or `None` if they quit.
 /// Gracefully handles empty directories, permission errors, etc.
-pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
+///
+/// `mouse_capture` follows the same setting as the reader (`--no-mouse`,
+/// `[behavior] mouse_capture`); the browser has no mouse actions of its own,
+/// but switching capture on here and off in the reader would flip the
+/// terminal's selection behaviour between screens.
+pub fn browse(dir: &Path, theme_name: &str, mouse_capture: bool) -> Result<Option<PathBuf>> {
     let files = find_markdown_files(dir);
     if files.is_empty() {
         eprintln!("ink: no markdown files found in {}", dir.display());
@@ -29,7 +34,10 @@ pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
     crate::app::install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    if mouse_capture {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 

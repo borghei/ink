@@ -77,6 +77,12 @@ pub struct Cli {
     /// Line spacing [default: normal]
     #[arg(long, value_enum)]
     pub spacing: Option<Spacing>,
+
+    /// Do not capture the mouse, in the reader or the file browser. Your
+    /// terminal keeps its own text selection and link clicking; the wheel no
+    /// longer scrolls inside ink. Overrides `[behavior] mouse_capture`
+    #[arg(long, global = true)]
+    pub no_mouse: bool,
 }
 
 /// A parsed `--width` value.
@@ -333,11 +339,7 @@ pub fn run() -> Result<()> {
         image_protocol: cli.image_protocol,
         frontmatter,
         spacing,
-        mouse_capture: user_config
-            .as_ref()
-            .and_then(|c| c.behavior.as_ref())
-            .and_then(|b| b.mouse_capture)
-            .unwrap_or(true),
+        mouse_capture: mouse_capture(cli.no_mouse, &user_config).0,
         clipboard: user_config
             .as_ref()
             .and_then(|c| c.behavior.as_ref())
@@ -386,7 +388,7 @@ pub fn run() -> Result<()> {
             .unwrap_or(false);
 
         loop {
-            let Some(selected) = browser::browse(&dir, &args.theme)? else {
+            let Some(selected) = browser::browse(&dir, &args.theme, args.mouse_capture)? else {
                 break;
             };
             let source = std::fs::read_to_string(&selected)?;
@@ -549,6 +551,25 @@ fn theme_choice(flag: &str, config: &Option<config::Config>) -> (String, ThemeOr
     match config.as_ref().and_then(|c| c.theme.clone()) {
         Some(t) if t != "auto" => (t, ThemeOrigin::Config),
         _ => ("auto".to_string(), ThemeOrigin::Auto),
+    }
+}
+
+/// Whether to capture the mouse, and what decided it: `--no-mouse` beats
+/// `[behavior] mouse_capture`, which beats the default (on).
+pub(crate) fn mouse_capture(
+    no_mouse_flag: bool,
+    config: &Option<config::Config>,
+) -> (bool, &'static str) {
+    if no_mouse_flag {
+        return (false, "--no-mouse");
+    }
+    match config
+        .as_ref()
+        .and_then(|c| c.behavior.as_ref())
+        .and_then(|b| b.mouse_capture)
+    {
+        Some(v) => (v, "config behavior.mouse_capture"),
+        None => (true, "default"),
     }
 }
 
@@ -774,5 +795,62 @@ fn read_input(args: &Args) -> Result<String> {
     match args.inputs.first() {
         None => read_stdin(),
         Some(input) => read_source(input),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> Option<config::Config> {
+        config::parse_config(toml, "test").config
+    }
+
+    #[test]
+    fn no_mouse_flag_parses_before_and_after_a_subcommand() {
+        assert!(
+            Cli::try_parse_from(["ink", "--no-mouse", "a.md"])
+                .unwrap()
+                .no_mouse
+        );
+        assert!(
+            Cli::try_parse_from(["ink", "doctor", "--no-mouse"])
+                .unwrap()
+                .no_mouse
+        );
+        assert!(!Cli::try_parse_from(["ink", "a.md"]).unwrap().no_mouse);
+    }
+
+    #[test]
+    fn no_mouse_beats_config_which_beats_the_default() {
+        let on = cfg("[behavior]\nmouse_capture = true\n");
+        let off = cfg("[behavior]\nmouse_capture = false\n");
+        assert_eq!(mouse_capture(false, &None), (true, "default"));
+        assert!(!mouse_capture(false, &off).0);
+        assert!(mouse_capture(false, &on).0);
+        assert_eq!(mouse_capture(true, &on), (false, "--no-mouse"));
+        assert_eq!(mouse_capture(true, &None), (false, "--no-mouse"));
+    }
+
+    #[test]
+    fn theme_flag_beats_config_which_beats_auto() {
+        let c = cfg("theme = \"nord\"\n");
+        assert_eq!(
+            theme_choice("dracula", &c),
+            ("dracula".into(), ThemeOrigin::Flag)
+        );
+        assert_eq!(
+            theme_choice("auto", &c),
+            ("nord".into(), ThemeOrigin::Config)
+        );
+        assert_eq!(
+            theme_choice("auto", &None),
+            ("auto".into(), ThemeOrigin::Auto)
+        );
+        let auto = cfg("theme = \"auto\"\n");
+        assert_eq!(
+            theme_choice("auto", &auto),
+            ("auto".into(), ThemeOrigin::Auto)
+        );
     }
 }
