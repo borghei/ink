@@ -17,15 +17,21 @@
 //!   (inline math puts them on one line: `(a b; c d)`).
 //! - Unknown commands are kept verbatim with their brace arguments.
 //!
-//! Never panics on malformed input; nesting deeper than [`MAX_DEPTH`] is
-//! shown as its source. In ASCII mode nothing is converted: the source is
-//! shown with `\left`/`\right` and spacing commands removed ([`clean`]).
+//! Never panics on malformed input; a formula nested deeper than
+//! [`MAX_DEPTH`] is shown as its source, in time linear in its length. In
+//! ASCII mode nothing is converted: the source is shown with
+//! `\left`/`\right` and spacing commands removed ([`clean`]).
 
 use super::scripts;
+use std::cell::Cell;
 use unicode_width::UnicodeWidthStr;
 
-/// Deepest group/argument/environment nesting rendered; deeper content is
-/// shown as written. Keeps the recursion bounded on hostile input.
+/// Deepest nesting rendered; a formula that goes deeper is shown as its
+/// source. A linear pre-scan ([`nesting`]) catches brace, `\sqrt[` and
+/// environment nesting before any work; the check at the top of every
+/// recursive entry (`Renderer::seq`, `Renderer::command`,
+/// `Renderer::environment`) catches the rest (`\not\not…`), so no path can
+/// recurse past it on hostile input.
 const MAX_DEPTH: usize = 32;
 
 /// Inline math as one line of text.
@@ -33,7 +39,7 @@ pub fn render_inline(src: &str, ascii: bool) -> String {
     if ascii {
         return clean(src).join(" ");
     }
-    Renderer { inline: true }.top(src).flatten()
+    Renderer::new(true).top(src).flatten()
 }
 
 /// Display math as one or more lines (environments and `\\` give rows).
@@ -41,7 +47,7 @@ pub fn render_display(src: &str, ascii: bool) -> Vec<String> {
     if ascii {
         return clean(src);
     }
-    Renderer { inline: false }
+    Renderer::new(false)
         .top(src)
         .rows
         .into_iter()
@@ -212,6 +218,80 @@ impl Block {
 
 struct Renderer {
     inline: bool,
+    /// Set when a recursive entry passed [`MAX_DEPTH`]: every level then
+    /// returns at once and [`Renderer::top`] shows the source instead.
+    capped: Cell<bool>,
+}
+
+/// The deepest nesting of `{…}`, `\sqrt[…]` and `\begin…\end` in `src`, in
+/// one linear pass. Unbalanced closers never go below zero.
+fn nesting(src: &str) -> usize {
+    let chars: Vec<char> = src.chars().collect();
+    let (mut depth, mut max, mut brackets) = (0usize, 0usize, 0usize);
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => {
+                let (name, next) = command_name(&chars, i + 1);
+                match name.as_str() {
+                    "begin" => depth += 1,
+                    "end" => depth = depth.saturating_sub(1),
+                    "sqrt" => {
+                        let mut j = next;
+                        while chars.get(j).is_some_and(|c| c.is_whitespace()) {
+                            j += 1;
+                        }
+                        if chars.get(j) == Some(&'[') {
+                            depth += 1;
+                            brackets += 1;
+                            i = j + 1;
+                            max = max.max(depth);
+                            continue;
+                        }
+                    }
+                    _ => {}
+                }
+                i = next.max(i + 1);
+                max = max.max(depth);
+                continue;
+            }
+            '{' => depth += 1,
+            '}' => depth = depth.saturating_sub(1),
+            ']' if brackets > 0 => {
+                brackets -= 1;
+                depth = depth.saturating_sub(1);
+            }
+            _ => {}
+        }
+        max = max.max(depth);
+        i += 1;
+    }
+    max
+}
+
+/// The source as written, for a formula too deep to render: one entry per
+/// non-blank line.
+fn as_source(src: &str) -> Block {
+    let rows: Vec<String> = src
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+    if rows.is_empty() {
+        return Block::text("");
+    }
+    Block { rows, base: 0 }
+}
+
+/// Where `Renderer::seq` stops.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Close {
+    /// The end of input.
+    End,
+    /// The `}` closing a group.
+    Brace,
+    /// The `]` closing an optional argument.
+    Bracket,
 }
 
 /// A cursor over the characters of one source string.
@@ -280,9 +360,33 @@ impl Cursor {
 }
 
 impl Renderer {
+    fn new(inline: bool) -> Self {
+        Renderer {
+            inline,
+            capped: Cell::new(false),
+        }
+    }
+
+    /// Marks the render as too deep; every level unwinds from here.
+    fn cap(&self) -> Block {
+        self.capped.set(true);
+        Block::text("")
+    }
+
     /// A whole formula: split into rows on top-level `\\` (display) and
-    /// aligned on `&` when it has any.
+    /// aligned on `&` when it has any. Too deep to render: its source.
     fn top(&self, src: &str) -> Block {
+        if nesting(src) > MAX_DEPTH {
+            return as_source(src);
+        }
+        let out = self.layout(src);
+        if self.capped.get() {
+            return as_source(src);
+        }
+        out
+    }
+
+    fn layout(&self, src: &str) -> Block {
         let rows = split_top(src);
         if rows.len() == 1 && rows[0].len() == 1 {
             return self.render(&rows[0][0], 0);
@@ -311,21 +415,32 @@ impl Renderer {
     /// Render `src` as a sequence, at nesting `depth`.
     fn render(&self, src: &str, depth: usize) -> Block {
         let mut cur = Cursor::new(src);
-        self.seq(&mut cur, depth, false)
+        self.seq(&mut cur, depth, Close::End)
     }
 
-    /// Render up to the end of input, or up to and including the `}` that
-    /// closes the group when `in_group`.
-    fn seq(&self, cur: &mut Cursor, depth: usize, in_group: bool) -> Block {
+    /// Render up to `close`: the end of input, or up to and including the
+    /// `}` / `]` that closes the group. Past [`MAX_DEPTH`], or once any
+    /// level has been, it stops at once (see [`Renderer::capped`]).
+    fn seq(&self, cur: &mut Cursor, depth: usize, close: Close) -> Block {
+        if depth > MAX_DEPTH {
+            return self.cap();
+        }
         let mut out = Block::text("");
         while let Some(c) = cur.peek() {
+            if self.capped.get() {
+                return out;
+            }
             match c {
                 '}' => {
                     cur.i += 1;
-                    if in_group {
+                    if close == Close::Brace {
                         return out;
                     }
                     out.push_str("}");
+                }
+                ']' if close == Close::Bracket => {
+                    cur.i += 1;
+                    return out;
                 }
                 '{' => {
                     cur.i += 1;
@@ -372,12 +487,9 @@ impl Renderer {
     }
 
     /// A brace group whose `{` was just consumed. Past the depth cap its
-    /// content is shown as written.
+    /// content is shown as written (checked in `seq`).
     fn group(&self, cur: &mut Cursor, depth: usize) -> Block {
-        if depth + 1 > MAX_DEPTH {
-            return Block::text(cur.raw_group());
-        }
-        self.seq(cur, depth + 1, true)
+        self.seq(cur, depth + 1, Close::Brace)
     }
 
     /// One argument: a brace group, a command, or a single character.
@@ -391,13 +503,7 @@ impl Renderer {
             Some('\\') => {
                 cur.i += 1;
                 let mut out = Block::text("");
-                if depth + 1 > MAX_DEPTH {
-                    let (name, next) = command_name(&cur.s, cur.i);
-                    cur.i = next;
-                    out.push_str(&format!("\\{name}"));
-                } else {
-                    self.command(cur, depth + 1, &mut out);
-                }
+                self.command(cur, depth + 1, &mut out);
                 out
             }
             Some(c) => {
@@ -408,8 +514,13 @@ impl Renderer {
         }
     }
 
-    /// A command; its backslash was just consumed.
+    /// A command; its backslash was just consumed. Past [`MAX_DEPTH`] the
+    /// render stops (see [`Renderer::capped`]).
     fn command(&self, cur: &mut Cursor, depth: usize, out: &mut Block) {
+        if depth > MAX_DEPTH || self.capped.get() {
+            self.cap();
+            return;
+        }
         let (name, next) = command_name(&cur.s, cur.i);
         cur.i = next;
         match name.as_str() {
@@ -435,13 +546,8 @@ impl Renderer {
                 cur.skip_ws();
                 let index = if cur.peek() == Some('[') {
                     cur.i += 1;
-                    let start = cur.i;
-                    while cur.peek().is_some_and(|c| c != ']') {
-                        cur.i += 1;
-                    }
-                    let raw: String = cur.s[start..cur.i].iter().collect();
-                    cur.i = (cur.i + 1).min(cur.s.len());
-                    let n = self.render(&raw, depth + 1).flatten();
+                    // Rendered in place up to its `]`: one pass, depth-capped.
+                    let n = self.seq(cur, depth + 1, Close::Bracket).flatten();
                     let n: String = n.chars().filter(|c| !c.is_whitespace()).collect();
                     match scripts::to_superscript(&n) {
                         Some(s) => s,
@@ -534,6 +640,9 @@ impl Renderer {
 
     /// `\begin{env}` … `\end{env}`; the `\begin{env}` was just consumed.
     fn environment(&self, cur: &mut Cursor, env: &str, depth: usize) -> Block {
+        if depth + 1 > MAX_DEPTH || self.capped.get() {
+            return self.cap();
+        }
         // Column spec of `array`, position of `aligned`: not needed.
         if env == "array" {
             cur.raw_arg();
@@ -546,9 +655,6 @@ impl Renderer {
             cur.i = (cur.i + 1).min(cur.s.len());
         }
         let body = end_of_environment(cur);
-        if depth + 1 > MAX_DEPTH {
-            return Block::text(format!("\\begin{{{env}}}{body}\\end{{{env}}}"));
-        }
         let rows = split_top(&body);
         if self.inline {
             let (l, r) = match env {
@@ -1420,5 +1526,59 @@ mod tests {
         );
         // Top-level rows and alignment without an environment.
         assert_eq!(display(r"a &= b \\ cc &= d"), [" a = b", "cc = d"]);
+    }
+
+    /// Runs `f` on a 1 MB stack, as a worker thread would, and fails if it
+    /// overflows or takes longer than half a second (debug build).
+    fn on_small_stack(name: &str, f: impl FnOnce() + Send + 'static) {
+        let start = std::time::Instant::now();
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(f)
+            .unwrap()
+            .join()
+            .unwrap_or_else(|_| panic!("{name}: overflowed its stack"));
+        let took = start.elapsed();
+        assert!(took.as_millis() < 500, "{name}: took {took:?}");
+    }
+
+    // Regression: `\sqrt[` rendered its index with an unchecked recursive
+    // call (and re-scanned the remainder at each level), so 200,000 of them
+    // aborted the process. Every recursive entry is capped now.
+    #[test]
+    fn hostile_nesting_is_bounded_and_linear() {
+        const N: usize = 200_000;
+        let cases: Vec<(&str, String)> = vec![
+            ("sqrt index", format!("{}x", r"\sqrt[".repeat(N))),
+            ("frac", format!("{}x", r"\frac{".repeat(N))),
+            ("superscript", format!("x{}y", "^{".repeat(N))),
+            ("subscript", format!("x{}y", "_{".repeat(N))),
+            ("matrix", format!("{}a", r"\begin{matrix}".repeat(N))),
+            ("left", format!("{}x", r"\left(".repeat(N))),
+            ("not", format!("{}x", r"\not".repeat(N))),
+            (
+                "mixed",
+                format!(
+                    "{}x",
+                    r"\sqrt[\frac{^{_{\begin{pmatrix}\left(\mathbb{".repeat(N / 7)
+                ),
+            ),
+        ];
+        for (name, src) in cases {
+            on_small_stack(name, move || {
+                let a = render_inline(&src, false);
+                let b = render_display(&src, false);
+                assert!(!a.is_empty() && !b.is_empty());
+            });
+        }
+    }
+
+    #[test]
+    fn sqrt_index_still_renders() {
+        assert_eq!(inline(r"\sqrt[3]{x}"), "³√x");
+        assert_eq!(inline(r"\sqrt[n]{x}"), "ⁿ√x");
+        assert_eq!(inline(r"\sqrt[{]}]{x}"), "(])√x");
+        // Unclosed index: no panic.
+        let _ = inline(r"\sqrt[3");
     }
 }

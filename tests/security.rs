@@ -178,6 +178,22 @@ fn absurdly_deep_nesting_cannot_crash_the_renderer() {
     assert!(out.contains("deep"));
 }
 
+// Regression: `$\sqrt[\sqrt[…x$` recursed once per `\sqrt[` with no depth
+// check and aborted `ink --plain` with a stack overflow.
+#[test]
+fn deeply_nested_math_cannot_crash_the_renderer() {
+    let out = std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let source = format!("before ${}x$ after\n", r"\sqrt[".repeat(200_000));
+            render_plain(&source, &args()).unwrap()
+        })
+        .unwrap()
+        .join()
+        .expect("math renderer overflowed its stack");
+    assert!(out.contains("before") && out.contains("after"));
+}
+
 /// A document whose heading and body carry raw ESC/OSC/BEL bytes: an OSC 0
 /// window-title set, a CSI clear-screen, and a bare BEL.
 const HOSTILE_DOC: &str =
