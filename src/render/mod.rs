@@ -93,32 +93,55 @@ pub fn render_top_bar(
 ) {
     let accent = theme::hex_to_color(&t.colors.heading2);
     let bg = theme::hex_to_color(&t.colors.status_bar_bg);
-    let width = area.width as usize;
+    let line = progress_line(
+        area.width as usize,
+        scroll_offset,
+        total_lines,
+        viewport_height,
+        accent,
+        bg,
+        crate::glyphs::current(),
+    );
+    frame.render_widget(Paragraph::new(vec![line]), area);
+}
 
+/// The top bar's progress line, `width` columns wide. The remainder is drawn
+/// in the bar's own background colour, which hides it; when the fill colour
+/// cannot be told apart from that (no colour at all, or a 16-colour palette
+/// that maps both to one entry) and the glyphs are the same too, the
+/// remainder is blank instead — otherwise the bar would read 100% always.
+fn progress_line(
+    width: usize,
+    scroll_offset: usize,
+    total_lines: usize,
+    viewport_height: usize,
+    accent: Color,
+    bg: Color,
+    glyphs: &crate::glyphs::Glyphs,
+) -> Line<'static> {
     if total_lines == 0 || total_lines <= viewport_height {
-        let line = Line::from(Span::styled(
-            crate::glyphs::current().progress.repeat(width),
+        return Line::from(Span::styled(
+            glyphs.progress.repeat(width),
             Style::default().fg(accent).bg(bg),
         ));
-        frame.render_widget(Paragraph::new(vec![line]), area);
-        return;
     }
 
     let progress = (scroll_offset as f64 / (total_lines - viewport_height) as f64).min(1.0);
     let filled = ((progress * width as f64) as usize).max(1);
     let empty = width.saturating_sub(filled);
+    let rest = if accent == bg && glyphs.progress == glyphs.progress_rest {
+        " "
+    } else {
+        glyphs.progress_rest
+    };
 
-    let line = Line::from(vec![
+    Line::from(vec![
         Span::styled(
-            crate::glyphs::current().progress.repeat(filled),
+            glyphs.progress.repeat(filled),
             Style::default().fg(accent).bg(bg),
         ),
-        Span::styled(
-            crate::glyphs::current().progress_rest.repeat(empty),
-            Style::default().fg(bg).bg(bg),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(vec![line]), area);
+        Span::styled(rest.repeat(empty), Style::default().fg(bg).bg(bg)),
+    ])
 }
 
 /// Bottom bar: keybindings (left) + filename + stats (right)
@@ -844,6 +867,43 @@ mod tests {
     fn highlight(text: &str, query: &str) -> Line<'static> {
         let line = Line::from(vec![Span::raw(text.to_string())]);
         highlight_query_in_line(&line, query, Color::Red, false)
+    }
+
+    /// The top bar drawn on a 20-column `TestBackend`, as text.
+    fn drawn_bar(
+        scroll: usize,
+        accent: Color,
+        bg: Color,
+        glyphs: &crate::glyphs::Glyphs,
+    ) -> String {
+        let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(20, 1)).unwrap();
+        terminal
+            .draw(|f| {
+                let line = progress_line(20, scroll, 110, 10, accent, bg, glyphs);
+                f.render_widget(Paragraph::new(vec![line]), f.area());
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        (0..20).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+    }
+
+    #[test]
+    fn progress_bar_moves_with_colour_off() {
+        let g = &crate::glyphs::UNICODE;
+        // Colour off: both colours are the terminal default.
+        let (a, b) = (Color::Reset, Color::Reset);
+        assert_eq!(drawn_bar(0, a, b, g), format!("▔{}", " ".repeat(19)));
+        assert_eq!(
+            drawn_bar(50, a, b, g),
+            format!("{}{}", "▔".repeat(10), " ".repeat(10))
+        );
+        assert_eq!(drawn_bar(100, a, b, g), "▔".repeat(20));
+        // 16 colours that differ keep the hidden remainder glyph.
+        let rest = drawn_bar(50, Color::Cyan, Color::Black, g);
+        assert_eq!(rest, "▔".repeat(20));
+        // ASCII glyphs already differ: `=` filled, `-` remainder.
+        let ascii = drawn_bar(50, a, b, &crate::glyphs::ASCII);
+        assert_eq!(ascii, format!("{}{}", "=".repeat(10), "-".repeat(10)));
     }
 
     #[test]
