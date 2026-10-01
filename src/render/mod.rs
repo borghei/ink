@@ -7,6 +7,35 @@ use crate::theme;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
+/// Border symbols for popups: rounded box-drawing, or `+ - |` in ASCII mode.
+fn popup_border() -> ratatui::symbols::border::Set<'static> {
+    if crate::glyphs::current().ascii {
+        ASCII_BORDER
+    } else {
+        ratatui::symbols::border::ROUNDED
+    }
+}
+
+/// Border symbols for plain rules (the TOC divider).
+fn plain_border() -> ratatui::symbols::border::Set<'static> {
+    if crate::glyphs::current().ascii {
+        ASCII_BORDER
+    } else {
+        ratatui::symbols::border::PLAIN
+    }
+}
+
+const ASCII_BORDER: ratatui::symbols::border::Set<'static> = ratatui::symbols::border::Set {
+    top_left: "+",
+    top_right: "+",
+    bottom_left: "+",
+    bottom_right: "+",
+    vertical_left: "|",
+    vertical_right: "|",
+    horizontal_top: "-",
+    horizontal_bottom: "-",
+};
+
 /// Convert our StyledLine list into ratatui Lines for display.
 pub fn styled_lines_to_ratatui(lines: &[StyledLine], theme_name: &str) -> Vec<Line<'static>> {
     let t = theme::resolve_theme(theme_name);
@@ -68,7 +97,7 @@ pub fn render_top_bar(
 
     if total_lines == 0 || total_lines <= viewport_height {
         let line = Line::from(Span::styled(
-            "▔".repeat(width),
+            crate::glyphs::current().progress.repeat(width),
             Style::default().fg(accent).bg(bg),
         ));
         frame.render_widget(Paragraph::new(vec![line]), area);
@@ -80,8 +109,14 @@ pub fn render_top_bar(
     let empty = width.saturating_sub(filled);
 
     let line = Line::from(vec![
-        Span::styled("▔".repeat(filled), Style::default().fg(accent).bg(bg)),
-        Span::styled("▔".repeat(empty), Style::default().fg(bg).bg(bg)),
+        Span::styled(
+            crate::glyphs::current().progress.repeat(filled),
+            Style::default().fg(accent).bg(bg),
+        ),
+        Span::styled(
+            crate::glyphs::current().progress_rest.repeat(empty),
+            Style::default().fg(bg).bg(bg),
+        ),
     ]);
     frame.render_widget(Paragraph::new(vec![line]), area);
 }
@@ -104,7 +139,7 @@ pub fn render_bottom_bar(
     let dim_fg = theme::hex_to_color(&t.colors.link_url);
 
     let mut keys: Vec<(&str, &str)> = vec![
-        ("↑↓/jk", "scroll"),
+        (crate::glyphs::current().scroll_keys, "scroll"),
         ("/", "search"),
         ("f", "links"),
         ("t", "toc"),
@@ -126,7 +161,10 @@ pub fn render_bottom_bar(
             Style::default().fg(dim_fg).bg(bg),
         ));
         if i < keys.len() - 1 {
-            spans.push(Span::styled(" · ", Style::default().fg(dim_fg).bg(bg)));
+            spans.push(Span::styled(
+                format!(" {} ", crate::glyphs::current().dot),
+                Style::default().fg(dim_fg).bg(bg),
+            ));
         }
     }
 
@@ -143,7 +181,10 @@ pub fn render_bottom_bar(
     };
 
     let right_name = format!("{short_name}{tab_part}");
-    let right_stats = format!("  {word_count} words · ~{reading_time} min  ");
+    let right_stats = format!(
+        "  {word_count} words {} ~{reading_time} min  ",
+        crate::glyphs::current().dot
+    );
     let missing_label = if file_missing { " [file missing] " } else { "" };
     let right_total_len = unicode_width::UnicodeWidthStr::width(right_name.as_str())
         + unicode_width::UnicodeWidthStr::width(right_stats.as_str())
@@ -239,10 +280,15 @@ pub fn render_document_with_search(
                 let width = plain.get(abs).map(|p| crate::selection::line_width(p));
                 match (width, sel.highlight_span(abs, width.unwrap_or(0))) {
                     (Some(_), Some((from, to))) => {
-                        let (bg, fg) = t.colors.selection();
-                        let style = Style::default()
-                            .bg(theme::hex_to_color(&bg))
-                            .fg(theme::hex_to_color(&fg));
+                        let style = if theme::colorless() {
+                            // No colours to paint with: reverse video.
+                            Style::default().add_modifier(Modifier::REVERSED)
+                        } else {
+                            let (bg, fg) = t.colors.selection();
+                            Style::default()
+                                .bg(theme::hex_to_color(&bg))
+                                .fg(theme::hex_to_color(&fg))
+                        };
                         restyle_columns(&line, from, to, style)
                     }
                     _ => line,
@@ -430,7 +476,10 @@ pub fn render_search_bar(frame: &mut Frame, area: Rect, search: &SearchState, t:
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(search.query.clone(), Style::default().fg(fg).bg(bg)),
-        Span::styled("█", Style::default().fg(accent).bg(bg)),
+        Span::styled(
+            crate::glyphs::current().block,
+            Style::default().fg(accent).bg(bg),
+        ),
         Span::styled(match_info, Style::default().fg(dim_fg).bg(bg)),
         Span::styled(" ".repeat(area.width as usize), Style::default().bg(bg)),
     ]);
@@ -456,7 +505,11 @@ pub fn render_toc(
         .enumerate()
         .map(|(i, entry)| {
             let indent = "  ".repeat((entry.level as usize).saturating_sub(1));
-            let marker = if i == selected { "▸ " } else { "  " };
+            let marker = if i == selected {
+                format!("{} ", crate::glyphs::current().pointer)
+            } else {
+                "  ".to_string()
+            };
             let text = format!("{indent}{marker}{}", entry.text);
             let color = if i == selected {
                 active_color
@@ -476,6 +529,7 @@ pub fn render_toc(
 
     let mut block = Block::default()
         .borders(Borders::RIGHT)
+        .border_set(plain_border())
         .border_style(Style::default().fg(border_color))
         .title(" Contents ")
         .title_style(
@@ -523,8 +577,11 @@ pub fn render_help(frame: &mut Frame, area: Rect, t: &theme::Theme) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .border_type(ratatui::widgets::BorderType::Rounded)
-        .title(" Keys — press any key to close ")
+        .border_set(popup_border())
+        .title(format!(
+            " Keys {} press any key to close ",
+            crate::glyphs::current().dash
+        ))
         .title_style(
             Style::default()
                 .fg(title_color)
@@ -552,7 +609,10 @@ pub fn render_code_hints(
         .as_ref()
         .map(|b| theme::hex_to_color(b))
         .unwrap_or_else(|| theme::hex_to_color(&t.colors.fg));
-    let style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+    let mut style = Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD);
+    if theme::colorless() {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
 
     for (label, row, col) in hints {
         if *row >= area.height {
@@ -570,7 +630,7 @@ pub fn render_flash_bar(frame: &mut Frame, area: Rect, message: &str, t: &theme:
     let accent = theme::hex_to_color(&t.colors.heading2);
     let line = Line::from(vec![
         Span::styled(
-            " ✓ ",
+            format!(" {} ", crate::glyphs::current().check),
             Style::default()
                 .fg(accent)
                 .bg(bg)
@@ -650,7 +710,7 @@ pub fn render_link_hints(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_set(popup_border())
         .title(format!(" {title} "))
         .title_style(
             Style::default()
@@ -691,17 +751,19 @@ fn truncate_to_width(s: &str, max: usize) -> String {
     if max == 0 {
         return String::new();
     }
+    let ellipsis = crate::glyphs::current().ellipsis;
+    let ellipsis = if ellipsis.width() < max { ellipsis } else { "" };
     let mut out = String::new();
     let mut used = 0;
     for c in s.chars() {
         let w = c.width().unwrap_or(0);
-        if used + w > max - 1 {
+        if used + w > max - ellipsis.width() {
             break;
         }
         out.push(c);
         used += w;
     }
-    out.push('…');
+    out.push_str(ellipsis);
     out
 }
 
@@ -731,8 +793,17 @@ pub fn render_theme_picker(
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let marker = if i == selected { " ▸ " } else { "   " };
-            let check = if *name == current_theme { " ✓" } else { "" };
+            let g = crate::glyphs::current();
+            let marker = if i == selected {
+                format!(" {} ", g.pointer)
+            } else {
+                "   ".to_string()
+            };
+            let check = if *name == current_theme {
+                format!(" {}", g.check)
+            } else {
+                String::new()
+            };
             let text = format!("{marker}{name}{check}");
             let color = if i == selected {
                 active_color
@@ -750,7 +821,7 @@ pub fn render_theme_picker(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
-        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_set(popup_border())
         .title(" Theme ")
         .title_style(
             Style::default()

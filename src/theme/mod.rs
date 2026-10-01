@@ -188,18 +188,20 @@ pub fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
     (r, g, b)
 }
 
-/// Convert a hex string to a ratatui color, adapted to the terminal:
-/// quantized to the 256-color cube when truecolor isn't available. (In the
-/// TUI, `NO_COLOR` is not honored — an alternate-screen reader without color
-/// is not useful; use `--plain` for the no-color path.)
+/// Convert a hex string to a ratatui color for the reader, adapted to the
+/// terminal: 24-bit, the nearest 256-palette or named ANSI colour, or the
+/// terminal's default colour ([`Color::Reset`](ratatui::style::Color::Reset))
+/// when colour is off (`--color=never`, `NO_COLOR`), where the reader relies
+/// on bold, underline and reverse video instead.
 pub fn hex_to_color(hex: &str) -> ratatui::style::Color {
     let (r, g, b) = hex_to_rgb(hex);
-    let rgb = ratatui::style::Color::Rgb(r, g, b);
-    if caps::caps().truecolor {
-        rgb
-    } else {
-        ratatui::style::Color::Indexed(caps::rgb_to_256(r, g, b))
-    }
+    caps::rgb_at_level(r, g, b, caps::tui_level())
+}
+
+/// Is the reader drawing without colour? Highlights that would otherwise be
+/// a background colour (selection, hint labels) use reverse video then.
+pub fn colorless() -> bool {
+    caps::tui_level() == caps::ColorLevel::None
 }
 
 /// A theme file written before selection colors existed must still load, and

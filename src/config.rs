@@ -26,6 +26,9 @@ pub struct BehaviorConfig {
     pub mouse_capture: Option<bool>,
     /// How copies reach the clipboard: "auto" | "osc52" | "native" | "off".
     pub clipboard: Option<String>,
+    /// Draw borders, bullets and markers with 7-bit ASCII. Unset: automatic
+    /// (on for the Linux console and non-UTF-8 locales).
+    pub ascii: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +196,7 @@ pub fn parse_config(content: &str, path: &str) -> ConfigLoad {
             browser_loop: w.take(&mut t, "behavior.", "browser_loop"),
             mouse_capture: w.take(&mut t, "behavior.", "mouse_capture"),
             clipboard: w.take(&mut t, "behavior.", "clipboard"),
+            ascii: w.take(&mut t, "behavior.", "ascii"),
         });
         w.unknown(&t, "behavior.");
     }

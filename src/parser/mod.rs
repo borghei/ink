@@ -39,11 +39,14 @@ pub fn options() -> Options<'static> {
     opts.extension.footnotes = true;
     opts.extension.header_ids = Some(String::new());
     opts.extension.math_dollars = true;
-    opts.extension.shortcodes = true;
+    // In ASCII mode, an ASCII document must stay ASCII: no `:smile:` → emoji
+    // and no smart quotes, dashes or ellipses.
+    let ascii = crate::glyphs::current().ascii;
+    opts.extension.shortcodes = !ascii;
     // `[[target]]` / `[[target|label]]`, parsed where inline markdown is
     // (never inside code or raw HTML); see `crate::wikilink`.
     opts.extension.wikilinks_title_after_pipe = true;
-    opts.parse.smart = true;
+    opts.parse.smart = !ascii;
     opts
 }
 

@@ -38,7 +38,8 @@ pub struct Cli {
 
     /// When to emit color and hyperlinks in --plain and diff output.
     /// `auto`: only when stdout is a terminal, honoring NO_COLOR,
-    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb
+    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb. `never` (or NO_COLOR) also
+    /// draws the reader without colour
     #[arg(long, value_enum, value_name = "WHEN", default_value_t, global = true)]
     pub color: theme::caps::ColorChoice,
 
@@ -77,6 +78,19 @@ pub struct Cli {
     /// Line spacing [default: normal]
     #[arg(long, value_enum)]
     pub spacing: Option<Spacing>,
+
+    /// Do not capture the mouse, in the reader or the file browser. Your
+    /// terminal keeps its own text selection and link clicking; the wheel no
+    /// longer scrolls inside ink. Overrides `[behavior] mouse_capture`
+    #[arg(long, global = true)]
+    pub no_mouse: bool,
+
+    /// Draw borders, bullets and markers with plain ASCII instead of
+    /// box-drawing and symbol characters (for the Linux console, legacy
+    /// console fonts, screen readers). Automatic on TERM=linux and non-UTF-8
+    /// locales; `[behavior] ascii` sets it either way
+    #[arg(long, global = true)]
+    pub ascii: bool,
 }
 
 /// A parsed `--width` value.
@@ -145,8 +159,9 @@ pub enum Commands {
     },
     /// Generate a man page (troff, to stdout)
     Man,
-    /// Print an image-rendering diagnostic report (terminal identity,
-    /// graphics-protocol negotiation, decoder self-tests)
+    /// Print a diagnostic report to attach to an issue: platform, terminal,
+    /// colour and theme detection, clipboard route, mouse, config problems,
+    /// graphics-protocol negotiation, decoder self-tests (no personal data)
     Doctor {
         /// Also write the report to this file (attach it to a GitHub issue)
         #[arg(long, value_name = "PATH")]
@@ -211,11 +226,31 @@ pub fn run() -> Result<()> {
         eprintln!("{w}");
     }
     input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
+    crate::glyphs::select(
+        cli.ascii,
+        user_config
+            .as_ref()
+            .and_then(|c| c.behavior.as_ref())
+            .and_then(|b| b.ascii),
+    );
 
     // Escape sequences only when wanted: `--color`, then NO_COLOR, the
     // force variables, TERM=dumb, and finally whether stdout is a terminal.
     let stdout_tty = std::io::stdout().is_terminal();
     let color = theme::caps::color_enabled(cli.color, stdout_tty);
+    // The reader always draws on a terminal, so it asks the same question as
+    // if stdout were one: `--color=never`, NO_COLOR and TERM=dumb turn its
+    // colours off (attributes only).
+    theme::caps::set_tui_level(theme::caps::color_enabled(cli.color, true));
+
+    let (theme, theme_origin) = theme_choice(&cli.theme, &user_config);
+    // `auto` asks the terminal for its background colour (OSC 11) once, now,
+    // before anything owns the screen. Only with a terminal on both ends:
+    // the reply arrives on stdin, and a pipe would never answer.
+    let wants_terminal = matches!(cli.command, None | Some(Commands::Doctor { .. }));
+    if theme == "auto" && wants_terminal {
+        theme::detect::init_background(stdout_tty && std::io::stdin().is_terminal());
+    }
 
     // Handle subcommands
     if let Some(cmd) = &cli.command {
@@ -241,7 +276,19 @@ pub fn run() -> Result<()> {
                 Ok(())
             }
             Commands::Doctor { save } => {
-                return crate::doctor::run(save.as_deref());
+                let (clipboard, clipboard_source) = clipboard_mode(&user_config);
+                return crate::doctor::run(
+                    save.as_deref(),
+                    &crate::doctor::Context {
+                        theme: &theme,
+                        theme_origin,
+                        color_choice: cli.color,
+                        clipboard,
+                        clipboard_source,
+                        mouse: mouse_capture(cli.no_mouse, &user_config),
+                        config_warnings: &warnings,
+                    },
+                );
             }
             Commands::Keybindings => {
                 print_keybindings();
@@ -291,15 +338,6 @@ pub fn run() -> Result<()> {
     let toc = cli.toc || cfg_flag(|c| c.toc);
     let frontmatter = cli.frontmatter || cfg_flag(|c| c.frontmatter);
 
-    let theme = if cli.theme == "auto" {
-        user_config
-            .as_ref()
-            .and_then(|c| c.theme.clone())
-            .unwrap_or_else(|| "auto".to_string())
-    } else {
-        cli.theme.clone()
-    };
-
     // Resolve once now, while stderr still reaches the user: a broken or
     // unknown theme warns here instead of inside the alternate screen.
     let _ = theme::resolve_theme(&theme);
@@ -333,22 +371,8 @@ pub fn run() -> Result<()> {
         image_protocol: cli.image_protocol,
         frontmatter,
         spacing,
-        mouse_capture: user_config
-            .as_ref()
-            .and_then(|c| c.behavior.as_ref())
-            .and_then(|b| b.mouse_capture)
-            .unwrap_or(true),
-        clipboard: user_config
-            .as_ref()
-            .and_then(|c| c.behavior.as_ref())
-            .and_then(|b| b.clipboard.as_deref())
-            .map(|v| {
-                crate::clipboard::ClipboardMode::parse(v).unwrap_or_else(|| {
-                    eprintln!("ink: unknown clipboard mode '{v}', using 'auto'");
-                    crate::clipboard::ClipboardMode::Auto
-                })
-            })
-            .unwrap_or_default(),
+        mouse_capture: mouse_capture(cli.no_mouse, &user_config).0,
+        clipboard: clipboard_mode(&user_config).0,
     };
 
     // Check if input is a directory or no input with a TTY → launch file browser
@@ -386,7 +410,7 @@ pub fn run() -> Result<()> {
             .unwrap_or(false);
 
         loop {
-            let Some(selected) = browser::browse(&dir, &args.theme)? else {
+            let Some(selected) = browser::browse(&dir, &args.theme, args.mouse_capture)? else {
                 break;
             };
             let source = std::fs::read_to_string(&selected)?;
@@ -529,6 +553,70 @@ fn read_file(path: &str) -> Result<String> {
     }
 }
 
+/// Where the active theme name came from (for `ink doctor`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemeOrigin {
+    /// `--theme NAME`.
+    Flag,
+    /// `theme = "NAME"` in the config file.
+    Config,
+    /// Neither: `auto`, detected from the terminal background.
+    Auto,
+}
+
+/// The theme to use: an explicit `--theme` beats the config file, which beats
+/// `auto`. (`--theme auto` is the clap default, so it means "not given".)
+fn theme_choice(flag: &str, config: &Option<config::Config>) -> (String, ThemeOrigin) {
+    if flag != "auto" {
+        return (flag.to_string(), ThemeOrigin::Flag);
+    }
+    match config.as_ref().and_then(|c| c.theme.clone()) {
+        Some(t) if t != "auto" => (t, ThemeOrigin::Config),
+        _ => ("auto".to_string(), ThemeOrigin::Auto),
+    }
+}
+
+/// The configured clipboard mode and where it came from. An unknown value
+/// warns (on stderr, before any alternate screen) and falls back to `auto`.
+fn clipboard_mode(
+    config: &Option<config::Config>,
+) -> (crate::clipboard::ClipboardMode, &'static str) {
+    use crate::clipboard::ClipboardMode;
+    let Some(v) = config
+        .as_ref()
+        .and_then(|c| c.behavior.as_ref())
+        .and_then(|b| b.clipboard.as_deref())
+    else {
+        return (ClipboardMode::default(), "default");
+    };
+    match ClipboardMode::parse(v) {
+        Some(mode) => (mode, "config behavior.clipboard"),
+        None => {
+            eprintln!("ink: unknown clipboard mode '{v}', using 'auto'");
+            (ClipboardMode::Auto, "config value not recognised; default")
+        }
+    }
+}
+
+/// Whether to capture the mouse, and what decided it: `--no-mouse` beats
+/// `[behavior] mouse_capture`, which beats the default (on).
+pub(crate) fn mouse_capture(
+    no_mouse_flag: bool,
+    config: &Option<config::Config>,
+) -> (bool, &'static str) {
+    if no_mouse_flag {
+        return (false, "--no-mouse");
+    }
+    match config
+        .as_ref()
+        .and_then(|c| c.behavior.as_ref())
+        .and_then(|b| b.mouse_capture)
+    {
+        Some(v) => (v, "config behavior.mouse_capture"),
+        None => (true, "default"),
+    }
+}
+
 fn resolve_width(width: &Option<WidthArg>, config: &Option<config::Config>) -> Option<u16> {
     match width {
         Some(WidthArg::Columns(n)) => Some(*n),
@@ -586,9 +674,14 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # How copied text reaches the clipboard:
 #   auto   - OSC 52 escape (works over SSH) and a native helper, if present
 #   osc52  - escape sequence only
-#   native - pbcopy / wl-copy / xclip / xsel / clip.exe only
+#   native - pbcopy / wl-copy / xclip / xsel / clip.exe / termux-clipboard-set only
 #   off    - copying is disabled
 # clipboard = "auto"
+
+# Draw borders, bullets and markers with plain ASCII (for the Linux console,
+# legacy console fonts, screen readers). Unset: automatic on TERM=linux and
+# non-UTF-8 locales. Same as --ascii.
+# ascii = false
 
 [keybindings]
 # Built-in preset: "default" (vim-flavored), "vim", or "emacs"
@@ -751,5 +844,62 @@ fn read_input(args: &Args) -> Result<String> {
     match args.inputs.first() {
         None => read_stdin(),
         Some(input) => read_source(input),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cfg(toml: &str) -> Option<config::Config> {
+        config::parse_config(toml, "test").config
+    }
+
+    #[test]
+    fn no_mouse_flag_parses_before_and_after_a_subcommand() {
+        assert!(
+            Cli::try_parse_from(["ink", "--no-mouse", "a.md"])
+                .unwrap()
+                .no_mouse
+        );
+        assert!(
+            Cli::try_parse_from(["ink", "doctor", "--no-mouse"])
+                .unwrap()
+                .no_mouse
+        );
+        assert!(!Cli::try_parse_from(["ink", "a.md"]).unwrap().no_mouse);
+    }
+
+    #[test]
+    fn no_mouse_beats_config_which_beats_the_default() {
+        let on = cfg("[behavior]\nmouse_capture = true\n");
+        let off = cfg("[behavior]\nmouse_capture = false\n");
+        assert_eq!(mouse_capture(false, &None), (true, "default"));
+        assert!(!mouse_capture(false, &off).0);
+        assert!(mouse_capture(false, &on).0);
+        assert_eq!(mouse_capture(true, &on), (false, "--no-mouse"));
+        assert_eq!(mouse_capture(true, &None), (false, "--no-mouse"));
+    }
+
+    #[test]
+    fn theme_flag_beats_config_which_beats_auto() {
+        let c = cfg("theme = \"nord\"\n");
+        assert_eq!(
+            theme_choice("dracula", &c),
+            ("dracula".into(), ThemeOrigin::Flag)
+        );
+        assert_eq!(
+            theme_choice("auto", &c),
+            ("nord".into(), ThemeOrigin::Config)
+        );
+        assert_eq!(
+            theme_choice("auto", &None),
+            ("auto".into(), ThemeOrigin::Auto)
+        );
+        let auto = cfg("theme = \"auto\"\n");
+        assert_eq!(
+            theme_choice("auto", &auto),
+            ("auto".into(), ThemeOrigin::Auto)
+        );
     }
 }

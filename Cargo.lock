@@ -1534,6 +1534,7 @@ dependencies = [
  "flate2",
  "image",
  "insta",
+ "libc",
  "notify",
  "open",
  "predicates",

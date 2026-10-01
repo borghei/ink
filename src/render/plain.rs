@@ -49,7 +49,7 @@ pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result
     )
     .lines;
 
-    let caps = theme::caps::caps();
+    let depth = theme::caps::caps().depth;
     let mut output = String::new();
     for line in &styled_lines {
         if !color {
@@ -78,10 +78,10 @@ pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result
             }
             if span.style.fg.is_some() || span.style.bg.is_some() {
                 if let Some(ref fg) = span.style.fg {
-                    output.push_str(&sgr_color(theme::hex_to_rgb(fg), true, caps.truecolor));
+                    output.push_str(&sgr_color(theme::hex_to_rgb(fg), true, depth));
                 }
                 if let Some(ref bg) = span.style.bg {
-                    output.push_str(&sgr_color(theme::hex_to_rgb(bg), false, caps.truecolor));
+                    output.push_str(&sgr_color(theme::hex_to_rgb(bg), false, depth));
                 }
             }
             if !codes.is_empty() {
@@ -122,14 +122,9 @@ pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result
     Ok(output)
 }
 
-/// Build an SGR color escape: 24-bit when `truecolor`, else the 256-color
-/// cube. `fg` selects foreground (38) vs background (48).
-fn sgr_color((r, g, b): (u8, u8, u8), fg: bool, truecolor: bool) -> String {
-    let sel = if fg { 38 } else { 48 };
-    if truecolor {
-        format!("\x1b[{sel};2;{r};{g};{b}m")
-    } else {
-        let idx = theme::caps::rgb_to_256(r, g, b);
-        format!("\x1b[{sel};5;{idx}m")
-    }
+/// Build an SGR color escape at the terminal's depth: 24-bit, the 256-color
+/// cube, or one of the 16 ANSI colours. `fg` selects foreground vs
+/// background.
+fn sgr_color(rgb: (u8, u8, u8), fg: bool, depth: theme::caps::ColorLevel) -> String {
+    format!("\x1b[{}m", theme::caps::sgr_params(rgb, fg, depth))
 }

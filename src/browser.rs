@@ -19,7 +19,12 @@ struct FileEntry {
 ///
 /// Returns `Some(path)` if the user selected a file, or `None` if they quit.
 /// Gracefully handles empty directories, permission errors, etc.
-pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
+///
+/// `mouse_capture` follows the same setting as the reader (`--no-mouse`,
+/// `[behavior] mouse_capture`); the browser has no mouse actions of its own,
+/// but switching capture on here and off in the reader would flip the
+/// terminal's selection behaviour between screens.
+pub fn browse(dir: &Path, theme_name: &str, mouse_capture: bool) -> Result<Option<PathBuf>> {
     let files = find_markdown_files(dir);
     if files.is_empty() {
         eprintln!("ink: no markdown files found in {}", dir.display());
@@ -29,7 +34,10 @@ pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
     crate::app::install_panic_hook();
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(stdout, EnterAlternateScreen)?;
+    if mouse_capture {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -73,6 +81,8 @@ fn browse_inner(
         terminal.draw(|frame| {
             let size = frame.area();
             let t = theme::resolve_theme(theme_name);
+            let g = crate::glyphs::current();
+            let dot = format!(" {} ", g.dot);
 
             // Fill background
             if let Some(ref bg_hex) = t.colors.bg {
@@ -110,7 +120,10 @@ fn browse_inner(
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("  ink ", Style::default().fg(accent).bold()),
-                    Span::styled(format!("— {dir_display}"), Style::default().fg(dim)),
+                    Span::styled(
+                        format!("{} {dir_display}", g.dash),
+                        Style::default().fg(dim),
+                    ),
                 ]),
             ];
             frame.render_widget(
@@ -136,7 +149,11 @@ fn browse_inner(
                 .map(|(i, &file_idx)| {
                     let entry = &files[file_idx];
                     let is_sel = i == selected;
-                    let marker = if is_sel { "  ▸ " } else { "    " };
+                    let marker = if is_sel {
+                        format!("  {} ", g.pointer)
+                    } else {
+                        "    ".to_string()
+                    };
                     let size_str = format_size(entry.size);
 
                     let mut name_style = Style::default().fg(if is_sel { accent } else { fg });
@@ -158,7 +175,7 @@ fn browse_inner(
                     }
 
                     Line::from(vec![
-                        Span::styled(marker.to_string(), marker_style),
+                        Span::styled(marker, marker_style),
                         Span::styled(entry.relative_path.clone(), name_style),
                         Span::styled(format!("  {size_str}"), dim_style),
                     ])
@@ -180,7 +197,7 @@ fn browse_inner(
                 Line::from(vec![
                     Span::styled("  / ", Style::default().fg(accent).bg(bar_bg).bold()),
                     Span::styled(filter.clone(), Style::default().fg(bar_fg).bg(bar_bg)),
-                    Span::styled("█", Style::default().fg(accent).bg(bar_bg)),
+                    Span::styled(g.block, Style::default().fg(accent).bg(bar_bg)),
                     Span::styled(
                         format!("  {} matches", filtered.len()),
                         Style::default().fg(bar_dim).bg(bar_bg),
@@ -189,15 +206,18 @@ fn browse_inner(
                 ])
             } else {
                 Line::from(vec![
-                    Span::styled(" ↑↓/jk ", Style::default().fg(bar_fg).bg(bar_bg).bold()),
+                    Span::styled(
+                        format!(" {} ", g.scroll_keys),
+                        Style::default().fg(bar_fg).bg(bar_bg).bold(),
+                    ),
                     Span::styled("navigate", Style::default().fg(bar_dim).bg(bar_bg)),
-                    Span::styled(" · ", Style::default().fg(bar_dim).bg(bar_bg)),
+                    Span::styled(dot.clone(), Style::default().fg(bar_dim).bg(bar_bg)),
                     Span::styled(" Enter ", Style::default().fg(bar_fg).bg(bar_bg).bold()),
                     Span::styled("open", Style::default().fg(bar_dim).bg(bar_bg)),
-                    Span::styled(" · ", Style::default().fg(bar_dim).bg(bar_bg)),
+                    Span::styled(dot.clone(), Style::default().fg(bar_dim).bg(bar_bg)),
                     Span::styled(" / ", Style::default().fg(bar_fg).bg(bar_bg).bold()),
                     Span::styled("filter", Style::default().fg(bar_dim).bg(bar_bg)),
-                    Span::styled(" · ", Style::default().fg(bar_dim).bg(bar_bg)),
+                    Span::styled(dot.clone(), Style::default().fg(bar_dim).bg(bar_bg)),
                     Span::styled(" q ", Style::default().fg(bar_fg).bg(bar_bg).bold()),
                     Span::styled("quit", Style::default().fg(bar_dim).bg(bar_bg)),
                     Span::styled(" ".repeat(size.width as usize), Style::default().bg(bar_bg)),

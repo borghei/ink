@@ -57,20 +57,12 @@ impl Graphics {
     }
 
     /// Detect the terminal's image capability. Must be called on a real TTY,
-    /// before entering the alternate screen. Never panics; returns a
-    /// half-block capability on any failure or when `choice` is `HalfBlocks`.
+    /// before entering the alternate screen. Returns a half-block capability
+    /// on any failure or when `choice` is `HalfBlocks`.
     pub fn detect(choice: ProtocolChoice) -> Self {
         if choice == ProtocolChoice::HalfBlocks {
             return Self::halfblocks();
         }
-        // Querying can fail on pipes, unsupported terminals, or timeout — any
-        // error means "no graphics", i.e. half-blocks.
-        let Ok(mut picker) = std::panic::catch_unwind(Picker::from_query_stdio)
-            .unwrap_or_else(|_| Err(ratatui_image::errors::Errors::NoFontSize))
-        else {
-            return Self::halfblocks();
-        };
-
         // Honor an explicit protocol request if the user forced one.
         let forced = match choice {
             ProtocolChoice::Kitty => Some(ProtocolType::Kitty),
@@ -78,6 +70,26 @@ impl Graphics {
             ProtocolChoice::Sixel => Some(ProtocolType::Sixel),
             _ => None,
         };
+
+        // A terminal that never answers makes the query wait out its ~2 s
+        // timeout at every start, so known non-graphics terminals skip it.
+        // A forced protocol still applies (with an assumed cell size).
+        let mut picker = if query_skip_reason().is_some() {
+            if forced.is_none() {
+                return Self::halfblocks();
+            }
+            Picker::halfblocks()
+        } else {
+            // Querying can fail on pipes, unsupported terminals, or timeout —
+            // any error means "no graphics", i.e. half-blocks. (No
+            // catch_unwind: release builds abort on panic, so it could never
+            // catch anything that matters.)
+            match Picker::from_query_stdio() {
+                Ok(p) => p,
+                Err(_) => return Self::halfblocks(),
+            }
+        };
+
         if let Some(pt) = forced {
             picker.set_protocol_type(pt);
         } else {
@@ -117,6 +129,33 @@ impl Graphics {
         }
         SlicedProtocol::new(picker, image, Some(Size::new(cols, rows))).ok()
     }
+}
+
+/// Why the graphics query is not worth running here, if it is not: the
+/// terminal cannot do pixel graphics, or there is no terminal to ask.
+pub fn query_skip_reason() -> Option<&'static str> {
+    use std::io::IsTerminal;
+    skip_reason_for(
+        &std::env::var("TERM").unwrap_or_default(),
+        &std::env::var("TERM_PROGRAM").unwrap_or_default(),
+        std::io::stdout().is_terminal(),
+    )
+}
+
+/// Pure form of [`query_skip_reason`].
+fn skip_reason_for(term: &str, term_program: &str, stdout_tty: bool) -> Option<&'static str> {
+    if !stdout_tty {
+        return Some("stdout is not a terminal");
+    }
+    if term == "linux" || term == "dumb" {
+        return Some("TERM has no graphics protocol");
+    }
+    // Terminal.app speaks none of kitty / iTerm2 / sixel and does not answer
+    // the probe, so the query would only cost its full timeout.
+    if term_program == "Apple_Terminal" {
+        return Some("Terminal.app has no graphics protocol");
+    }
+    None
 }
 
 /// What the query said vs. what we should actually use, when the user hasn't
@@ -246,6 +285,17 @@ mod tests {
         assert!(!is_iterm_env(Some("Apple_Terminal"), None));
         assert!(!is_iterm_env(Some("WezTerm"), Some("wezterm")));
         assert!(!is_iterm_env(None, None));
+    }
+
+    #[test]
+    fn query_is_skipped_on_terminals_that_cannot_answer() {
+        assert!(skip_reason_for("xterm-256color", "", false).is_some());
+        assert!(skip_reason_for("linux", "", true).is_some());
+        assert!(skip_reason_for("dumb", "", true).is_some());
+        assert!(skip_reason_for("xterm-256color", "Apple_Terminal", true).is_some());
+        assert!(skip_reason_for("xterm-256color", "iTerm.app", true).is_none());
+        assert!(skip_reason_for("xterm-kitty", "", true).is_none());
+        assert!(skip_reason_for("tmux-256color", "tmux", true).is_none());
     }
 
     #[test]

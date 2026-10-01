@@ -16,13 +16,12 @@ pub fn print_outline(source: &str) {
         return;
     }
 
+    let g = crate::glyphs::current();
     for h in &doc.headings {
         let indent = "  ".repeat((h.level as usize).saturating_sub(1));
         let marker = match h.level {
-            1 => "█",
-            2 => "▌",
-            3 => "▎",
-            _ => "·",
+            1..=3 => g.heading[h.level as usize - 1].trim_end(),
+            _ => g.dot,
         };
         println!("{indent}{marker} {}", sanitize_text(&h.text));
     }
@@ -44,23 +43,32 @@ pub fn print_stats(source: &str, filename: &str) {
     let image_count = count_pattern(&content, "![");
     let table_count = content.lines().filter(|l| l.contains("---|")).count();
 
-    println!("╭─ {} ─╮", sanitize_text(filename));
-    println!("│");
-    println!("│  Words:         {words}");
-    println!("│  Characters:    {chars}");
-    println!("│  Lines:         {lines}");
-    println!("│  Reading time:  ~{reading_time} min");
-    println!("│");
-    println!("│  Headings:      {heading_count}");
-    println!("│  Links:         {link_count}");
-    println!("│  Code blocks:   {code_block_count}");
-    println!("│  Images:        {image_count}");
-    println!("│  Tables:        {table_count}");
+    let g = crate::glyphs::current();
+    let v = g.v;
+    println!(
+        "{}{} {} {}{}",
+        g.tl,
+        g.h,
+        sanitize_text(filename),
+        g.h,
+        g.tr
+    );
+    println!("{v}");
+    println!("{v}  Words:         {words}");
+    println!("{v}  Characters:    {chars}");
+    println!("{v}  Lines:         {lines}");
+    println!("{v}  Reading time:  ~{reading_time} min");
+    println!("{v}");
+    println!("{v}  Headings:      {heading_count}");
+    println!("{v}  Links:         {link_count}");
+    println!("{v}  Code blocks:   {code_block_count}");
+    println!("{v}  Images:        {image_count}");
+    println!("{v}  Tables:        {table_count}");
     if fm.is_some() {
-        println!("│  Frontmatter:   yes");
+        println!("{v}  Frontmatter:   yes");
     }
-    println!("│");
-    println!("╰───╯");
+    println!("{v}");
+    println!("{}{}{}", g.bl, g.h.repeat(3), g.br);
 }
 
 /// Print a real (Myers) line diff between two markdown files. A single

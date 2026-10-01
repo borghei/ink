@@ -192,7 +192,9 @@ Press `/` to search within a document. Matches highlight inline; press Enter to 
 
 ink captures the mouse for wheel-scroll, which used to mean giving up your terminal's own text
 selection. Now it does the job itself, and does it better — it knows where a code block starts and
-where ink's own decoration ends.
+where ink's own decoration ends. If you'd rather keep your terminal's own selection and link
+clicking, run `ink --no-mouse` (one session) or set `mouse_capture = false` (always); both apply to
+the reader and the file browser.
 
 - **`v`** starts a character-wise selection, **`V`** a line-wise one. Move with `h j k l`, arrows,
   `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
@@ -229,7 +231,11 @@ Press `t` to toggle a sidebar showing every heading in the document. Tracks your
 
 Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, and Solarized. Press `T` to open the theme picker and preview each one live.
 
-Auto-detects your terminal background and picks dark or light mode by default.
+With no theme set, ink asks the terminal for its background colour (an OSC 11 query, answered by nearly every modern terminal and passed through by tmux) and picks Light or Dark to match, falling back to `COLORFGBG` and then Dark. An explicit `--theme` or `theme =` in the config always wins, and never triggers the query.
+
+Themes adapt to what the terminal can show: 24-bit colour where it is advertised, the 256-colour palette on `*-256color` terminals, and the 16 ANSI colours on the Linux console and other 16-colour terminals (`TERM=linux`, `xterm`, `vt100`, `screen`, …) — there ink uses your terminal's own palette, so your colour scheme applies. With `--color=never` or `NO_COLOR` the reader draws without colour at all, using bold, underline and reverse video for headings, links, search hits and selections.
+
+On the Linux console, a non-UTF-8 locale, a legacy console font or a screen reader, box-drawing and symbol characters come out as junk. `ink --ascii` (or `ascii = true` under `[behavior]`) draws every border, bullet, task box, quote bar, rule and status-bar marker in plain 7-bit ASCII instead — `+--+`, `|`, `*`, `[x]`, `#` — and turns off smart quotes and emoji shortcodes, so an ASCII document prints as pure ASCII. It switches on by itself for `TERM=linux` and non-UTF-8 locales; `ascii = false` in the config keeps Unicode regardless.
 
 ### Math and emoji
 
@@ -362,9 +368,13 @@ mouse_capture = true
 # How copied text reaches the clipboard:
 #   auto   - OSC 52 escape (crosses SSH and tmux) plus a native helper, if present
 #   osc52  - escape sequence only
-#   native - pbcopy / wl-copy / xclip / xsel / clip.exe only
+#   native - pbcopy / wl-copy / xclip / xsel / clip.exe / termux-clipboard-set only
 #   off    - copying is disabled
 clipboard = "auto"
+
+# Plain-ASCII borders, bullets and markers (Linux console, legacy fonts,
+# screen readers). Unset: automatic on TERM=linux and non-UTF-8 locales.
+# ascii = false
 ```
 
 ### Custom themes
@@ -412,6 +422,8 @@ Options:
       --no-pager         Never page --plain output, even on a TTY
       --frontmatter      Show YAML/TOML frontmatter
       --spacing <MODE>   Line spacing: compact, normal, relaxed
+      --no-mouse         Don't capture the mouse (overrides mouse_capture in config)
+      --ascii            Draw borders, bullets and markers in plain ASCII
 
 Subcommands:
   outline      Show document heading structure
@@ -422,6 +434,7 @@ Subcommands:
   man          Generate a man page
   config       Config helpers (init, path)
   keybindings  Print the active keybinding map
+  doctor       Print a diagnostic report to attach to an issue
 ```
 
 ## How it compares
@@ -452,7 +465,7 @@ Terminal graphics support varies wildly. If an image is blank, garbled, or missi
 
 1. **Try the universal renderer:** `ink --image-protocol halfblocks file.md`. If the image appears as coarse colored blocks, decoding is fine — the problem is your terminal's pixel graphics protocol.
 2. **Try a specific protocol:** `--image-protocol iterm2` (iTerm2, WezTerm, VS Code, Warp and friends) or `--image-protocol sixel`. Some terminals advertise protocols they only partially implement — auto-detection already works around the known cases (e.g. iTerm2 claiming kitty support), but new terminal versions ship new quirks.
-3. **Collect a diagnostic report:** run `ink doctor` in the affected terminal — it prints your terminal identity, what the graphics negotiation chose, and decoder self-tests. `ink doctor --save ink-doctor.txt` writes it to a file.
+3. **Collect a diagnostic report:** run `ink doctor` in the affected terminal — it prints your platform and terminal identity, the colour depth and theme ink picked (and which signal decided each), the clipboard helper and OSC 52 wrapping it would use, mouse capture, config warnings, what the graphics negotiation chose, and decoder self-tests. It leaves out anything that identifies you (no hostnames, user names, IPs or session IDs; your home directory shows as `~`), so it is safe to paste into an issue. `ink doctor --save ink-doctor.txt` writes it to a file. The same report helps with colour, theme and clipboard problems.
 4. **Send it to us:** open an [image rendering issue](https://github.com/borghei/ink/issues/new?template=image-rendering.yml) with the report attached. That output usually pinpoints the problem immediately.
 
 ## Security model

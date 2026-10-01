@@ -368,7 +368,7 @@ fn image_placeholder_span(
 ) -> StyledSpan {
     let label = if alt.is_empty() { src } else { alt };
     StyledSpan {
-        text: format!("🖼 {label}"),
+        text: format!("{} {label}", crate::glyphs::current().image),
         style: SpanStyle {
             fg: Some(ctx.theme.colors.link.clone()),
             ..style.clone()

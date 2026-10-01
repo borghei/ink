@@ -77,12 +77,13 @@ pub fn layout_table<'a>(
     let border_color = &theme.colors.table_border;
     let header_color = &theme.colors.table_header;
 
+    let g = crate::glyphs::current();
     // Top border: ╭───┬───╮
     lines.push(border_line(
         &col_widths,
-        '╭',
-        '┬',
-        '╮',
+        g.tl,
+        g.tee_down,
+        g.tr,
         border_color,
         &margin_str,
     ));
@@ -103,9 +104,9 @@ pub fn layout_table<'a>(
     // Separator: ├───┼───┤
     lines.push(border_line(
         &col_widths,
-        '├',
-        '┼',
-        '┤',
+        g.tee_right,
+        g.cross,
+        g.tee_left,
         border_color,
         &margin_str,
     ));
@@ -128,9 +129,9 @@ pub fn layout_table<'a>(
     // Bottom border: ╰───┴───╯
     lines.push(border_line(
         &col_widths,
-        '╰',
-        '┴',
-        '╯',
+        g.bl,
+        g.tee_up,
+        g.br,
         border_color,
         &margin_str,
     ));
@@ -215,7 +216,7 @@ fn render_transposed(
                 });
             }
             sep.push(StyledSpan {
-                text: "╌".repeat(max_width),
+                text: crate::glyphs::current().dashed.repeat(max_width),
                 style: SpanStyle {
                     fg: Some(border_color.clone()),
                     ..Default::default()
@@ -242,18 +243,21 @@ fn fit_label(s: &str, w: usize) -> String {
     if sw < w {
         return format!("{s}{}", " ".repeat(w - sw));
     }
+    let ellipsis = crate::glyphs::current().ellipsis;
+    // The ellipsis only fits when the column is wider than it.
+    let ellipsis = if ellipsis.width() < w { ellipsis } else { "" };
     let mut out = String::new();
     let mut acc = 0;
     for g in s.graphemes(true) {
         let gw = g.width();
-        if acc + gw > w - 1 {
+        if acc + gw > w - ellipsis.width() {
             break;
         }
         out.push_str(g);
         acc += gw;
     }
-    out.push('…');
-    acc += 1;
+    out.push_str(ellipsis);
+    acc += ellipsis.width();
     if acc < w {
         out.push_str(&" ".repeat(w - acc));
     }
@@ -402,7 +406,7 @@ fn render_row_lines(
             });
         }
         line.push(StyledSpan {
-            text: "│".to_string(),
+            text: crate::glyphs::current().v.to_string(),
             style: SpanStyle {
                 fg: Some(border_color.to_string()),
                 ..Default::default()
@@ -433,7 +437,7 @@ fn render_row_lines(
                 style,
             });
             line.push(StyledSpan {
-                text: "│".to_string(),
+                text: crate::glyphs::current().v.to_string(),
                 style: SpanStyle {
                     fg: Some(border_color.to_string()),
                     ..Default::default()
@@ -447,9 +451,9 @@ fn render_row_lines(
 
 fn border_line(
     widths: &[usize],
-    left: char,
-    mid: char,
-    right: char,
+    left: &str,
+    mid: &str,
+    right: &str,
     color: &str,
     margin: &str,
 ) -> StyledLine {
@@ -461,14 +465,15 @@ fn border_line(
         });
     }
     let mut parts = String::new();
-    parts.push(left);
+    let h = crate::glyphs::current().h;
+    parts.push_str(left);
     for (i, w) in widths.iter().enumerate() {
-        parts.push_str(&"─".repeat(w + 2));
+        parts.push_str(&h.repeat(w + 2));
         if i < widths.len() - 1 {
-            parts.push(mid);
+            parts.push_str(mid);
         }
     }
-    parts.push(right);
+    parts.push_str(right);
     line.push(StyledSpan {
         text: parts,
         style: SpanStyle {

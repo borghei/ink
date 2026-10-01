@@ -412,10 +412,9 @@ fn layout_heading_spans(
         lines.push(StyledLine::empty());
     }
 
+    let glyphs = crate::glyphs::current();
     let prefix = match level {
-        1 => "█ ",
-        2 => "▌ ",
-        3 => "▎ ",
+        1..=3 => glyphs.heading[level as usize - 1],
         _ => "  ",
     };
     let prefix_w = prefix.width();
@@ -575,7 +574,10 @@ fn image_block_lines(
         let mut line = StyledLine::new();
         ctx.add_margin(&mut line);
         line.push(StyledSpan {
-            text: format!("🖼 {alt_display} ({detail})"),
+            text: format!(
+                "{} {alt_display} ({detail})",
+                crate::glyphs::current().image
+            ),
             style: SpanStyle {
                 fg: Some(ctx.theme.colors.link_url.clone()),
                 italic: true,
@@ -585,12 +587,20 @@ fn image_block_lines(
         });
         vec![line]
     };
+    // Half-block pixels are block glyphs too: in ASCII mode the image is
+    // named, not drawn.
+    if crate::glyphs::current().ascii && ctx.graphics_font.is_none() {
+        return placeholder("image; not drawn in ASCII mode".into());
+    }
     let image_data =
         match crate::image::load_decoded(url, ctx.base_dir, ctx.images, Some(&ctx.theme.colors.fg))
         {
             Ok(data) => data,
             Err(crate::image::ImageUnavailable::RemoteBlocked) => {
-                return placeholder("remote image — pass --remote-images to load".into());
+                return placeholder(format!(
+                    "remote image {} pass --remote-images to load",
+                    crate::glyphs::current().dash
+                ));
             }
             Err(crate::image::ImageUnavailable::NotFound) => {
                 return placeholder(if alt.is_empty() {
@@ -838,13 +848,19 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
     // blocks narrower than paragraphs on wide layouts).
     let border_width = ctx.width.max(8);
     let content_w = border_width.saturating_sub(4); // │ + space + content + space + │
+    let g = crate::glyphs::current();
 
     // Top border
     let mut header = StyledLine::new();
     ctx.add_margin(&mut header);
     if lang.is_empty() {
         header.push(StyledSpan {
-            text: format!("╭{}╮", "─".repeat(border_width.saturating_sub(2))),
+            text: format!(
+                "{}{}{}",
+                g.tl,
+                g.h.repeat(border_width.saturating_sub(2)),
+                g.tr
+            ),
             style: SpanStyle {
                 fg: Some(ctx.theme.colors.table_border.clone()),
 
@@ -856,7 +872,7 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         // ╭─ (2) + label + <remaining ─> + ╮ (1) == border_width
         let remaining = border_width.saturating_sub(label.width() + 3);
         header.push(StyledSpan {
-            text: "╭─".to_string(),
+            text: format!("{}{}", g.tl, g.h),
             style: SpanStyle {
                 fg: Some(ctx.theme.colors.table_border.clone()),
 
@@ -872,7 +888,7 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
             },
         });
         header.push(StyledSpan {
-            text: format!("{}╮", "─".repeat(remaining)),
+            text: format!("{}{}", g.h.repeat(remaining), g.tr),
             style: SpanStyle {
                 fg: Some(ctx.theme.colors.table_border.clone()),
 
@@ -936,7 +952,7 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
             let mut line = StyledLine::new();
             ctx.add_margin(&mut line);
             line.push(StyledSpan {
-                text: "│ ".to_string(),
+                text: format!("{} ", g.v),
                 style: border_style.clone(),
             });
             let mut w = 0;
@@ -946,7 +962,7 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
             }
             let pad = content_w.saturating_sub(w);
             line.push(StyledSpan {
-                text: format!("{} │", " ".repeat(pad)),
+                text: format!("{} {}", " ".repeat(pad), g.v),
                 style: border_style.clone(),
             });
             lines.push(line);
@@ -957,7 +973,12 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
     let mut footer = StyledLine::new();
     ctx.add_margin(&mut footer);
     footer.push(StyledSpan {
-        text: format!("╰{}╯", "─".repeat(border_width.saturating_sub(2))),
+        text: format!(
+            "{}{}{}",
+            g.bl,
+            g.h.repeat(border_width.saturating_sub(2)),
+            g.br
+        ),
         style: SpanStyle {
             fg: Some(ctx.theme.colors.table_border.clone()),
             ..Default::default()
@@ -1047,18 +1068,19 @@ fn layout_blockquote<'a>(
 
     // Render admonition header if detected
     if let Some(ref adm_type) = admonition {
+        let icons = crate::glyphs::current().admonition;
         let icon = match adm_type.as_str() {
-            "NOTE" => "ℹ ",
-            "TIP" => "💡 ",
-            "IMPORTANT" => "❗ ",
-            "WARNING" => "⚠ ",
-            "CAUTION" => "🔴 ",
-            _ => "▎ ",
+            "NOTE" => icons[0],
+            "TIP" => icons[1],
+            "IMPORTANT" => icons[2],
+            "WARNING" => icons[3],
+            "CAUTION" => icons[4],
+            _ => icons[5],
         };
         let mut header_line = StyledLine::new();
         ctx.add_margin(&mut header_line);
         header_line.push(StyledSpan {
-            text: "  │ ".to_string(),
+            text: crate::glyphs::current().quote_bar.to_string(),
             style: SpanStyle {
                 fg: Some(bar_color.clone()),
                 ..Default::default()
@@ -1132,7 +1154,7 @@ fn layout_blockquote<'a>(
         let mut line = StyledLine::new();
         ctx.add_margin(&mut line);
         line.push(StyledSpan {
-            text: "  │ ".to_string(),
+            text: crate::glyphs::current().quote_bar.to_string(),
             style: SpanStyle {
                 fg: Some(bar_color.clone()),
                 ..Default::default()
@@ -1211,7 +1233,7 @@ fn layout_list<'a>(
 
     for (i, item) in node.children().enumerate() {
         let marker = match list_type {
-            ListType::Bullet => "  ◦ ".to_string(),
+            ListType::Bullet => crate::glyphs::current().bullet.to_string(),
             ListType::Ordered => format!("  {}. ", start + i),
         };
 
@@ -1259,10 +1281,11 @@ fn layout_list<'a>(
             ctx.add_margin(&mut line);
             if j == 0 {
                 if let Some(checked) = is_checked {
+                    let g = crate::glyphs::current();
                     let (icon, color) = if checked != ' ' {
-                        ("  ✓ ", &ctx.theme.colors.task_done)
+                        (g.task_done, &ctx.theme.colors.task_done)
                     } else {
-                        ("  ○ ", &ctx.theme.colors.task_pending)
+                        (g.task_pending, &ctx.theme.colors.task_pending)
                     };
                     line.push(StyledSpan {
                         text: icon.to_string(),
@@ -1308,11 +1331,11 @@ fn layout_hr(ctx: &LayoutContext, lines: &mut Vec<StyledLine>) {
     }
     let half = width / 2;
     line.push(StyledSpan {
-        text: format!(
-            "{}  ◆  {}",
-            "╌".repeat(half.saturating_sub(3)),
-            "╌".repeat(half.saturating_sub(3))
-        ),
+        text: {
+            let g = crate::glyphs::current();
+            let side = g.dashed.repeat(half.saturating_sub(3));
+            format!("{side}{}{side}", g.hr_mid)
+        },
         style: SpanStyle {
             fg: Some(ctx.theme.colors.hr.clone()),
             ..Default::default()
@@ -1454,7 +1477,7 @@ fn collect_inlines<'a>(
                 let alt = collect_child_text(child);
                 let alt_display = if alt.is_empty() { img.url.clone() } else { alt };
                 spans.push(StyledSpan {
-                    text: format!("🖼 {alt_display}"),
+                    text: format!("{} {alt_display}", crate::glyphs::current().image),
                     style: SpanStyle {
                         fg: Some(ctx.theme.colors.link.clone()),
 

@@ -189,7 +189,7 @@ fn doctor_save_writes_report_file() {
         .assert()
         .success();
     let saved = std::fs::read_to_string(&path).unwrap();
-    assert!(saved.contains("ink doctor — image rendering diagnostics"));
+    assert!(saved.contains("ink doctor — environment diagnostics"));
 }
 
 #[test]
@@ -533,4 +533,114 @@ fn valid_config_is_quiet() {
         .assert()
         .success()
         .stderr(predicate::str::is_empty());
+}
+
+/// `ink --plain --color=always` with a scrubbed terminal environment.
+fn plain_colour(term: &str) -> String {
+    let out = ink()
+        .args([
+            "--plain",
+            "--color=always",
+            "--theme",
+            "dark",
+            "--width",
+            "80",
+        ])
+        .arg("tests/fixtures/test.md")
+        .env("TERM", term)
+        .env_remove("COLORTERM")
+        .env_remove("TERM_PROGRAM")
+        .env_remove("WT_SESSION")
+        .env_remove("TMUX")
+        .env_remove("NO_COLOR")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    String::from_utf8(out.stdout).unwrap()
+}
+
+#[test]
+fn plain_uses_ansi_16_codes_on_a_16_colour_terminal() {
+    for term in ["linux", "xterm", "vt100"] {
+        let text = plain_colour(term);
+        assert!(!text.contains("38;5;") && !text.contains("38;2;"), "{term}");
+        assert!(!text.contains("48;5;") && !text.contains("48;2;"), "{term}");
+        assert!(
+            ["\x1b[3", "\x1b[9"].iter().any(|p| text.contains(p)),
+            "{term}: no ANSI colour at all"
+        );
+    }
+}
+
+#[test]
+fn plain_keeps_256_colours_on_xterm_256color() {
+    let text = plain_colour("xterm-256color");
+    assert!(text.contains("38;5;"));
+    assert!(!text.contains("38;2;"));
+}
+
+/// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
+/// nested lists, an ordered list, a task list, a table that wraps, a fenced
+/// code block, nested blockquotes, an admonition and a rule. In ASCII mode
+/// every byte ink prints for it must be 7-bit. Nothing is exempt for this
+/// fixture; images (named, not drawn) and math are not covered by it.
+#[test]
+fn ascii_mode_plain_output_is_seven_bit() {
+    let source = std::fs::read("tests/fixtures/ascii.md").unwrap();
+    assert!(source.is_ascii(), "the fixture itself must be ASCII");
+    for width in ["40", "80"] {
+        let out = ink()
+            .args(["--ascii", "--plain", "--color=never", "--width", width])
+            .arg("tests/fixtures/ascii.md")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(!out.stdout.is_empty());
+        if let Some(pos) = out.stdout.iter().position(|b| *b >= 0x80) {
+            let text = String::from_utf8_lossy(&out.stdout);
+            panic!("non-ASCII byte at {pos} (width {width}):\n{text}");
+        }
+    }
+}
+
+#[test]
+fn ascii_mode_turns_on_for_the_linux_console() {
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("TERM", "linux")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stdout.is_ascii());
+    // …and stays Unicode on an ordinary terminal with a UTF-8 locale.
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("TERM", "xterm-256color")
+        .env("LANG", "en_US.UTF-8")
+        .env_remove("LC_ALL")
+        .env_remove("LC_CTYPE")
+        .output()
+        .unwrap();
+    assert!(!out.stdout.is_ascii());
+}
+
+#[test]
+fn ascii_config_key_is_accepted() {
+    let dir = xdg_with_config("[behavior]\nascii = true\n");
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("TERM", "xterm-256color")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_ascii());
 }

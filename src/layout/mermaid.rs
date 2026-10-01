@@ -5,6 +5,23 @@ use unicode_width::UnicodeWidthStr;
 /// Parse and render a mermaid diagram as styled terminal text.
 /// This is a built-in ASCII renderer for common diagram types.
 pub fn render_mermaid(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
+    let mut lines = render_diagram(source, theme, width, margin);
+    // The diagram renderers draw with box and arrow characters; in ASCII
+    // mode translate them once here rather than in every renderer. (Each
+    // stand-in has the same width, except the note icon, which ends a line.)
+    if crate::glyphs::current().ascii {
+        for line in &mut lines {
+            for span in &mut line.spans {
+                if let std::borrow::Cow::Owned(t) = crate::glyphs::asciify(&span.text) {
+                    span.text = t;
+                }
+            }
+        }
+    }
+    lines
+}
+
+fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
     let trimmed = source.trim();
     let diagram_color = &theme.colors.heading2;
     let text_color = &theme.colors.code_fg;
