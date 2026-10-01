@@ -379,3 +379,45 @@ fn terminals_without_graphics_skip_the_image_query() {
     let t = startup_time(&[("TERM", "linux")]);
     assert!(t < Duration::from_millis(1500), "startup took {t:?}");
 }
+
+#[test]
+fn ascii_mode_reader_and_overlays_write_only_7_bit_bytes() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ascii.md");
+    let mut step = 0;
+    let s = run_in_pty(
+        &[
+            "--ascii",
+            "--color=never",
+            "--theme",
+            "dark",
+            "--image-protocol",
+            "halfblocks",
+            fixture,
+        ],
+        &[],
+        |out, t| {
+            // Once up: table of contents, help overlay, close help, quit.
+            let up = contains(out, b"\x1b[?1049h");
+            let keys: &[u8] = match step {
+                0 if up => b"t",
+                1 if t > Duration::from_millis(1200) => b"?",
+                2 if t > Duration::from_millis(1600) => b"x",
+                // Close the TOC, then quit (repeated until it takes).
+                n if n >= 3 && t > Duration::from_millis(2000 + 400 * (n as u64 - 3)) => {
+                    if n == 3 {
+                        b"t"
+                    } else {
+                        b"q"
+                    }
+                }
+                _ => return None,
+            };
+            step += 1;
+            Some(keys.to_vec())
+        },
+    );
+    let text = String::from_utf8_lossy(&s.output);
+    assert!(text.contains("Contents") && text.contains("Keys"), "{text}");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    assert!(s.output.is_ascii(), "non-ASCII output: {text}");
+}

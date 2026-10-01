@@ -578,3 +578,69 @@ fn plain_keeps_256_colours_on_xterm_256color() {
     assert!(text.contains("38;5;"));
     assert!(!text.contains("38;2;"));
 }
+
+/// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
+/// nested lists, an ordered list, a task list, a table that wraps, a fenced
+/// code block, nested blockquotes, an admonition and a rule. In ASCII mode
+/// every byte ink prints for it must be 7-bit. Nothing is exempt for this
+/// fixture; images (named, not drawn) and math are not covered by it.
+#[test]
+fn ascii_mode_plain_output_is_seven_bit() {
+    let source = std::fs::read("tests/fixtures/ascii.md").unwrap();
+    assert!(source.is_ascii(), "the fixture itself must be ASCII");
+    for width in ["40", "80"] {
+        let out = ink()
+            .args(["--ascii", "--plain", "--color=never", "--width", width])
+            .arg("tests/fixtures/ascii.md")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        assert!(!out.stdout.is_empty());
+        if let Some(pos) = out.stdout.iter().position(|b| *b >= 0x80) {
+            let text = String::from_utf8_lossy(&out.stdout);
+            panic!("non-ASCII byte at {pos} (width {width}):\n{text}");
+        }
+    }
+}
+
+#[test]
+fn ascii_mode_turns_on_for_the_linux_console() {
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("TERM", "linux")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stdout.is_ascii());
+    // …and stays Unicode on an ordinary terminal with a UTF-8 locale.
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("TERM", "xterm-256color")
+        .env("LANG", "en_US.UTF-8")
+        .env_remove("LC_ALL")
+        .env_remove("LC_CTYPE")
+        .output()
+        .unwrap();
+    assert!(!out.stdout.is_ascii());
+}
+
+#[test]
+fn ascii_config_key_is_accepted() {
+    let dir = xdg_with_config("[behavior]\nascii = true\n");
+    let out = ink()
+        .args(["--plain", "--color=never"])
+        .arg("tests/fixtures/ascii.md")
+        .env("XDG_CONFIG_HOME", dir.path())
+        .env("TERM", "xterm-256color")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stdout.is_ascii());
+}

@@ -84,6 +84,13 @@ pub struct Cli {
     /// longer scrolls inside ink. Overrides `[behavior] mouse_capture`
     #[arg(long, global = true)]
     pub no_mouse: bool,
+
+    /// Draw borders, bullets and markers with plain ASCII instead of
+    /// box-drawing and symbol characters (for the Linux console, legacy
+    /// console fonts, screen readers). Automatic on TERM=linux and non-UTF-8
+    /// locales; `[behavior] ascii` sets it either way
+    #[arg(long, global = true)]
+    pub ascii: bool,
 }
 
 /// A parsed `--width` value.
@@ -219,6 +226,13 @@ pub fn run() -> Result<()> {
         eprintln!("{w}");
     }
     input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
+    crate::glyphs::select(
+        cli.ascii,
+        user_config
+            .as_ref()
+            .and_then(|c| c.behavior.as_ref())
+            .and_then(|b| b.ascii),
+    );
 
     // Escape sequences only when wanted: `--color`, then NO_COLOR, the
     // force variables, TERM=dumb, and finally whether stdout is a terminal.
@@ -663,6 +677,11 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 #   native - pbcopy / wl-copy / xclip / xsel / clip.exe / termux-clipboard-set only
 #   off    - copying is disabled
 # clipboard = "auto"
+
+# Draw borders, bullets and markers with plain ASCII (for the Linux console,
+# legacy console fonts, screen readers). Unset: automatic on TERM=linux and
+# non-UTF-8 locales. Same as --ascii.
+# ascii = false
 
 [keybindings]
 # Built-in preset: "default" (vim-flavored), "vim", or "emacs"

@@ -239,6 +239,11 @@ fn fmt_key(code: &KeyCode, mods: &KeyModifiers) -> String {
         KeyCode::Enter => "enter".into(),
         KeyCode::Tab => "tab".into(),
         KeyCode::BackTab => "backtab".into(),
+        KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right
+            if crate::glyphs::current().ascii =>
+        {
+            format!("{code:?}").to_lowercase()
+        }
         KeyCode::Up => "↑".into(),
         KeyCode::Down => "↓".into(),
         KeyCode::Left => "←".into(),

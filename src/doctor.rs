@@ -174,6 +174,13 @@ fn environment_section(r: &mut String) {
 fn terminal_section(r: &mut String, tty: bool) {
     let _ = writeln!(r, "\n[terminal]");
     let _ = writeln!(r, "stdout is a TTY      = {tty}");
+    let glyphs = crate::glyphs::current();
+    let _ = writeln!(
+        r,
+        "glyphs               = {} ({})",
+        if glyphs.ascii { "ASCII" } else { "Unicode" },
+        crate::glyphs::reason()
+    );
     let _ = writeln!(
         r,
         "stdin is a TTY       = {}",

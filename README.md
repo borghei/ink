@@ -204,6 +204,8 @@ With no theme set, ink asks the terminal for its background colour (an OSC 11 qu
 
 Themes adapt to what the terminal can show: 24-bit colour where it is advertised, the 256-colour palette on `*-256color` terminals, and the 16 ANSI colours on the Linux console and other 16-colour terminals (`TERM=linux`, `xterm`, `vt100`, `screen`, …) — there ink uses your terminal's own palette, so your colour scheme applies. With `--color=never` or `NO_COLOR` the reader draws without colour at all, using bold, underline and reverse video for headings, links, search hits and selections.
 
+On the Linux console, a non-UTF-8 locale, a legacy console font or a screen reader, box-drawing and symbol characters come out as junk. `ink --ascii` (or `ascii = true` under `[behavior]`) draws every border, bullet, task box, quote bar, rule and status-bar marker in plain 7-bit ASCII instead — `+--+`, `|`, `*`, `[x]`, `#` — and turns off smart quotes and emoji shortcodes, so an ASCII document prints as pure ASCII. It switches on by itself for `TERM=linux` and non-UTF-8 locales; `ascii = false` in the config keeps Unicode regardless.
+
 ### Math and emoji
 
 Inline `$E=mc^2$` and block `$$...$$` math render in code style, and `:emoji:` shortcodes resolve to their glyph (`:rocket:` → 🚀).
@@ -338,6 +340,10 @@ mouse_capture = true
 #   native - pbcopy / wl-copy / xclip / xsel / clip.exe / termux-clipboard-set only
 #   off    - copying is disabled
 clipboard = "auto"
+
+# Plain-ASCII borders, bullets and markers (Linux console, legacy fonts,
+# screen readers). Unset: automatic on TERM=linux and non-UTF-8 locales.
+# ascii = false
 ```
 
 ### Custom themes
@@ -386,6 +392,7 @@ Options:
       --frontmatter      Show YAML/TOML frontmatter
       --spacing <MODE>   Line spacing: compact, normal, relaxed
       --no-mouse         Don't capture the mouse (overrides mouse_capture in config)
+      --ascii            Draw borders, bullets and markers in plain ASCII
 
 Subcommands:
   outline      Show document heading structure

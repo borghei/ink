@@ -233,11 +233,19 @@ const DECORATION: &[char] = &[
 pub fn content_start_col(text: &str) -> usize {
     let mut col = 0usize;
     let mut seen_decoration = false;
+    // ASCII mode draws the same structure with `#` (heading levels, as a
+    // run: `###`), `|` (bars, borders), `*` (bullets) and `+` (corners).
+    let ascii = crate::glyphs::current().ascii;
     for g in text.graphemes(true) {
         let is_space = g.chars().all(char::is_whitespace);
-        let is_decoration = g.chars().all(|c| DECORATION.contains(&c));
+        let is_decoration = g.chars().all(|c| DECORATION.contains(&c))
+            || (ascii && matches!(g, "#" | "|" | "*" | "+"));
         if is_space {
             col += g.width().max(1);
+            continue;
+        }
+        if ascii && g == "#" {
+            col += 1;
             continue;
         }
         if is_decoration && !seen_decoration {

@@ -562,7 +562,9 @@ fn run_inner(
                     Style::default().fg(bar_bg)
                 };
                 let sep_line = Line::from(Span::styled(
-                    "▁".repeat(separator_area.width as usize),
+                    crate::glyphs::current()
+                        .separator
+                        .repeat(separator_area.width as usize),
                     sep_style,
                 ));
                 frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
@@ -641,7 +643,10 @@ fn run_inner(
                             frame.buffer_mut().set_string(
                                 doc_area.x + img.col_offset,
                                 doc_area.y + y as u16,
-                                "🖼 (image could not be encoded for this terminal)",
+                                format!(
+                                    "{} (image could not be encoded for this terminal)",
+                                    crate::glyphs::current().image
+                                ),
                                 Style::default()
                                     .fg(theme::hex_to_color(&t.colors.link_url))
                                     .add_modifier(Modifier::ITALIC),
@@ -669,13 +674,16 @@ fn run_inner(
                         .iter()
                         .map(|h| (h.label, h.caption.clone(), h.url.clone()))
                         .collect();
+                    let dash = crate::glyphs::current().dash;
                     let title = match hint_kind {
-                        HintKind::Open => {
-                            "Follow link — press a letter, Y to copy instead, Esc to cancel"
+                        HintKind::Open => format!(
+                            "Follow link {dash} press a letter, Y to copy instead, Esc to cancel"
+                        ),
+                        HintKind::CopyUrl => {
+                            format!("Copy link URL {dash} press a letter, Esc to cancel")
                         }
-                        HintKind::CopyUrl => "Copy link URL — press a letter, Esc to cancel",
                     };
-                    render::render_link_hints(frame, main_area, &hints, title, &t);
+                    render::render_link_hints(frame, main_area, &hints, &title, &t);
                 }
 
                 // Code-block hint labels, painted on the blocks themselves.

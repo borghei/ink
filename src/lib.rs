@@ -4,6 +4,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod config;
 pub mod doctor;
+pub mod glyphs;
 pub mod graphics;
 pub mod highlight;
 pub mod image;
