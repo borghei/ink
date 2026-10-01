@@ -318,35 +318,11 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         }
         NodeValue::HtmlBlock(hb) => {
             let literal = hb.literal.clone();
+            let first_line = data.sourcepos.start.line;
             drop(data);
-            // `<img>` tags render as real images (READMEs use raw HTML for
-            // sized/centered logos); the surrounding markup is dropped.
-            if ctx.images != ImageMode::Off {
-                let html_images = extract_html_images(&literal);
-                if !html_images.is_empty() {
-                    for (src, alt) in &html_images {
-                        let block = image_block_lines(src, alt, None, ctx, lines.len());
-                        lines.extend(block);
-                    }
-                    add_spacing(ctx, lines);
-                    return;
-                }
-            }
-            // Other raw HTML is shown as dim text; wrap it so long tags/URLs
-            // stay within the width instead of overflowing.
-            for line_text in literal.lines() {
-                if line_text.trim().is_empty() {
-                    continue;
-                }
-                let spans = vec![StyledSpan {
-                    text: line_text.to_string(),
-                    style: SpanStyle {
-                        fg: Some(ctx.theme.colors.link_url.clone()),
-                        ..Default::default()
-                    },
-                }];
-                lines.extend(wrap_spans(spans, ctx.width, 0, ctx.margin));
-            }
+            // Raw HTML is mapped onto ink's own blocks and styles (images,
+            // headings, paragraphs, rules); tags are never shown raw.
+            html::layout_html_block(&literal, first_line, ctx, lines);
         }
         NodeValue::FootnoteDefinition(ref fd) => {
             let name = fd.name.clone();
@@ -394,6 +370,29 @@ fn layout_heading<'a>(
     ctx: &LayoutContext,
     lines: &mut Vec<StyledLine>,
 ) {
+    let source_line = node.data.borrow().sourcepos.start.line;
+    let spans = collect_inline_spans(node, ctx);
+    layout_heading_spans(
+        level,
+        spans,
+        &collect_child_text(node),
+        source_line,
+        ctx,
+        lines,
+    );
+}
+
+/// Lay out a heading from its inline spans; `text` is its plain text for the
+/// TOC and `source_line` the 1-based source line it was written on. Shared by
+/// markdown headings and HTML `<h1>`..`<h6>`.
+fn layout_heading_spans(
+    level: u8,
+    mut spans: Vec<StyledSpan>,
+    text: &str,
+    source_line: usize,
+    ctx: &LayoutContext,
+    lines: &mut Vec<StyledLine>,
+) {
     let color = match level {
         1 => &ctx.theme.colors.heading1,
         2 => &ctx.theme.colors.heading2,
@@ -420,13 +419,12 @@ fn layout_heading<'a>(
     // Record the heading's exact display-line index for the TOC, and the
     // source line it came from so `Y` can slice the section out of the source.
     if ctx.record_headings {
-        let source_line = node.data.borrow().sourcepos.start.line;
         ctx.headings.borrow_mut().push(LayoutHeading {
             level,
             // Sanitized here, not by `sanitize_lines`: heading text reaches the
             // screen through the TOC sidebar and the copy status line, neither
             // of which is a `StyledLine`.
-            text: crate::sanitize::sanitize_text(&collect_child_text(node)).into_owned(),
+            text: crate::sanitize::sanitize_text(text).into_owned(),
             line_index: lines.len(),
             source_line,
         });
@@ -434,7 +432,6 @@ fn layout_heading<'a>(
 
     // Wrap the heading text so long headings don't overflow; the colored
     // prefix goes on the first line, continuation lines align under the text.
-    let mut spans = collect_inline_spans(node, ctx);
     for span in &mut spans {
         span.style.fg = Some(color.clone());
         span.style.bold = true;
@@ -677,41 +674,17 @@ const MAX_IMAGE_ROWS: u16 = 30;
 /// Tolerant by design: any attribute order, single/double/no quotes,
 /// self-closing or not. Tags without a `src` are skipped. Quote-aware:
 /// `src=` inside another attribute's quoted value is never mistaken for the
-/// real attribute, and a `>` inside quotes does not end the tag.
+/// real attribute, and a `>` inside quotes does not end the tag. Layout reads
+/// images through `html::tokenize` directly; this is the scanner's test probe.
+#[cfg(test)]
 fn extract_html_images(html: &str) -> Vec<(String, String)> {
-    let lower = html.to_ascii_lowercase();
-    let mut out = Vec::new();
-    let mut pos = 0;
-    while let Some(found) = lower[pos..].find("<img") {
-        let start = pos + found;
-        let body = start + 4; // after "<img"
-                              // Require a real tag boundary so `<imgs ...>` is not an image tag.
-        let at_boundary = html[body..]
-            .chars()
-            .next()
-            .is_none_or(|c| c.is_ascii_whitespace() || c == '>' || c == '/');
-        if !at_boundary {
-            pos = body;
-            continue;
-        }
-        match scan_tag_attrs(&html[body..]) {
-            Some((attrs, consumed)) => {
-                let attr = |name: &str| {
-                    attrs
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, v)| v.clone())
-                };
-                if let Some(src) = attr("src") {
-                    out.push((src, attr("alt").unwrap_or_default()));
-                }
-                pos = body + consumed;
-            }
-            // Tag never closes: nothing trustworthy to extract.
-            None => pos = body,
-        }
-    }
-    out
+    html::tokenize(html)
+        .into_iter()
+        .filter_map(|token| match token {
+            html::Token::Open { name, attrs, .. } if name == "img" => html::img_src_alt(&attrs),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Scan an HTML tag body (everything after the tag name) into attribute
@@ -1317,10 +1290,18 @@ fn collect_inlines<'a>(
     node: &'a AstNode<'a>,
     ctx: &LayoutContext,
     spans: &mut Vec<StyledSpan>,
-    parent_style: &SpanStyle,
+    outer_style: &SpanStyle,
 ) {
+    // Inline HTML arrives one tag per node (`<kbd>`, text, `</kbd>`), so the
+    // tags open among these siblings style the siblings that follow them.
+    let mut html_styles = html::HtmlStyles::default();
     for child in node.children() {
+        let parent_style = &html_styles.style(outer_style).clone();
         let data = child.data.borrow();
+        // Inside an unclosed inline <script>/<style>: show nothing.
+        if html_styles.hidden() && !matches!(data.value, NodeValue::HtmlInline(_)) {
+            continue;
+        }
         match &data.value {
             NodeValue::Text(text) => {
                 // Auto-detect bare URLs and make them hyperlinks
@@ -1433,30 +1414,9 @@ fn collect_inlines<'a>(
                 });
             }
             NodeValue::HtmlInline(ref html) => {
-                // Honor common inline tags; drop the rest instead of emitting
-                // raw markup. <br> becomes a break handled by wrapping later;
-                // here we just skip structural tags and keep nothing visible.
-                // A mid-text <img> can't render as a pixel block, but it must
-                // stay visible — show the standard inline placeholder.
-                if let Some((src, alt)) = extract_html_images(html).into_iter().next() {
-                    let label = if alt.is_empty() { src } else { alt };
-                    spans.push(StyledSpan {
-                        text: format!("🖼 {label}"),
-                        style: SpanStyle {
-                            fg: Some(ctx.theme.colors.link.clone()),
-                            ..parent_style.clone()
-                        },
-                    });
-                    continue;
-                }
-                if html::is_br_tag(html) {
-                    spans.push(StyledSpan {
-                        text: "\n".to_string(),
-                        style: parent_style.clone(),
-                    });
-                }
-                // <sub>/<sup>/<kbd>/etc.: ignore the tag, inner text is a
-                // sibling text node and renders normally.
+                // Honor common inline tags (<kbd>, <b>, <a href>, <br>, ...);
+                // never emit raw markup.
+                html::inline_fragment(html, ctx, &mut html_styles, outer_style, spans);
             }
             _ => {
                 drop(data);
@@ -2042,35 +2002,37 @@ mod heading_sanitization {
     }
 }
 
-/// Rendered text of a document, one string per display line, trailing
-/// whitespace trimmed. Shared by the behaviour tests below.
+/// Lay out a markdown source at `width` with the given image mode.
 #[cfg(test)]
-fn render_text_lines(src: &str, width: u16) -> Vec<String> {
+fn layout_src(src: &str, width: u16, images: ImageMode) -> LayoutResult {
     use comrak::{parse_document, Arena};
     let arena = Arena::new();
     let root = parse_document(&arena, src, &crate::parser::options());
     let theme = crate::theme::resolve_theme("dark");
-    layout_document(
-        root,
-        &theme,
-        width,
-        Spacing::Normal,
-        0,
-        None,
-        ImageMode::Off,
-        None,
-    )
-    .lines
-    .iter()
-    .map(|l| {
-        l.spans
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect::<String>()
-            .trim_end()
-            .to_string()
-    })
-    .collect()
+    layout_document(root, &theme, width, Spacing::Normal, 0, None, images, None)
+}
+
+/// Display lines as plain strings, trailing whitespace trimmed.
+#[cfg(test)]
+fn line_strings(lines: &[StyledLine]) -> Vec<String> {
+    lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+/// Rendered text of a document (images off), one string per display line.
+/// Shared by the behaviour tests below.
+#[cfg(test)]
+fn render_text_lines(src: &str, width: u16) -> Vec<String> {
+    line_strings(&layout_src(src, width, ImageMode::Off).lines)
 }
 
 /// Hard line breaks (two trailing spaces, a trailing backslash, `<br>`) must
@@ -2154,5 +2116,163 @@ mod hard_breaks {
         let lines = render_text_lines("end<br>\n", 60);
         assert_eq!(lines[0], "end");
         assert!(lines[1..].iter().all(|l| l.is_empty()));
+    }
+}
+
+/// Raw HTML (README headers, `<details>`, `<kbd>`) renders as ink's own blocks
+/// and styles: text is kept, tags are never printed raw.
+#[cfg(test)]
+mod html_rendering {
+    use super::{layout_src, line_strings, render_text_lines, ImageMode, StyledSpan};
+
+    fn spans_of(src: &str) -> Vec<StyledSpan> {
+        layout_src(src, 60, ImageMode::Off)
+            .lines
+            .into_iter()
+            .flat_map(|l| l.spans)
+            .collect()
+    }
+
+    fn no_raw_tags(lines: &[String]) {
+        for l in lines {
+            assert!(!l.contains("<p") && !l.contains("</"), "raw tag: {l:?}");
+        }
+    }
+
+    #[test]
+    fn readme_header_keeps_title_and_tagline_next_to_the_image() {
+        let src = "<p align=\"center\"><img src=\"x.png\"></p>\n\
+                   <h1 align=\"center\">Project</h1>\n\
+                   <p>Tagline</p>\n";
+        let result = layout_src(src, 60, ImageMode::LocalOnly);
+        let lines = line_strings(&result.lines);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("🖼 x.png (image not found")),
+            "{lines:#?}"
+        );
+        assert!(lines.iter().any(|l| l == "█ Project"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l == "Tagline"), "{lines:#?}");
+        no_raw_tags(&lines);
+        // The HTML heading is a real heading: it is in the TOC, pointing at
+        // the line it renders on and the source line it was written on.
+        assert_eq!(result.headings.len(), 1);
+        let h = &result.headings[0];
+        assert_eq!((h.level, h.text.as_str(), h.source_line), (1, "Project", 2));
+        assert_eq!(lines[h.line_index], "█ Project");
+
+        // Images off: the inline placeholder, as for a markdown image.
+        let lines = render_text_lines(src, 60);
+        assert!(lines.iter().any(|l| l == "🖼 x.png"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l == "█ Project"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l == "Tagline"), "{lines:#?}");
+    }
+
+    #[test]
+    fn comment_only_block_renders_nothing() {
+        let lines = render_text_lines("<!-- a\nmulti-line comment -->\n", 60);
+        assert!(lines.iter().all(|l| l.is_empty()), "{lines:#?}");
+        let lines = render_text_lines("before\n\n<!-- hidden -->\n\nafter\n", 60);
+        assert!(!lines.iter().any(|l| l.contains("hidden")), "{lines:#?}");
+    }
+
+    #[test]
+    fn details_and_summary_keep_their_text() {
+        let src = "<details><summary>More</summary>body</details>\n";
+        let lines = render_text_lines(src, 60);
+        assert!(lines.iter().any(|l| l == "More"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l == "body"), "{lines:#?}");
+        no_raw_tags(&lines);
+        let summary = spans_of(src)
+            .into_iter()
+            .find(|s| s.text == "More")
+            .unwrap();
+        assert!(summary.style.bold, "summary is styled bold");
+    }
+
+    #[test]
+    fn inline_kbd_is_styled_as_code() {
+        let lines = render_text_lines("Press <kbd>Ctrl</kbd>+<kbd>C</kbd> now\n", 60);
+        assert_eq!(lines[0], "Press Ctrl+C now");
+        let spans = spans_of("Press <kbd>Ctrl</kbd> now\n");
+        let ctrl = spans.iter().find(|s| s.text == "Ctrl").unwrap();
+        assert!(ctrl.style.bg.is_some(), "kbd gets the code background");
+        let now = spans.iter().find(|s| s.text.contains("now")).unwrap();
+        assert!(now.style.bg.is_none(), "style ends at </kbd>");
+    }
+
+    #[test]
+    fn inline_sub_sup_and_unknown_tags_keep_their_text() {
+        let lines = render_text_lines("H<sub>2</sub>O and x<sup>2</sup> <span>s</span>\n", 60);
+        assert_eq!(lines[0], "H2O and x2 s");
+    }
+
+    #[test]
+    fn malformed_markup_is_literal_text() {
+        assert_eq!(render_text_lines("a < b\n", 60)[0], "a < b");
+        let lines = render_text_lines("<div>a < b and <img src=\"x</div>\n", 60);
+        assert!(lines.iter().any(|l| l.starts_with("a < b")), "{lines:#?}");
+    }
+
+    #[test]
+    fn inline_and_block_links_carry_their_destination() {
+        let spans = spans_of("see <a href=\"https://e.com/?a=1&amp;b=2\">site</a> ok\n");
+        let site = spans.iter().find(|s| s.text == "site").unwrap();
+        assert_eq!(
+            site.style.link_url.as_deref(),
+            Some("https://e.com/?a=1&b=2")
+        );
+        let ok = spans.iter().find(|s| s.text.contains("ok")).unwrap();
+        assert_eq!(ok.style.link_url, None, "link ends at </a>");
+
+        let spans = spans_of("<p>go <a href=\"docs/x.md\">here</a></p>\n");
+        let here = spans.iter().find(|s| s.text == "here").unwrap();
+        assert_eq!(here.style.link_url.as_deref(), Some("docs/x.md"));
+    }
+
+    #[test]
+    fn unsafe_link_schemes_are_dropped_like_markdown_links() {
+        for src in [
+            "<p><a href=\"javascript:alert(1)\">js</a></p>\n",
+            "x <a href=\"javascript:alert(1)\">js</a>\n",
+            "<p><a href=\"&#x6A;avascript:alert(1)\">js</a></p>\n",
+        ] {
+            let spans = spans_of(src);
+            let js = spans.iter().find(|s| s.text == "js").unwrap();
+            assert_eq!(js.style.link_url, None, "{src}");
+        }
+    }
+
+    #[test]
+    fn script_and_style_elements_are_dropped_with_their_content() {
+        let lines = render_text_lines(
+            "<script>alert(1)</script>\n\n<style>p { color: red }</style>\n\nkept\n",
+            60,
+        );
+        assert!(
+            !lines
+                .iter()
+                .any(|l| l.contains("alert") || l.contains("color")),
+            "{lines:#?}"
+        );
+        assert!(lines.iter().any(|l| l == "kept"));
+        let lines = render_text_lines("x <script>bad()</script> y\n", 60);
+        assert_eq!(lines[0].split_whitespace().collect::<Vec<_>>(), ["x", "y"]);
+    }
+
+    #[test]
+    fn entities_breaks_and_rules_in_blocks() {
+        let lines = render_text_lines("<p>A &amp; B &lt;tag&gt; &#169;<br>next</p>\n<hr>\n", 60);
+        assert!(lines.iter().any(|l| l == "A & B <tag> ©"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l == "next"), "{lines:#?}");
+        assert!(lines.iter().any(|l| l.contains('◆')), "{lines:#?}");
+    }
+
+    #[test]
+    fn pre_is_a_code_block_with_its_whitespace() {
+        let result = layout_src("<pre>\n  indented\n    more\n</pre>\n", 60, ImageMode::Off);
+        assert_eq!(result.code_blocks.len(), 1);
+        assert_eq!(result.code_blocks[0].source, "  indented\n    more");
     }
 }

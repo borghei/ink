@@ -126,3 +126,36 @@ fn remote_images_blocked_by_default() {
         Err(ImageUnavailable::RemoteBlocked)
     );
 }
+
+#[test]
+fn raw_html_cannot_smuggle_escapes_or_unsafe_links() {
+    // Raw HTML is rendered (tags mapped onto ink's styles), not dropped, so
+    // its text and attributes are attacker-controlled input like any other:
+    // an ESC byte in a block, a decoded `&#27;`, a `javascript:` href (plain
+    // or entity-obfuscated) and an href carrying an ESC must all be stopped.
+    let source = "<div>esc \u{1b}]52;c;cHduZWQ=\u{7} here &#27;[2J</div>\n\n\
+        <p><a href=\"javascript:alert(1)\">js link</a> \
+        <a href=\"&#x6A;avascript:alert(2)\">obfuscated</a> \
+        <a href=\"https://ok.example/\u{1b}]8;;https://evil.example\">esc link</a></p>\n\n\
+        Inline <a href=\"javascript:alert(3)\">inline js</a> \
+        and <a href=\"https://inline.example/\u{1b}[31m\">inline esc</a>.\n";
+    let out = render_plain(source, &args()).unwrap();
+    assert_only_ink_escapes(&out);
+    // The text survives; the tags and the dangerous destinations do not.
+    for text in [
+        "esc",
+        "here",
+        "js link",
+        "obfuscated",
+        "esc link",
+        "inline js",
+    ] {
+        assert!(out.contains(text), "missing {text:?} in {out:?}");
+    }
+    assert!(!out.contains("<a"), "raw tag leaked: {out:?}");
+    assert!(!out.contains("javascript:"));
+    assert!(!out.contains("alert"));
+    assert!(!out.contains("evil.example"));
+    assert!(!out.contains("ok.example"));
+    assert!(!out.contains("inline.example"));
+}
