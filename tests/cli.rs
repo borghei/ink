@@ -628,6 +628,7 @@ fn ascii_mode_extension_fallbacks() {
         "| (i) An Obsidian callout",
         "| Callout body.",
         "Water is H_(2)O, e = mc^(2), struck, struck and 2^10 (a||b).",
+        "Caption: small print here.",
         "  Term\n    > Its definition.",
         // Math: the cleaned LaTeX source, never Unicode.
         "Math x^2 + \\alpha costs $5 and $10.",

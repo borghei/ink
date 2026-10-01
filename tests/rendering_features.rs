@@ -151,10 +151,47 @@ fn html_superscript_and_subscript_use_unicode_forms() {
 }
 
 #[test]
-fn html_superscript_without_a_unicode_form_falls_back() {
-    // No superscript `q`; no subscript `b`: the whole run falls back.
+fn html_script_without_a_unicode_form_is_left_as_text() {
+    // No superscript `q`; no subscript `b`: the text is shown as written,
+    // with no `^(…)`/`_(…)` wrapper.
     let out = render("x<sup>q</sup> and y<sub>ab</sub>\n");
-    assert!(out.contains("x^(q) and y_(ab)"), "{out}");
+    assert!(out.contains("xq and yab"), "{out}");
+}
+
+// Regression: `<sub>`/`<sup>` collapsed everything inside into one span
+// with the first span's style, dropping links, and wrapped it in `_(…)`.
+// GitHub READMEs use `<sub>` for small captions: those pass through.
+#[test]
+fn html_sub_caption_keeps_its_links() {
+    let src = "<sub>Photo by [Ann](https://a.example) and [Bob](https://b.example)</sub>\n";
+    let out = render(src);
+    assert!(out.contains("Photo by Ann and Bob"), "{out}");
+    assert!(!out.contains("_("), "{out}");
+    let lines = layout(src);
+    assert_eq!(
+        find_span(&lines, "Ann").style.link_url.as_deref(),
+        Some("https://a.example")
+    );
+    assert_eq!(
+        find_span(&lines, "Bob").style.link_url.as_deref(),
+        Some("https://b.example")
+    );
+    assert_eq!(find_span(&lines, "Photo by").style.link_url, None);
+}
+
+#[test]
+fn html_script_with_markup_inside_is_left_as_is() {
+    let lines = layout("x<sup>**2**</sup> and y<sub>i *j*</sub>\n");
+    assert!(find_span(&lines, "2").style.bold);
+    assert!(find_span(&lines, "j").style.italic);
+    let out = render("x<sup>**2**</sup> and y<sub>i *j*</sub>\n");
+    assert!(out.contains("x2 and yi j"), "{out}");
+}
+
+#[test]
+fn unclosed_html_script_leaves_its_text() {
+    let out = render("a<sub>2 b and c<sup>n\n");
+    assert!(out.contains("a2 b and cn"), "{out}");
 }
 
 // Regression: the `superscript` and `spoiler` extensions paired carets and

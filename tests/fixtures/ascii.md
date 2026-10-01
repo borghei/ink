@@ -46,6 +46,8 @@ fn main() {
 
 Water is H<sub>2</sub>O, e = mc<sup>2</sup>, ~~struck~~, ~struck~ and 2^10 (a||b).
 
+Caption: <sub>small print</sub> here.
+
 Term
 : Its definition.
 

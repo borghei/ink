@@ -233,8 +233,9 @@ pub(super) fn img_src_alt(attrs: &[(String, String)]) -> Option<(String, String)
 pub(super) struct HtmlStyles {
     /// (tag name, style inside it, hides its content)
     stack: Vec<(String, SpanStyle, bool)>,
-    /// Open `<sub>`/`<sup>` tags and the span index their text starts at.
-    scripts: Vec<(String, usize)>,
+    /// Open `<sub>`/`<sup>` tags, the span index their text starts at and
+    /// the style text had at the opening tag.
+    scripts: Vec<(String, usize, SpanStyle)>,
 }
 
 impl HtmlStyles {
@@ -314,42 +315,50 @@ impl HtmlStyles {
         self.stack.push((name.to_string(), style, hide));
     }
 
-    /// Note where a `<sub>`/`<sup>` starts in `spans`.
-    fn open_script(&mut self, name: &str, spans: &[StyledSpan]) {
+    /// Note where a `<sub>`/`<sup>` starts in `spans`, and in what style.
+    fn open_script(&mut self, name: &str, spans: &[StyledSpan], base: &SpanStyle) {
         if matches!(name, "sub" | "sup") {
-            self.scripts.push((name.to_string(), spans.len()));
+            let style = self.style(base).clone();
+            self.scripts.push((name.to_string(), spans.len(), style));
         }
     }
 
-    /// At `</sub>`/`</sup>`: the text since the opening tag becomes one
-    /// span of Unicode sub/superscript characters, or `_(…)` / `^(…)` when
-    /// a character has no such form (always in ASCII mode), like the
-    /// markdown `^sup^` extension. An unclosed tag leaves its text as is.
+    /// At `</sub>`/`</sup>`: when the text since the opening tag is one
+    /// plain run (no link, no other markup, no break) and every character
+    /// has a Unicode sub/superscript form — `2`, `n+1`, `ij` — it becomes
+    /// those characters (`_(…)` / `^(…)` in ASCII mode). Anything else, such
+    /// as a `<sub>` caption with links in it, is left exactly as it is: text,
+    /// links and styles intact. An unclosed tag leaves its text as is.
     fn close_script(&mut self, name: &str, spans: &mut Vec<StyledSpan>) {
-        let Some(idx) = self.scripts.iter().rposition(|(n, _)| n == name) else {
+        let Some(idx) = self.scripts.iter().rposition(|(n, _, _)| n == name) else {
             return;
         };
-        let start = self.scripts[idx].1;
-        self.scripts.truncate(idx);
-        if start >= spans.len() {
+        // Tags opened inside this one and never closed end with it.
+        self.scripts.truncate(idx + 1);
+        let Some((_, start, style)) = self.scripts.pop() else {
+            return;
+        };
+        if start >= spans.len() || spans[start..].iter().any(|s| s.style != style) {
             return;
         }
         let text: String = spans[start..].iter().map(|s| s.text.as_str()).collect();
         let text = text.trim();
-        let style = spans[start].style.clone();
-        spans.truncate(start);
-        if text.is_empty() {
+        let sup = name == "sup";
+        let mapped = if sup {
+            super::scripts::to_superscript(text)
+        } else {
+            super::scripts::to_subscript(text)
+        };
+        let Some(mapped) = mapped else {
             return;
-        }
-        let ascii = crate::glyphs::current().ascii;
-        spans.push(StyledSpan {
-            text: if name == "sup" {
-                super::scripts::superscript(text, ascii, false)
-            } else {
-                super::scripts::subscript(text, ascii, false)
-            },
-            style,
-        });
+        };
+        let text = if crate::glyphs::current().ascii {
+            format!("{}({text})", if sup { '^' } else { '_' })
+        } else {
+            mapped
+        };
+        spans.truncate(start);
+        spans.push(StyledSpan { text, style });
     }
 
     /// Close the innermost open tag of this name (and anything left open
@@ -394,7 +403,7 @@ pub(super) fn inline_fragment(
                     }
                 }
                 _ => {
-                    styles.open_script(&name, spans);
+                    styles.open_script(&name, spans, base);
                     styles.open(&name, &attrs, base, ctx);
                 }
             },
@@ -546,7 +555,7 @@ pub(super) fn layout_html_block(
                         }
                     }
                 }
-                styles.open_script(&name, &block.para);
+                styles.open_script(&name, &block.para, &base);
                 styles.open(&name, &attrs, &base, ctx);
             }
             Token::Close { name } => {
