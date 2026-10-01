@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 # Markdown parsing (GFM-compliant)
-comrak = { version = "0.36", default-features = false, features = ["syntect", "shortcodes"] }
+comrak = { version = "0.36", default-features = false, features = ["shortcodes"] }
 
 # TUI framework
 ratatui = { version = "0.30", features = ["crossterm"] }
