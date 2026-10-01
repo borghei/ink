@@ -59,16 +59,26 @@ jobs:
       - name: Build deb and rpm for both arches
         run: |
           set -euo pipefail
-          printf '#!/bin/sh\necho stub\n' > ink
+          # Stub binary that answers `man` and `completions <shell>` like the
+          # real one, so packaging/stage.sh runs exactly as in release.yml.
+          cat > ink <<'STUB'
+          #!/bin/sh
+          case "$1" in
+            man) printf '.TH INK 1\n.SH NAME\nink \\- stub\n' ;;
+            completions) echo "# stub $2 completions for ink" ;;
+            *) echo stub ;;
+          esac
+          STUB
           chmod +x ink
+          packaging/stage.sh ./ink dist
           for arch in amd64 arm64; do
             for fmt in deb rpm; do
               VERSION=0.0.0 ARCH="$arch" nfpm package -f packaging/nfpm.yaml -p "$fmt"
             done
           done
           rm -f ink
-          count=$(ls ink-md*.deb ink-md*.rpm | wc -l)
-          [ "$count" -eq 4 ] || { echo "expected 4 packages, got $count"; exit 1; }
+          set -- ink-md*.deb ink-md*.rpm
+          [ "$#" -eq 4 ] || { echo "expected 4 packages, got $#: $*"; exit 1; }
 
       - name: Install and remove the deb
         run: |
@@ -76,7 +86,41 @@ jobs:
           sudo dpkg -i ink-md_0.0.0_amd64.deb
           command -v ink
           dpkg -L ink-md
+          for f in /usr/share/man/man1/ink.1.gz /usr/share/bash-completion/completions/ink \
+                   /usr/share/zsh/vendor-completions/_ink /usr/share/fish/vendor_completions.d/ink.fish; do
+            dpkg -L ink-md | grep -qx "$f" || { echo "::error::deb is missing $f"; exit 1; }
+          done
           sudo dpkg -r ink-md
+
+      - name: Check the rpm layout
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq rpm >/dev/null
+          set -- ink-md-0.0.0*.x86_64.rpm
+          files=$(rpm -qlp "$1")
+          echo "$files"
+          for f in /usr/bin/ink /usr/share/man/man1/ink.1.gz /usr/share/zsh/site-functions/_ink; do
+            printf '%s\n' "$files" | grep -qx "$f" || { echo "::error::rpm is missing $f"; exit 1; }
+          done
+
+  # Keep the declared minimum Rust version honest: build with exactly the
+  # `rust-version` from Cargo.toml so a dependency bump that needs a newer
+  # compiler fails here instead of for users on that toolchain.
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read rust-version
+        id: msrv
+        run: |
+          v=$(sed -n 's/^rust-version = "\([^"]*\)".*/\1/p' Cargo.toml)
+          [ -n "$v" ] || { echo "::error::no rust-version in Cargo.toml"; exit 1; }
+          echo "MSRV: $v"
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+      - run: cargo check --locked
 
   audit:
     runs-on: ubuntu-latest
