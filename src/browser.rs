@@ -1,14 +1,11 @@
 use crate::theme;
 use anyhow::Result;
-use crossterm::event::{
-    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers,
-};
+use crossterm::event::{self, EnableMouseCapture, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
-};
+use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -38,13 +35,8 @@ pub fn browse(dir: &Path, theme_name: &str) -> Result<Option<PathBuf>> {
 
     let result = browse_inner(&mut terminal, dir, &files, theme_name);
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    crate::app::restore_terminal()?;
+    crate::app::exit_if_signalled();
 
     result
 }
@@ -61,6 +53,9 @@ fn browse_inner(
     let mut filter_active = false;
 
     loop {
+        if crate::app::termination_requested() {
+            return Ok(None);
+        }
         // Build filtered index list
         let filtered: Vec<usize> = if filter.is_empty() {
             (0..files.len()).collect()
@@ -215,6 +210,11 @@ fn browse_inner(
         // ── Input handling ──
         if event::poll(std::time::Duration::from_millis(50))? {
             if let Event::Key(key) = event::read()? {
+                // Windows reports key releases too; acting on them would
+                // move twice and type every filter character twice.
+                if !crate::input::is_actionable_key(&key) {
+                    continue;
+                }
                 if filter_active {
                     match key.code {
                         KeyCode::Esc => {
@@ -277,7 +277,8 @@ fn browse_inner(
 /// Recursively find all markdown files in a directory.
 fn find_markdown_files(dir: &Path) -> Vec<FileEntry> {
     let mut files = Vec::new();
-    walk_dir(dir, dir, &mut files);
+    let mut visited = HashSet::new();
+    walk_dir(dir, dir, 0, &mut visited, &mut files);
     // Sort: README files first, then alphabetical by path
     files.sort_by(|a, b| {
         let a_readme = a.relative_path.to_lowercase().contains("readme");
@@ -294,7 +295,33 @@ fn find_markdown_files(dir: &Path) -> Vec<FileEntry> {
     files
 }
 
-fn walk_dir(base: &Path, dir: &Path, files: &mut Vec<FileEntry>) {
+/// Deepest directory nesting the browser descends into.
+const MAX_DEPTH: usize = 32;
+/// Stop collecting after this many files, so a huge tree cannot stall startup.
+const MAX_FILES: usize = 50_000;
+
+/// Collect markdown files under `dir`.
+///
+/// Directory symlinks are followed, but each directory is entered at most
+/// once, keyed by its canonical path: a symlink loop (`self -> .`) or two
+/// links to the same tree would otherwise recurse forever or list every file
+/// many times over.
+fn walk_dir(
+    base: &Path,
+    dir: &Path,
+    depth: usize,
+    visited: &mut HashSet<PathBuf>,
+    files: &mut Vec<FileEntry>,
+) {
+    if depth > MAX_DEPTH || files.len() >= MAX_FILES {
+        return;
+    }
+    let Ok(canonical) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if !visited.insert(canonical) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -302,6 +329,9 @@ fn walk_dir(base: &Path, dir: &Path, files: &mut Vec<FileEntry>) {
     sorted.sort_by_key(|e| e.file_name());
 
     for entry in sorted {
+        if files.len() >= MAX_FILES {
+            return;
+        }
         let path = entry.path();
         let name = path
             .file_name()
@@ -330,7 +360,7 @@ fn walk_dir(base: &Path, dir: &Path, files: &mut Vec<FileEntry>) {
             ) {
                 continue;
             }
-            walk_dir(base, &path, files);
+            walk_dir(base, &path, depth + 1, visited, files);
         } else if path
             .extension()
             .map(|e| e == "md" || e == "markdown")
@@ -354,5 +384,90 @@ fn format_size(bytes: u64) -> String {
         format!("{:.1} KB", bytes as f64 / 1024.0)
     } else {
         format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn paths(files: &[FileEntry]) -> Vec<String> {
+        let mut v: Vec<String> = files
+            .iter()
+            .map(|f| f.relative_path.replace('\\', "/"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn finds_nested_markdown_and_skips_hidden_and_build_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("docs/deep")).unwrap();
+        fs::create_dir_all(dir.path().join(".git")).unwrap();
+        fs::create_dir_all(dir.path().join("target")).unwrap();
+        fs::write(dir.path().join("a.md"), "# a").unwrap();
+        fs::write(dir.path().join("docs/deep/b.markdown"), "# b").unwrap();
+        fs::write(dir.path().join(".git/c.md"), "# c").unwrap();
+        fs::write(dir.path().join("target/d.md"), "# d").unwrap();
+        fs::write(dir.path().join("notes.txt"), "x").unwrap();
+        let files = find_markdown_files(dir.path());
+        assert_eq!(paths(&files), ["a.md", "docs/deep/b.markdown"]);
+    }
+
+    #[test]
+    fn depth_is_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut deep = dir.path().to_path_buf();
+        for _ in 0..(MAX_DEPTH + 3) {
+            deep.push("d");
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("too-deep.md"), "x").unwrap();
+        fs::write(dir.path().join("top.md"), "x").unwrap();
+        let files = find_markdown_files(dir.path());
+        assert_eq!(paths(&files), ["top.md"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_loops_terminate_without_duplicates() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("a.md"), "# a").unwrap();
+        fs::write(root.join("sub/b.md"), "# b").unwrap();
+        // self -> . (loop to the root), sub/up -> .. (loop through a parent),
+        // and two links into one directory.
+        symlink(".", root.join("self")).unwrap();
+        symlink("..", root.join("sub/up")).unwrap();
+        symlink("sub", root.join("alias")).unwrap();
+
+        let start = std::time::Instant::now();
+        let files = find_markdown_files(root);
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+
+        let listed = paths(&files);
+        assert_eq!(listed.len(), 2, "duplicates listed: {listed:?}");
+        assert!(listed.contains(&"a.md".to_string()));
+        assert!(listed.iter().any(|p| p.ends_with("b.md")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn two_mutually_linked_directories_terminate() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("x")).unwrap();
+        fs::create_dir_all(root.join("y")).unwrap();
+        fs::write(root.join("x/one.md"), "1").unwrap();
+        fs::write(root.join("y/two.md"), "2").unwrap();
+        symlink("../y", root.join("x/to-y")).unwrap();
+        symlink("../x", root.join("y/to-x")).unwrap();
+        let files = find_markdown_files(root);
+        assert_eq!(files.len(), 2, "{:?}", paths(&files));
     }
 }

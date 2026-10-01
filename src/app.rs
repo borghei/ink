@@ -64,9 +64,56 @@ struct ImagePlacement {
     protocol: Option<ratatui_image::sliced::SlicedProtocol>,
 }
 
+/// A place to return to with `[` / `]`.
+///
+/// Carries the source that was on screen, so going back to stdin or a URL
+/// document (or a file that has since moved) rebuilds what was shown instead
+/// of trying to re-read the name as a local path.
+#[derive(Debug, Clone, PartialEq)]
 struct NavEntry {
     filename: String,
+    source: String,
     scroll_offset: usize,
+}
+
+impl NavEntry {
+    fn of(tab: &Tab) -> Self {
+        Self {
+            filename: tab.filename.clone(),
+            source: tab.source.clone(),
+            scroll_offset: tab.scroll_offset,
+        }
+    }
+}
+
+/// Back/forward stacks shared by every way of following a link.
+#[derive(Debug, Default)]
+struct NavHistory {
+    back: Vec<NavEntry>,
+    forward: Vec<NavEntry>,
+}
+
+impl NavHistory {
+    /// Remember `here` before moving somewhere new; a new branch drops the
+    /// forward stack, as in a browser.
+    fn record(&mut self, here: NavEntry) {
+        self.back.push(here);
+        self.forward.clear();
+    }
+
+    /// Step back from `here`, returning where to go.
+    fn go_back(&mut self, here: NavEntry) -> Option<NavEntry> {
+        let to = self.back.pop()?;
+        self.forward.push(here);
+        Some(to)
+    }
+
+    /// Step forward from `here`, returning where to go.
+    fn go_forward(&mut self, here: NavEntry) -> Option<NavEntry> {
+        let to = self.forward.pop()?;
+        self.back.push(here);
+        Some(to)
+    }
 }
 
 /// A labeled link in the current viewport for hint-mode selection.
@@ -119,6 +166,23 @@ pub enum AppExit {
     BackToBrowser,
 }
 
+/// Put the terminal back the way the shell expects it: cooked mode, main
+/// screen, no mouse reporting, visible cursor.
+///
+/// The single restore sequence shared by normal exit, the panic hook and the
+/// signal path, in both the reader and the file browser. Every step is
+/// attempted even if an earlier one fails; the first error is returned.
+pub(crate) fn restore_terminal() -> io::Result<()> {
+    let raw = disable_raw_mode();
+    let screen = execute!(
+        io::stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
+    raw.and(screen)
+}
+
 /// Restore the terminal before a panic reaches the default handler.
 ///
 /// The normal restore path runs after `run_inner` returns, which a panic skips
@@ -130,11 +194,91 @@ pub(crate) fn install_panic_hook() {
     ONCE.call_once(|| {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
-            let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
+            let _ = restore_terminal();
             default_hook(info);
         }));
     });
+    install_signal_handlers();
+}
+
+/// Termination signals (SIGTERM, SIGHUP from a closed SSH session, a SIGINT
+/// sent with `kill` — raw mode turns Ctrl-C into a key) only set a flag. The
+/// event loops poll every 50ms, see it via `termination_requested`, and return
+/// through the normal restore path; `exit_if_signalled` then exits with the
+/// conventional 128+signal status. The default action would kill the process
+/// mid-frame and leave the shell raw inside the alternate screen.
+#[cfg(unix)]
+mod term_signal {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::{Arc, OnceLock};
+
+    struct Flags {
+        which: Arc<AtomicUsize>,
+        any: Arc<AtomicBool>,
+    }
+
+    static FLAGS: OnceLock<Flags> = OnceLock::new();
+
+    pub fn install() {
+        FLAGS.get_or_init(|| {
+            use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+            let flags = Flags {
+                which: Arc::new(AtomicUsize::new(0)),
+                any: Arc::new(AtomicBool::new(false)),
+            };
+            for sig in [SIGTERM, SIGHUP, SIGINT] {
+                // A second signal while the first is still pending (the loop
+                // is stuck) terminates at once instead of being swallowed.
+                let _ = signal_hook::flag::register_conditional_shutdown(
+                    sig,
+                    128 + sig,
+                    Arc::clone(&flags.any),
+                );
+                let _ = signal_hook::flag::register(sig, Arc::clone(&flags.any));
+                let _ =
+                    signal_hook::flag::register_usize(sig, Arc::clone(&flags.which), sig as usize);
+            }
+            flags
+        });
+    }
+
+    pub fn pending() -> Option<i32> {
+        let flags = FLAGS.get()?;
+        if !flags.any.load(Ordering::Relaxed) {
+            return None;
+        }
+        match flags.which.load(Ordering::Relaxed) {
+            0 => None,
+            sig => Some(sig as i32),
+        }
+    }
+}
+
+fn install_signal_handlers() {
+    #[cfg(unix)]
+    term_signal::install();
+}
+
+/// A termination signal arrived; event loops should return so the terminal
+/// gets restored. Always false on Windows.
+pub(crate) fn termination_requested() -> bool {
+    #[cfg(unix)]
+    {
+        term_signal::pending().is_some()
+    }
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
+/// After the terminal is restored: if a termination signal ended the event
+/// loop, exit with 128+signal like the default action would have.
+pub(crate) fn exit_if_signalled() {
+    #[cfg(unix)]
+    if let Some(sig) = term_signal::pending() {
+        std::process::exit(128 + sig);
+    }
 }
 
 pub fn run(source: String, args: Args) -> Result<AppExit> {
@@ -161,12 +305,8 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
 
     let result = run_inner(&mut terminal, source, args, &graphics);
 
-    disable_raw_mode()?;
-    if mouse_capture {
-        execute!(terminal.backend_mut(), DisableMouseCapture)?;
-    }
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
+    restore_terminal()?;
+    exit_if_signalled();
 
     result
 }
@@ -183,8 +323,7 @@ fn run_inner(
     let mut active_tab: usize = 0;
 
     let mut search = SearchState::new();
-    let mut nav_history: Vec<NavEntry> = Vec::new();
-    let mut nav_forward: Vec<NavEntry> = Vec::new();
+    let mut nav = NavHistory::default();
     let mut theme_picker_open = false;
     let mut theme_picker_index: usize = 0;
     let mut help_open = false;
@@ -280,6 +419,9 @@ fn run_inner(
     let mut resize_pending: Option<std::time::Instant> = None;
 
     loop {
+        if termination_requested() {
+            return Ok(AppExit::Quit);
+        }
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
 
         // --watch: if the current doc is the watched file and it changed, rebuild it.
@@ -623,10 +765,14 @@ fn run_inner(
                     Action::LinkHint(c) => {
                         if let Some(hint) = link_hints.iter().find(|h| h.label == c) {
                             match hint_kind {
-                                HintKind::Open => open_link(
-                                    &hint.url, &mut tabs, active_tab, &args, terminal, theme_gen,
-                                    graphics,
-                                ),
+                                HintKind::Open => {
+                                    if let Some(msg) = open_link(
+                                        &hint.url, &mut tabs, active_tab, &mut nav, &args,
+                                        terminal, theme_gen, graphics,
+                                    ) {
+                                        flash = Some((msg, Instant::now()));
+                                    }
+                                }
                                 HintKind::CopyUrl => {
                                     flash = Some((
                                         copy_text(&hint.url, args.clipboard, "link"),
@@ -985,96 +1131,52 @@ fn run_inner(
                     search.update_matches(&tabs[active_tab].lowered);
                 }
 
-                // Follow relative link
+                // Follow the first visible local link (a .md file or a
+                // #heading anchor), through the same path as link-hint mode.
                 Action::FollowLink => {
                     let offset = tabs[active_tab].scroll_offset;
-                    let mut found_link = None;
-                    for i in offset..=(offset + 5).min(total_lines.saturating_sub(1)) {
-                        if let Some(line) = tabs[active_tab].styled_lines.get(i) {
-                            for span in &line.spans {
-                                if let Some(ref url) = span.style.link_url {
-                                    if url.ends_with(".md") || url.ends_with(".markdown") {
-                                        found_link = Some(url.clone());
-                                        break;
-                                    }
-                                }
-                            }
-                            if found_link.is_some() {
-                                break;
-                            }
-                        }
-                    }
-                    if let Some(link_path) = found_link {
-                        let base = std::path::Path::new(&tabs[active_tab].filename)
-                            .parent()
-                            .unwrap_or(std::path::Path::new("."));
-                        // Same trust model as images: following a link renders
-                        // a local .md file to the local user, so any readable
-                        // path is fair game (absolute included).
-                        let Some(target) = crate::sanitize::resolve_local(base, &link_path) else {
-                            continue;
-                        };
-                        if let Ok(src) = std::fs::read_to_string(&target) {
-                            nav_history.push(NavEntry {
-                                filename: tabs[active_tab].filename.clone(),
-                                scroll_offset: tabs[active_tab].scroll_offset,
-                            });
-                            nav_forward.clear();
-                            tabs[active_tab] = build_tab(
-                                src,
-                                target.to_str().unwrap_or(&link_path),
-                                &args,
-                                effective_width(terminal.size()?.width, args.toc),
-                                theme_gen,
-                                graphics,
-                            );
+                    let found_link = tabs[active_tab]
+                        .styled_lines
+                        .iter()
+                        .skip(offset)
+                        .take(6)
+                        .flat_map(|line| &line.spans)
+                        .filter_map(|span| span.style.link_url.as_deref())
+                        .find(|url| is_followable_local(url))
+                        .map(str::to_string);
+                    if let Some(link) = found_link {
+                        if let Some(msg) = open_link(
+                            &link, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
+                            graphics,
+                        ) {
+                            flash = Some((msg, Instant::now()));
                         }
                     }
                 }
 
                 // Navigation history
                 Action::NavBack => {
-                    if let Some(entry) = nav_history.pop() {
-                        nav_forward.push(NavEntry {
-                            filename: tabs[active_tab].filename.clone(),
-                            scroll_offset: tabs[active_tab].scroll_offset,
-                        });
-                        if let Ok(src) = std::fs::read_to_string(&entry.filename) {
-                            let mut new_tab = build_tab(
-                                src,
-                                &entry.filename,
-                                &args,
-                                effective_width(terminal.size()?.width, args.toc),
-                                theme_gen,
-                                graphics,
-                            );
-                            new_tab.scroll_offset = entry
-                                .scroll_offset
-                                .min(new_tab.ratatui_lines.len().saturating_sub(1));
-                            tabs[active_tab] = new_tab;
-                        }
+                    if let Some(entry) = nav.go_back(NavEntry::of(&tabs[active_tab])) {
+                        restore_nav_entry(
+                            &mut tabs[active_tab],
+                            entry,
+                            &args,
+                            effective_width(terminal.size()?.width, args.toc),
+                            theme_gen,
+                            graphics,
+                        );
                     }
                 }
                 Action::NavForward => {
-                    if let Some(entry) = nav_forward.pop() {
-                        nav_history.push(NavEntry {
-                            filename: tabs[active_tab].filename.clone(),
-                            scroll_offset: tabs[active_tab].scroll_offset,
-                        });
-                        if let Ok(src) = std::fs::read_to_string(&entry.filename) {
-                            let mut new_tab = build_tab(
-                                src,
-                                &entry.filename,
-                                &args,
-                                effective_width(terminal.size()?.width, args.toc),
-                                theme_gen,
-                                graphics,
-                            );
-                            new_tab.scroll_offset = entry
-                                .scroll_offset
-                                .min(new_tab.ratatui_lines.len().saturating_sub(1));
-                            tabs[active_tab] = new_tab;
-                        }
+                    if let Some(entry) = nav.go_forward(NavEntry::of(&tabs[active_tab])) {
+                        restore_nav_entry(
+                            &mut tabs[active_tab],
+                            entry,
+                            &args,
+                            effective_width(terminal.size()?.width, args.toc),
+                            theme_gen,
+                            graphics,
+                        );
                     }
                 }
 
@@ -1377,18 +1479,26 @@ fn link_caption(raw: &str, url: &str) -> String {
     }
 }
 
-/// Act on a chosen link: open web/mail URLs in the default handler; follow a
-/// local `.md` link in-place (any readable path, same trust model as images).
+/// Act on a chosen link — the one path for link-hint mode and `Enter`.
+///
+/// Web/mail URLs open in the default handler. A local `.md` link replaces the
+/// tab in place (any readable path, same trust model as images); a `#frag`
+/// suffix then scrolls to that heading, and a bare `#frag` scrolls the
+/// current document. Every in-ink move is recorded in `nav` first, scroll
+/// position included, so `[` comes back to the exact spot.
+///
+/// Returns a status message to flash when the link leads nowhere.
 #[allow(clippy::too_many_arguments)]
 fn open_link(
     url: &str,
     tabs: &mut [Tab],
     active_tab: usize,
+    nav: &mut NavHistory,
     args: &Args,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     gen: u32,
     graphics: &crate::graphics::Graphics,
-) {
+) -> Option<String> {
     // Web / mail: hand off to the OS. (URLs are already scheme-validated by
     // sanitize_url during layout, but re-check defensively.)
     if let Some(safe) = crate::sanitize::sanitize_url(url) {
@@ -1398,33 +1508,149 @@ fn open_link(
             || lower.starts_with("mailto:")
         {
             let _ = open::that_detached(&safe);
-            return;
+            return None;
         }
     }
-    // Local markdown link: follow in-place. Same trust model as images —
-    // rendering a local .md file to the local user, so any readable path is
-    // fair game (absolute included).
-    if !(url.ends_with(".md") || url.ends_with(".markdown")) {
-        return;
+    if !is_followable_local(url) {
+        return None;
     }
+    let (path, fragment) = split_fragment(url);
+    let size = terminal.size().ok();
+    let viewport = size.map(|s| s.height.saturating_sub(3)).unwrap_or(24) as usize;
+
+    if path.is_empty() {
+        let fragment = fragment.unwrap_or("");
+        let tab = &mut tabs[active_tab];
+        let Some(line) = heading_scroll(tab, fragment, viewport) else {
+            return Some(format!("no heading #{fragment}"));
+        };
+        nav.record(NavEntry::of(tab));
+        tab.scroll_offset = line;
+        return None;
+    }
+
     let base = std::path::Path::new(&tabs[active_tab].filename)
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let Some(target) = crate::sanitize::resolve_local(&base, url) else {
-        return;
+    let src = crate::sanitize::resolve_local(&base, path)
+        .and_then(|target| Some((std::fs::read_to_string(&target).ok()?, target)));
+    let Some((src, target)) = src else {
+        return Some(format!("cannot open {path}"));
     };
-    if let Ok(src) = std::fs::read_to_string(&target) {
-        let width = effective_width(terminal.size().map(|s| s.width).unwrap_or(80), args.toc);
-        tabs[active_tab] = build_tab(
-            src,
-            target.to_str().unwrap_or(url),
-            args,
-            width,
-            gen,
-            graphics,
-        );
+    nav.record(NavEntry::of(&tabs[active_tab]));
+    let width = effective_width(size.map(|s| s.width).unwrap_or(80), args.toc);
+    let tab = &mut tabs[active_tab];
+    *tab = build_tab(
+        src,
+        target.to_str().unwrap_or(path),
+        args,
+        width,
+        gen,
+        graphics,
+    );
+    let fragment = fragment.filter(|f| !f.is_empty())?;
+    match heading_scroll(tab, fragment, viewport) {
+        Some(line) => {
+            tab.scroll_offset = line;
+            None
+        }
+        None => Some(format!("no heading #{fragment}")),
     }
+}
+
+/// Links ink follows itself: a local markdown file, optionally with a
+/// `#heading` suffix, or a bare `#heading` in the current document.
+fn is_followable_local(url: &str) -> bool {
+    let (path, fragment) = split_fragment(url);
+    if path.is_empty() {
+        return fragment.is_some_and(|f| !f.is_empty());
+    }
+    let lower = path.to_ascii_lowercase();
+    !lower.contains("://") && (lower.ends_with(".md") || lower.ends_with(".markdown"))
+}
+
+/// `other.md#intro` -> (`other.md`, Some(`intro`)); `#intro` -> (``, Some(`intro`)).
+fn split_fragment(url: &str) -> (&str, Option<&str>) {
+    match url.split_once('#') {
+        Some((path, frag)) => (path, Some(frag)),
+        None => (url, None),
+    }
+}
+
+/// GitHub-style anchor for a heading: lowercased, whitespace to `-`, every
+/// other character that is not alphanumeric, `-` or `_` dropped.
+fn heading_slug(text: &str) -> String {
+    text.trim()
+        .to_lowercase()
+        .chars()
+        .filter_map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                Some(c)
+            } else if c.is_whitespace() {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Anchors for a document's headings in order. Repeats get `-1`, `-2`, …
+/// suffixes the way GitHub numbers them, skipping any already taken.
+fn heading_slugs<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut taken = std::collections::HashSet::new();
+    texts
+        .into_iter()
+        .map(|text| {
+            let base = heading_slug(text);
+            let mut slug = base.clone();
+            let mut n = 0;
+            while !taken.insert(slug.clone()) {
+                n += 1;
+                slug = format!("{base}-{n}");
+            }
+            slug
+        })
+        .collect()
+}
+
+/// Index of the heading a `#fragment` names. The fragment is percent-decoded
+/// and normalized like a heading, so `#My%20Notes` finds "My Notes".
+fn find_heading<'a>(texts: impl IntoIterator<Item = &'a str>, fragment: &str) -> Option<usize> {
+    let decoded = crate::sanitize::percent_decode(fragment).unwrap_or_else(|| fragment.to_string());
+    let wanted = heading_slug(&decoded);
+    if wanted.is_empty() {
+        return None;
+    }
+    heading_slugs(texts).iter().position(|slug| *slug == wanted)
+}
+
+/// Scroll offset that puts the heading named by `fragment` at the top of the
+/// viewport, framed the way `n`/`N` heading jumps frame it.
+fn heading_scroll(tab: &Tab, fragment: &str, viewport: usize) -> Option<usize> {
+    let headings = &tab.toc.headings;
+    let i = find_heading(headings.iter().map(|h| h.text.as_str()), fragment)?;
+    let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
+    Some(headings[i].line_index.saturating_sub(1).min(max_scroll))
+}
+
+/// Show a history entry: the same document just scrolls back; anything else
+/// is rebuilt from the source the entry carries.
+fn restore_nav_entry(
+    tab: &mut Tab,
+    entry: NavEntry,
+    args: &Args,
+    width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) {
+    if tab.filename != entry.filename || tab.source != entry.source {
+        *tab = build_tab(entry.source, &entry.filename, args, width, gen, graphics);
+    }
+    tab.scroll_offset = entry
+        .scroll_offset
+        .min(tab.ratatui_lines.len().saturating_sub(1));
 }
 
 /// Rebuild one tab for the current width/theme, preserving scroll and TOC
@@ -1888,5 +2114,102 @@ mod section_tests {
         assert_eq!(screen_to_doc(area, &t, 4, 7), None);
         // A never-drawn area cannot resolve anything.
         assert_eq!(screen_to_doc(Rect::new(0, 0, 0, 0), &t, 0, 0), None);
+    }
+
+    #[test]
+    fn slugs_follow_github_rules() {
+        assert_eq!(heading_slug("Getting Started"), "getting-started");
+        assert_eq!(heading_slug("What's new in v0.8?"), "whats-new-in-v08");
+        assert_eq!(heading_slug("C++ & Rust"), "c--rust");
+        assert_eq!(heading_slug("snake_case and-kebab"), "snake_case-and-kebab");
+        assert_eq!(heading_slug("  Trimmed  "), "trimmed");
+        assert_eq!(heading_slug("Café Ünïcode"), "café-ünïcode");
+        assert_eq!(heading_slug("`code` in **bold**"), "code-in-bold");
+    }
+
+    #[test]
+    fn duplicate_headings_get_numbered_suffixes() {
+        let slugs = heading_slugs(["Usage", "Notes", "Usage", "Usage", "Usage-1"]);
+        assert_eq!(slugs, ["usage", "notes", "usage-1", "usage-2", "usage-1-1"]);
+    }
+
+    #[test]
+    fn fragments_are_percent_decoded_and_matched_to_headings() {
+        let texts = ["Intro", "My Notes", "Intro", "Ünïcode"];
+        assert_eq!(find_heading(texts, "intro"), Some(0));
+        assert_eq!(find_heading(texts, "intro-1"), Some(2));
+        assert_eq!(find_heading(texts, "my-notes"), Some(1));
+        assert_eq!(find_heading(texts, "My%20Notes"), Some(1));
+        assert_eq!(find_heading(texts, "%C3%BCn%C3%AFcode"), Some(3));
+        assert_eq!(find_heading(texts, "missing"), None);
+        assert_eq!(find_heading(texts, ""), None);
+    }
+
+    #[test]
+    fn fragment_splitting_and_followable_links() {
+        assert_eq!(split_fragment("#a"), ("", Some("a")));
+        assert_eq!(split_fragment("doc.md#a"), ("doc.md", Some("a")));
+        assert_eq!(split_fragment("doc.md"), ("doc.md", None));
+        assert!(is_followable_local("#section"));
+        assert!(is_followable_local("docs/x.md#section"));
+        assert!(is_followable_local("x.MARKDOWN"));
+        assert!(!is_followable_local("#"));
+        assert!(!is_followable_local("https://e.com/x.md"));
+        assert!(!is_followable_local("image.png#frag"));
+    }
+
+    #[test]
+    fn anchor_scroll_lands_like_heading_jumps() {
+        let mut t = tab(DOC, HEADINGS, 0);
+        t.ratatui_lines = vec![Line::default(); 40];
+        assert_eq!(heading_scroll(&t, "beta", 10), Some(19));
+        assert_eq!(heading_scroll(&t, "alpha-sub", 10), Some(13));
+        // Clamped so the last screen stays full.
+        assert_eq!(heading_scroll(&t, "beta", 30), Some(10));
+        assert_eq!(heading_scroll(&t, "gamma", 10), None);
+    }
+
+    fn entry(name: &str, scroll: usize) -> NavEntry {
+        NavEntry {
+            filename: name.into(),
+            source: format!("# {name}"),
+            scroll_offset: scroll,
+        }
+    }
+
+    #[test]
+    fn history_returns_to_the_recorded_position() {
+        let mut nav = NavHistory::default();
+        // a.md at line 12 -> #anchor jump to line 40 -> b.md
+        nav.record(entry("a.md", 12));
+        nav.record(entry("a.md", 40));
+        let back = nav.go_back(entry("b.md", 0)).unwrap();
+        assert_eq!(back, entry("a.md", 40));
+        let back = nav.go_back(back).unwrap();
+        assert_eq!(back, entry("a.md", 12));
+        assert_eq!(nav.go_back(back.clone()), None);
+        // Forward retraces the path.
+        let fwd = nav.go_forward(back).unwrap();
+        assert_eq!(fwd, entry("a.md", 40));
+        assert_eq!(nav.go_forward(fwd).unwrap(), entry("b.md", 0));
+    }
+
+    #[test]
+    fn following_a_new_link_drops_the_forward_stack() {
+        let mut nav = NavHistory::default();
+        nav.record(entry("a.md", 0));
+        let back = nav.go_back(entry("b.md", 5)).unwrap();
+        nav.record(back);
+        assert_eq!(nav.go_forward(entry("c.md", 0)), None);
+    }
+
+    #[test]
+    fn history_entries_carry_the_loaded_source() {
+        let mut t = tab(DOC, HEADINGS, 7);
+        t.filename = "stdin".into();
+        let e = NavEntry::of(&t);
+        assert_eq!(e.filename, "stdin");
+        assert_eq!(e.source, DOC);
+        assert_eq!(e.scroll_offset, 7);
     }
 }

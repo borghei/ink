@@ -1,7 +1,12 @@
 use crate::parser;
 use crate::parser::frontmatter;
+use crate::sanitize::sanitize_text;
 
 /// Print document outline (heading structure).
+///
+/// Every document-derived string printed by this module goes through
+/// [`sanitize_text`]: these subcommands write straight to the terminal, so a
+/// heading like `# a\x1b]0;TITLE\x07` must not reach it as an escape.
 pub fn print_outline(source: &str) {
     let (_, content) = frontmatter::strip_frontmatter(source);
     let doc = parser::parse(&content);
@@ -19,7 +24,7 @@ pub fn print_outline(source: &str) {
             3 => "▎",
             _ => "·",
         };
-        println!("{indent}{marker} {}", h.text);
+        println!("{indent}{marker} {}", sanitize_text(&h.text));
     }
 }
 
@@ -39,7 +44,7 @@ pub fn print_stats(source: &str, filename: &str) {
     let image_count = count_pattern(&content, "![");
     let table_count = content.lines().filter(|l| l.contains("---|")).count();
 
-    println!("╭─ {} ─╮", filename);
+    println!("╭─ {} ─╮", sanitize_text(filename));
     println!("│");
     println!("│  Words:         {words}");
     println!("│  Characters:    {chars}");
@@ -59,20 +64,30 @@ pub fn print_stats(source: &str, filename: &str) {
 }
 
 /// Print a real (Myers) line diff between two markdown files. A single
-/// inserted line no longer marks everything after it as changed.
-pub fn print_diff(source_a: &str, source_b: &str, name_a: &str, name_b: &str) {
+/// inserted line no longer marks everything after it as changed. `color`
+/// adds bold headers and red/green lines; without it the output has no
+/// escape sequences.
+pub fn print_diff(source_a: &str, source_b: &str, name_a: &str, name_b: &str, color: bool) {
     use similar::{ChangeTag, TextDiff};
 
-    println!("\x1b[1m--- {name_a}\x1b[0m");
-    println!("\x1b[1m+++ {name_b}\x1b[0m");
+    let paint = |sgr: &str, text: String| {
+        if color {
+            format!("\x1b[{sgr}m{text}\x1b[0m")
+        } else {
+            text
+        }
+    };
+    let (name_a, name_b) = (sanitize_text(name_a), sanitize_text(name_b));
+    println!("{}", paint("1", format!("--- {name_a}")));
+    println!("{}", paint("1", format!("+++ {name_b}")));
     println!();
 
     let diff = TextDiff::from_lines(source_a, source_b);
     for change in diff.iter_all_changes() {
-        let line = change.value().trim_end_matches('\n');
+        let line = sanitize_text(change.value().trim_end_matches('\n'));
         match change.tag() {
-            ChangeTag::Delete => println!("\x1b[31m- {line}\x1b[0m"),
-            ChangeTag::Insert => println!("\x1b[32m+ {line}\x1b[0m"),
+            ChangeTag::Delete => println!("{}", paint("31", format!("- {line}"))),
+            ChangeTag::Insert => println!("{}", paint("32", format!("+ {line}"))),
             ChangeTag::Equal => println!("  {line}"),
         }
     }

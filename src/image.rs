@@ -36,6 +36,26 @@ type ImageCache = HashMap<String, CachedLoad>;
 /// documents: re-decoding one screenful after a rare purge is cheap.
 const IMAGE_CACHE_CAP: usize = 64;
 
+/// Bound on the decoded pixel bytes the cache holds, across all entries.
+/// Same generational eviction as [`IMAGE_CACHE_CAP`]: an insert that would
+/// push the total past this clears the map first. Without it, 64 large
+/// decodes could pin gigabytes.
+const IMAGE_CACHE_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+/// Decode limits for raster images. Anything wider or taller than this is
+/// refused before its pixels are allocated: a tiny, highly compressible PNG
+/// can declare 11000×11000 and expand to hundreds of MB (a decompression
+/// bomb), and inline `data:` URIs deliver one with no network at all.
+/// 8192 px still admits every real photo (a 48 MP sensor is 8000×6000).
+const RASTER_MAX_SIDE_PX: u32 = 8192;
+/// Hard cap on the bytes a single raster decode may allocate (8192² RGBA8).
+const RASTER_MAX_ALLOC: u64 = 256 * 1024 * 1024;
+/// Decoded rasters are downscaled to at most this many pixels per side
+/// before caching. Both consumers — half-block rendering (≤60 cells wide) and
+/// the graphics protocols (fitted to the content width in cells) — never
+/// display more than this, so the extra resolution would only cost memory.
+const CACHED_MAX_SIDE_PX: u32 = 2048;
+
 fn cache() -> &'static Mutex<ImageCache> {
     static CACHE: OnceLock<Mutex<ImageCache>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -75,12 +95,31 @@ pub fn load_decoded(
     }
     let result = fetch_and_decode(src, &source, svg_color);
     if let Ok(mut c) = cache().lock() {
-        if c.len() >= IMAGE_CACHE_CAP && !c.contains_key(&key) {
-            c.clear(); // generational eviction — see IMAGE_CACHE_CAP
-        }
-        c.insert(key, result.clone());
+        insert_bounded(&mut c, key, result.clone(), IMAGE_CACHE_MAX_BYTES);
     }
     result
+}
+
+/// Decoded pixel bytes held by one cache entry (failures hold none).
+fn entry_bytes(entry: &CachedLoad) -> usize {
+    entry.as_ref().map(|img| img.as_bytes().len()).unwrap_or(0)
+}
+
+/// Insert into the cache, clearing it first when the insert would exceed
+/// either the entry cap or `max_bytes` of decoded pixels (generational
+/// eviction — see [`IMAGE_CACHE_CAP`] / [`IMAGE_CACHE_MAX_BYTES`]).
+fn insert_bounded(c: &mut ImageCache, key: String, value: CachedLoad, max_bytes: usize) {
+    let incoming = entry_bytes(&value);
+    let held: usize = c
+        .iter()
+        .filter(|(k, _)| **k != key)
+        .map(|(_, v)| entry_bytes(v))
+        .sum();
+    let over_count = c.len() >= IMAGE_CACHE_CAP && !c.contains_key(&key);
+    if over_count || held + incoming > max_bytes {
+        c.clear();
+    }
+    c.insert(key, value);
 }
 
 /// The expensive path — read/fetch the bytes and decode them. Runs only on a
@@ -107,16 +146,35 @@ pub fn self_test_decode(bytes: &[u8]) -> bool {
 
 /// Decode a raster image, honoring EXIF orientation — phone photos carry
 /// their rotation as metadata, and ignoring it renders them sideways.
+///
+/// Decoding is bounded by [`RASTER_MAX_SIDE_PX`] and [`RASTER_MAX_ALLOC`]:
+/// an over-limit image is refused (`None`, shown as the "could not be
+/// decoded" placeholder) before its pixel buffer is allocated. The result is
+/// downscaled to [`CACHED_MAX_SIDE_PX`] so the cache never pins more pixels
+/// than a terminal can show.
 fn decode_raster(bytes: &[u8]) -> Option<DynamicImage> {
     use image::ImageDecoder;
-    let reader = image::ImageReader::new(std::io::Cursor::new(bytes))
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(RASTER_MAX_SIDE_PX);
+    limits.max_image_height = Some(RASTER_MAX_SIDE_PX);
+    limits.max_alloc = Some(RASTER_MAX_ALLOC);
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
+    reader.limits(limits);
+    // `into_decoder` applies the dimension limits (PNG also the allocation
+    // limit); check the decoder's own output size for every format too.
     let mut decoder = reader.into_decoder().ok()?;
+    if decoder.total_bytes() > RASTER_MAX_ALLOC {
+        return None;
+    }
     let orientation = decoder.orientation().ok();
     let mut img = DynamicImage::from_decoder(decoder).ok()?;
     if let Some(o) = orientation {
         img.apply_orientation(o);
+    }
+    if img.width() > CACHED_MAX_SIDE_PX || img.height() > CACHED_MAX_SIDE_PX {
+        img = img.thumbnail(CACHED_MAX_SIDE_PX, CACHED_MAX_SIDE_PX);
     }
     Some(img)
 }
@@ -777,6 +835,103 @@ mod tests {
                 Some(ImageUnavailable::NotFound)
             );
         }
+    }
+
+    /// A valid 8-bit grayscale PNG of `w`×`h` black pixels, streamed through
+    /// zlib row by row so the test itself never holds the raw pixel buffer.
+    /// A blank 11000×11000 image compresses to well under a megabyte.
+    fn blank_png(w: u32, h: u32) -> Vec<u8> {
+        use std::io::Write;
+        fn chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
+            out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+            let mut crc = flate2::Crc::new();
+            crc.update(kind);
+            crc.update(data);
+            out.extend_from_slice(kind);
+            out.extend_from_slice(data);
+            out.extend_from_slice(&crc.sum().to_be_bytes());
+        }
+        let mut ihdr = Vec::new();
+        ihdr.extend_from_slice(&w.to_be_bytes());
+        ihdr.extend_from_slice(&h.to_be_bytes());
+        ihdr.extend_from_slice(&[8, 0, 0, 0, 0]); // 8-bit gray, no interlace
+        let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::best());
+        let row = vec![0u8; w as usize + 1]; // filter byte + pixels
+        for _ in 0..h {
+            z.write_all(&row).unwrap();
+        }
+        let idat = z.finish().unwrap();
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        chunk(&mut out, b"IHDR", &ihdr);
+        chunk(&mut out, b"IDAT", &idat);
+        chunk(&mut out, b"IEND", &[]);
+        out
+    }
+
+    // Regression: decode_raster set no limits, so a ~100 KB PNG declaring
+    // 11000×11000 expanded to hundreds of MB (and 64 of them stayed cached).
+    // It must be refused before allocation, as a normal decode failure.
+    #[test]
+    fn decompression_bomb_png_is_rejected() {
+        let png = blank_png(11_000, 11_000);
+        assert!(png.len() < 1024 * 1024, "bomb fixture should be tiny");
+        assert!(
+            decode_raster(&png).is_none(),
+            "over-limit PNG must not decode"
+        );
+        // Through the public path (inline data: URI, no flag needed) it is
+        // the ordinary "could not be decoded" failure, not a panic.
+        use base64::Engine;
+        let uri = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&png)
+        );
+        assert_eq!(
+            load_decoded(&uri, None, ImageMode::LocalOnly, None).err(),
+            Some(ImageUnavailable::Failed)
+        );
+    }
+
+    #[test]
+    fn image_at_the_limit_decodes_and_is_downscaled_for_the_cache() {
+        let png = blank_png(RASTER_MAX_SIDE_PX, 16);
+        let img = decode_raster(&png).expect("an image within the limits decodes");
+        assert_eq!(img.width(), CACHED_MAX_SIDE_PX, "wide image downscaled");
+        assert!(img.height() >= 1);
+        // A typical photo size is untouched by the limits.
+        let mut jpeg = Vec::new();
+        image::RgbImage::from_pixel(4000, 3000, image::Rgb([10, 20, 30]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpeg),
+                image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let photo = decode_raster(&jpeg).expect("a 4000x3000 JPEG must decode");
+        assert_eq!(photo.width(), CACHED_MAX_SIDE_PX);
+        assert_eq!(photo.height(), 1536, "aspect ratio preserved");
+    }
+
+    #[test]
+    fn cache_evicts_by_decoded_bytes() {
+        let img = |side: u32| -> CachedLoad {
+            Ok(Arc::new(DynamicImage::ImageRgba8(image::RgbaImage::new(
+                side, side,
+            ))))
+        };
+        let mut c = ImageCache::new();
+        // 100×100 RGBA = 40 000 bytes; a 100 000-byte budget holds two.
+        insert_bounded(&mut c, "a".into(), img(100), 100_000);
+        insert_bounded(&mut c, "b".into(), img(100), 100_000);
+        assert_eq!(c.len(), 2);
+        insert_bounded(&mut c, "c".into(), img(100), 100_000);
+        assert_eq!(c.len(), 1, "third entry exceeds the byte budget → purge");
+        assert!(c.contains_key("c"));
+        // Failures cost nothing and never trigger a purge.
+        insert_bounded(&mut c, "f".into(), Err(ImageUnavailable::Failed), 100_000);
+        assert_eq!(c.len(), 2);
+        // Re-inserting an existing key does not count it twice.
+        insert_bounded(&mut c, "c".into(), img(100), 100_000);
+        assert_eq!(c.len(), 2);
     }
 
     // Regression: the cache had no bound, so watch reloads and long sessions

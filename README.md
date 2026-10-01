@@ -99,8 +99,9 @@ ink .
 # Read from a URL
 ink https://raw.githubusercontent.com/borghei/ink/main/README.md
 
-# Pipe from stdin
+# Pipe from stdin (or name it explicitly with -)
 cat notes.md | ink
+cat notes.md | ink -
 
 # Plain output (no TUI, pipe-friendly)
 ink --plain README.md
@@ -183,7 +184,7 @@ they select what you can see. Reach for `c` and `Y` when you want the source ins
 
 ### Open links from the keyboard
 
-Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link right inside ink.
+Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link or `#heading` anchor right inside ink (`[` goes back).
 
 ### Help overlay
 
@@ -213,9 +214,20 @@ ink --slides deck.md
 
 ### Works as a pager
 
-Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly.
+Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly. When stdout is not a terminal, `ink file.md` behaves like `ink --plain file.md`, as `bat` and `glow` do.
 
-Honors `NO_COLOR`, and automatically downgrades 24-bit colors to the 256-color palette on terminals that don't advertise truecolor.
+Color follows `--color <auto|always|never>` (default `auto`). In `auto` mode, `--plain` and `ink diff` emit color and OSC 8 hyperlinks only when stdout is a terminal, so redirects, pipes, and `git` textconv get clean text. Precedence: an explicit `--color` wins; then `NO_COLOR` turns color off; then `CLICOLOR_FORCE=1` or `FORCE_COLOR` turns it on; then `TERM=dumb` turns it off; then the terminal check. Tools that display ANSI from a pipe need `--color=always`:
+
+```bash
+fzf --preview 'ink --plain --color=always {}'
+ink --plain --color=always notes.md | less -R
+
+# Render markdown in git diffs (clean text, no escapes)
+git config --global diff.markdown.textconv "ink --plain"
+echo '*.md diff=markdown' >> ~/.gitattributes
+```
+
+24-bit colors are downgraded to the 256-color palette on terminals that don't advertise truecolor (`COLORTERM`, Windows Terminal, VS Code, Ghostty, WezTerm and iTerm2 are detected).
 
 ### Watch mode
 
@@ -358,7 +370,8 @@ Options:
   -t, --theme <THEME>    Color theme [default: auto]
   -w, --width <WIDTH>    Max width (columns, or: narrow, wide, full)
   -s, --slides           Presentation mode
-  -p, --plain            Plain output (no TUI)
+  -p, --plain            Plain output (no TUI); automatic when stdout is not a terminal
+      --color <WHEN>     auto | always | never [default: auto]
       --watch            Watch file for changes
       --toc              Show table of contents on startup
       --no-images        Disable image rendering
