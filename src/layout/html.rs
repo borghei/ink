@@ -233,6 +233,8 @@ pub(super) fn img_src_alt(attrs: &[(String, String)]) -> Option<(String, String)
 pub(super) struct HtmlStyles {
     /// (tag name, style inside it, hides its content)
     stack: Vec<(String, SpanStyle, bool)>,
+    /// Open `<sub>`/`<sup>` tags and the span index their text starts at.
+    scripts: Vec<(String, usize)>,
 }
 
 impl HtmlStyles {
@@ -312,6 +314,44 @@ impl HtmlStyles {
         self.stack.push((name.to_string(), style, hide));
     }
 
+    /// Note where a `<sub>`/`<sup>` starts in `spans`.
+    fn open_script(&mut self, name: &str, spans: &[StyledSpan]) {
+        if matches!(name, "sub" | "sup") {
+            self.scripts.push((name.to_string(), spans.len()));
+        }
+    }
+
+    /// At `</sub>`/`</sup>`: the text since the opening tag becomes one
+    /// span of Unicode sub/superscript characters, or `_(…)` / `^(…)` when
+    /// a character has no such form (always in ASCII mode), like the
+    /// markdown `^sup^` extension. An unclosed tag leaves its text as is.
+    fn close_script(&mut self, name: &str, spans: &mut Vec<StyledSpan>) {
+        let Some(idx) = self.scripts.iter().rposition(|(n, _)| n == name) else {
+            return;
+        };
+        let start = self.scripts[idx].1;
+        self.scripts.truncate(idx);
+        if start >= spans.len() {
+            return;
+        }
+        let text: String = spans[start..].iter().map(|s| s.text.as_str()).collect();
+        let text = text.trim();
+        let style = spans[start].style.clone();
+        spans.truncate(start);
+        if text.is_empty() {
+            return;
+        }
+        let ascii = crate::glyphs::current().ascii;
+        spans.push(StyledSpan {
+            text: if name == "sup" {
+                super::scripts::superscript(text, ascii, false)
+            } else {
+                super::scripts::subscript(text, ascii, false)
+            },
+            style,
+        });
+    }
+
     /// Close the innermost open tag of this name (and anything left open
     /// inside it). A stray closing tag is ignored.
     fn close(&mut self, name: &str) {
@@ -353,9 +393,15 @@ pub(super) fn inline_fragment(
                         spans.push(image_placeholder_span(&src, &alt, styles.style(base), ctx));
                     }
                 }
-                _ => styles.open(&name, &attrs, base, ctx),
+                _ => {
+                    styles.open_script(&name, spans);
+                    styles.open(&name, &attrs, base, ctx);
+                }
             },
-            Token::Close { name } => styles.close(&name),
+            Token::Close { name } => {
+                styles.close_script(&name, spans);
+                styles.close(&name);
+            }
         }
     }
 }
@@ -500,9 +546,11 @@ pub(super) fn layout_html_block(
                         }
                     }
                 }
+                styles.open_script(&name, &block.para);
                 styles.open(&name, &attrs, &base, ctx);
             }
             Token::Close { name } => {
+                styles.close_script(&name, &mut block.para);
                 styles.close(&name);
                 if is_block_tag(&name) || heading_level(&name).is_some() {
                     block.flush(lines);

@@ -2726,7 +2726,16 @@ mod html_rendering {
     #[test]
     fn inline_sub_sup_and_unknown_tags_keep_their_text() {
         let lines = render_text_lines("H<sub>2</sub>O and x<sup>2</sup> <span>s</span>\n", 60);
-        assert_eq!(lines[0], "H2O and x2 s");
+        assert_eq!(lines[0], "H₂O and x² s");
+        // No Unicode form for every character: the fallback form.
+        let lines = render_text_lines("y<sub>ab</sub> and x<sup>q</sup>\n", 60);
+        assert_eq!(lines[0], "y_(ab) and x^(q)");
+        // In an HTML block too.
+        let lines = render_text_lines("<p>H<sub>2</sub>O and x<sup>n+1</sup></p>\n", 60);
+        assert_eq!(lines[0], "H₂O and xⁿ⁺¹");
+        // Unclosed: the text stays as written.
+        let lines = render_text_lines("H<sub>2 and more\n", 60);
+        assert_eq!(lines[0], "H2 and more");
     }
 
     #[test]

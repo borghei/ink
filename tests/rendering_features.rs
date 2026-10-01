@@ -145,25 +145,28 @@ fn find_span<'l>(
 }
 
 #[test]
-fn superscript_and_subscript_use_unicode_forms() {
-    let out = render("H~2~O, e = mc^2^, x^n+1^ and a~ij~.\n");
+fn superscript_and_html_subscript_use_unicode_forms() {
+    let out = render("H<sub>2</sub>O, e = mc^2^, x^n+1^ and a<sub>ij</sub>.\n");
     assert!(out.contains("H₂O, e = mc², xⁿ⁺¹ and aᵢⱼ."), "{out}");
 }
 
 #[test]
 fn superscript_without_a_unicode_form_falls_back() {
     // No superscript `q`; no subscript `b`: the whole run falls back.
-    let out = render("x^q^ and y~ab~\n");
+    let out = render("x^q^ and y<sub>ab</sub>\n");
     assert!(out.contains("x^(q) and y_(ab)"), "{out}");
 }
 
 #[test]
-fn subscript_leaves_strikethrough_and_lone_tildes_alone() {
-    let lines = layout("~~struck~~ and about ~5ms\n");
-    let struck = find_span(&lines, "struck");
-    assert!(struck.style.strikethrough);
-    assert_eq!(struck.text, "struck");
-    assert!(render("about ~5ms here\n").contains("about ~5ms here"));
+fn single_and_double_tildes_strike_through_as_on_github() {
+    for src in ["~~struck~~ and about ~5ms\n", "~struck~ and about ~5ms\n"] {
+        let lines = layout(src);
+        let struck = find_span(&lines, "struck");
+        assert!(struck.style.strikethrough, "{src:?}");
+        assert_eq!(struck.text, "struck");
+    }
+    let out = render("H~2~O and about ~5ms here\n");
+    assert!(out.contains("H2O and about ~5ms here"), "{out}");
 }
 
 #[test]

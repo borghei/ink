@@ -17,10 +17,10 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Ordered and unordered lists with nesting
 - Task lists with checkbox rendering
 - Footnotes
-- Superscript ^x^ and subscript ~x~ (Unicode forms, ^(x)/_(x) fallback), ||spoilers||, definition lists (Term / : definition)
+- Superscript ^x^ and <sup>x</sup>, subscript <sub>x</sub> (Unicode forms, ^(x)/_(x) fallback); ~x~ and ~~x~~ are strikethrough as on GitHub; ||spoilers||, definition lists (Term / : definition)
 - Horizontal rules
 - Inline/block math ($...$, $$...$$, ```math) rendered as Unicode text: Greek letters, operators, \mathbb/\mathcal letters, super/subscripts, \frac as a/b, \sqrt, matrix/cases/aligned environments on several lines; unknown commands kept as written; ASCII mode shows the LaTeX source. A lone $ in prose stays a dollar sign. :emoji: shortcodes resolved to glyphs
-- HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped
+- HTML blocks shown as text; common inline HTML (<br>, <sub>, <sup>, <kbd>) handled rather than dropped, <sub>/<sup> as Unicode sub/superscripts
 - YAML, TOML and JSON frontmatter: stripped by default; --frontmatter shows it as a key/value box
 
 ### Images

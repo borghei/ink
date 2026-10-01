@@ -144,7 +144,7 @@ ink --plain README.md
 
 Headings, bold, italic, strikethrough, links, blockquotes, lists, task lists, tables, footnotes, horizontal rules — all rendered with proper styling and colors.
 
-Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. Superscript `x^2^` and subscript `H~2~O` come out as `x²` and `H₂O` (as `^(…)`/`_(…)` when a character has no Unicode form; `~~strikethrough~~` is unchanged). `||spoilers||` stay hidden until you select or copy them, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
+Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. Superscript `x^2^` (or `x<sup>2</sup>`) and subscript `H<sub>2</sub>O` come out as `x²` and `H₂O` (as `^(…)`/`_(…)` when a character has no Unicode form). Single and double tildes, `~x~` and `~~x~~`, strike through as on GitHub. `||spoilers||` stay hidden until you select or copy them, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
 
 ### Syntax-highlighted code blocks
 
