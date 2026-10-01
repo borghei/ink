@@ -115,6 +115,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "next_tab" => Action::NextTab,
         "prev_tab" => Action::PrevTab,
         "toggle_toc" => Action::ToggleToc,
+        "toc_focus" => Action::TocFocus,
         "search" => Action::Search,
         "theme_picker" => Action::ThemePicker,
         "follow_link" => Action::FollowLink,
@@ -126,6 +127,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "select_line_mode" => Action::SelectLineMode,
         "copy_code" => Action::CopyCode,
         "copy_section" => Action::CopySection,
+        "edit" => Action::Edit,
         _ => return None,
     })
 }

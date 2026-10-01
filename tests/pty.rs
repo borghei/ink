@@ -460,3 +460,266 @@ fn ascii_mode_reader_and_overlays_write_only_7_bit_bytes() {
     assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
     assert!(s.output.is_ascii(), "non-ASCII output: {text}");
 }
+
+type Marks = std::rc::Rc<std::cell::RefCell<Vec<usize>>>;
+
+/// Once the reader is up, types each step 400 ms apart, then quits (`q`,
+/// repeated until it takes). `marks` records how much output there was when
+/// each step went out, so a test can tell what was drawn before and after.
+fn type_steps(steps: Vec<Vec<u8>>, marks: Marks) -> impl FnMut(&[u8], Duration) -> Option<Vec<u8>> {
+    let mut up_at = None;
+    let mut sent = 0;
+    let mut last_q = Duration::ZERO;
+    move |out, t| {
+        if up_at.is_none() && contains(out, b"\x1b[?1049h") {
+            up_at = Some(t);
+        }
+        let due = up_at? + Duration::from_millis(700 + 400 * sent as u64);
+        if t < due {
+            return None;
+        }
+        if sent < steps.len() {
+            sent += 1;
+            marks.borrow_mut().push(out.len());
+            return Some(steps[sent - 1].clone());
+        }
+        if t > last_q + Duration::from_millis(500) {
+            last_q = t;
+            return Some(b"q".to_vec());
+        }
+        None
+    }
+}
+
+/// A document whose first line links to a heading far below the first
+/// screen. On the 100x30 test terminal the link text "go to target" is drawn
+/// on row 2, columns 15-26 (1-based).
+fn long_doc_with_anchor_link() -> tempfile::NamedTempFile {
+    let mut doc = String::from("Start here: [go to target](#target-heading) then more.\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+    }
+    doc.push_str("## Target heading\n\nXYZZY ARRIVED\n");
+    let file = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
+    std::fs::write(file.path(), doc).unwrap();
+    file
+}
+
+fn reader_args(path: &std::path::Path) -> Vec<String> {
+    [
+        "--color=never",
+        "--theme",
+        "dark",
+        "--image-protocol",
+        "halfblocks",
+        "--no-images",
+        path.to_str().unwrap(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[test]
+fn the_toc_takes_focus_filters_and_jumps() {
+    let doc = long_doc_with_anchor_link();
+    let marks = Marks::default();
+    let steps = vec![b"o".to_vec(), b"/targ".to_vec(), b"\r".to_vec()];
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(&args, &[], type_steps(steps, Marks::clone(&marks)));
+    let marks = marks.borrow();
+    assert_eq!(marks.len(), 3, "steps not all sent");
+    let before = &s.output[..marks[2]];
+    let after = &s.output[marks[2]..];
+    // Focused: the sidebar opened and its key reminder (the filtering one,
+    // after `/`) replaced the status bar.
+    let text = String::from_utf8_lossy(before);
+    assert!(text.contains("Contents"), "sidebar did not open");
+    assert!(text.contains("to filter"), "no TOC key reminder");
+    // The cursor is reverse video, which reads without colour.
+    assert!(contains(before, b"7m"), "no reverse-video cursor");
+    assert!(!contains(before, b"ARRIVED"));
+    // Enter jumped to the heading.
+    assert!(contains(after, b"ARRIVED"), "did not jump");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+}
+
+#[test]
+fn the_focused_toc_writes_only_7_bit_bytes_in_ascii_mode() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ascii.md");
+    let mut args = reader_args(std::path::Path::new(fixture));
+    args.insert(0, "--ascii".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Focus, fold the first heading, filter, clear the filter.
+    let steps = vec![
+        b"o".to_vec(),
+        b"h".to_vec(),
+        b"/a".to_vec(),
+        b"\x1b".to_vec(),
+    ];
+    let s = run_in_pty(&args, &[], type_steps(steps, Marks::default()));
+    let text = String::from_utf8_lossy(&s.output);
+    assert!(text.contains("Contents") && text.contains("fold"), "{text}");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    assert!(s.output.is_ascii(), "non-ASCII output: {text}");
+}
+
+/// An SGR mouse report: `btn` 0 = left press, 32 = left drag; `press`
+/// false = release. Columns and rows are 1-based.
+fn mouse(btn: u8, col: u16, row: u16, press: bool) -> Vec<u8> {
+    let end = if press { 'M' } else { 'm' };
+    format!("\x1b[<{btn};{col};{row}{end}").into_bytes()
+}
+
+/// A config directory whose clipboard route is OSC 52 only, so a test that
+/// copies never touches the machine's real clipboard.
+fn osc52_only_config() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("ink")).unwrap();
+    std::fs::write(
+        dir.path().join("ink/config.toml"),
+        "[behavior]\nclipboard = \"osc52\"\n",
+    )
+    .unwrap();
+    dir
+}
+
+/// Runs the reader on the long anchor-link document with mouse capture on,
+/// sends `gesture` once it is up, and returns the output from before and
+/// after it.
+fn after_gesture(gesture: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
+    let doc = long_doc_with_anchor_link();
+    let config = osc52_only_config();
+    let marks = Marks::default();
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(
+        &args,
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        type_steps(vec![gesture], Marks::clone(&marks)),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let at = *marks.borrow().first().expect("gesture not sent");
+    (s.output[..at].to_vec(), s.output[at..].to_vec())
+}
+
+#[test]
+fn a_click_on_an_anchor_link_follows_it() {
+    // "go to target" is on row 2, columns 15-26.
+    let mut click = mouse(0, 18, 2, true);
+    click.extend(mouse(0, 18, 2, false));
+    let (before, after) = after_gesture(click);
+    assert!(!contains(&before, b"ARRIVED"));
+    assert!(
+        contains(&after, b"ARRIVED"),
+        "the click did not follow the link"
+    );
+    assert!(!contains(&after, b"\x1b]52;"), "a click copied something");
+}
+
+#[test]
+fn a_drag_across_a_link_selects_and_copies_instead_of_following() {
+    let mut drag = mouse(0, 15, 2, true);
+    drag.extend(mouse(32, 20, 2, true));
+    drag.extend(mouse(32, 26, 2, true));
+    drag.extend(mouse(0, 26, 2, false));
+    let (_, after) = after_gesture(drag);
+    // "go to target" as OSC 52 base64.
+    assert!(
+        contains(&after, b"\x1b]52;c;Z28gdG8gdGFyZ2V0\x07"),
+        "no OSC 52 copy of the selection: {:?}",
+        String::from_utf8_lossy(&after)
+    );
+    assert!(!contains(&after, b"ARRIVED"), "the drag followed the link");
+}
+
+#[test]
+fn a_click_off_any_link_does_nothing() {
+    let mut click = mouse(0, 6, 2, true);
+    click.extend(mouse(0, 6, 2, false));
+    let (_, after) = after_gesture(click);
+    assert!(!contains(&after, b"ARRIVED"));
+    assert!(!contains(&after, b"\x1b]52;"));
+}
+
+/// Index of the first `needle` at or after `from`.
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    hay.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| i + from)
+}
+
+/// Runs the reader on a short document with `editor` as `$EDITOR`, presses
+/// `e`, and returns the output from the key press on, plus the document.
+fn after_edit(editor: &str) -> (Vec<u8>, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("doc.md");
+    std::fs::write(&doc, "# Notes\n\nfirst line\n").unwrap();
+    let marks = Marks::default();
+    let args = reader_args(&doc);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(
+        &args,
+        &[("EDITOR", editor), ("VISUAL", "")],
+        type_steps(vec![b"e".to_vec()], Marks::clone(&marks)),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let at = *marks.borrow().first().expect("e not sent");
+    (
+        s.output[at..].to_vec(),
+        std::fs::read_to_string(&doc).unwrap(),
+    )
+}
+
+#[test]
+fn e_suspends_for_the_editor_and_reloads_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("fake-editor.sh");
+    // Appends a line to its last argument (the file) and records its argv.
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\nfor last; do :; done\nprintf 'EDITEDBYSCRIPT\\n' >> \"$last\"\n",
+            dir.path().join("argv").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (after, doc) = after_edit(script.to_str().unwrap());
+    assert!(doc.ends_with("first line\nEDITEDBYSCRIPT\n"), "{doc:?}");
+    // An unknown editor gets just the file, no line argument.
+    let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+    assert!(argv.trim_end().ends_with("doc.md"), "{argv:?}");
+    assert!(!argv.contains('+'), "{argv:?}");
+    // The alternate screen was left for the editor and entered again…
+    let left = find_from(&after, b"\x1b[?1049l", 0).expect("never left the alternate screen");
+    let back = find_from(&after, b"\x1b[?1049h", left).expect("never came back");
+    // …with the mouse captured again, and the new content drawn.
+    assert!(
+        find_from(&after, b"\x1b[?1006h", left).is_some(),
+        "mouse not re-enabled"
+    );
+    assert!(
+        find_from(&after, b"EDITEDBYSCRIPT", back).is_some(),
+        "not reloaded"
+    );
+    assert!(
+        find_from(&after, b"reloaded", back).is_some(),
+        "no reload message"
+    );
+}
+
+#[test]
+fn an_editor_that_cannot_start_leaves_the_reader_usable() {
+    let (after, doc) = after_edit("/nonexistent/editor --flag");
+    assert_eq!(doc, "# Notes\n\nfirst line\n");
+    let left = find_from(&after, b"\x1b[?1049l", 0).expect("never left the alternate screen");
+    let back = find_from(&after, b"\x1b[?1049h", left).expect("never came back");
+    assert!(
+        find_from(&after, b"/nonexistent/editor:", back).is_some(),
+        "{:?}",
+        String::from_utf8_lossy(&after)
+    );
+}

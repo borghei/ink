@@ -18,6 +18,7 @@ pub const DEFAULT: Preset = &[
     ("home", &["home"]),
     ("end", &["end", "shift-g"]),
     ("toggle_toc", &["t"]),
+    ("toc_focus", &["o"]),
     ("search", &["/"]),
     ("next_heading", &["n"]),
     ("prev_heading", &["shift-n"]),
@@ -33,6 +34,7 @@ pub const DEFAULT: Preset = &[
     ("select_line_mode", &["shift-v"]),
     ("copy_code", &["c"]),
     ("copy_section", &["shift-y"]),
+    ("edit", &["e"]),
 ];
 
 /// Vim preset is just an alias for the default.
@@ -53,6 +55,7 @@ pub const EMACS: Preset = &[
     ("home", &["ctrl-a", "home"]),
     ("end", &["ctrl-e", "end", "shift-g"]),
     ("toggle_toc", &["t"]),
+    ("toc_focus", &["o"]),
     ("search", &["ctrl-s", "/"]),
     ("next_heading", &["ctrl-f", "n"]),
     ("prev_heading", &["shift-n"]),
@@ -68,6 +71,7 @@ pub const EMACS: Preset = &[
     ("select_line_mode", &["shift-v"]),
     ("copy_code", &["c"]),
     ("copy_section", &["shift-y"]),
+    ("edit", &["e"]),
 ];
 
 pub fn lookup(name: &str) -> Option<Preset> {
