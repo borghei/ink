@@ -1298,25 +1298,28 @@ fn run_inner(
                     search.update_matches(&tabs[active_tab].lowered);
                 }
 
-                // Follow the first visible local link (a .md file or a
-                // #heading anchor), through the same path as link-hint mode.
+                // Follow the first link on screen that can be followed (web,
+                // mail, a .md file or a #heading anchor), through the same
+                // path as link-hint mode.
                 Action::FollowLink => {
-                    let offset = tabs[active_tab].scroll_offset;
-                    let found_link = tabs[active_tab]
-                        .styled_lines
-                        .iter()
-                        .skip(offset)
-                        .take(6)
-                        .flat_map(|line| &line.spans)
-                        .filter_map(|span| span.style.link_url.as_deref())
-                        .find(|url| is_followable_local(url))
-                        .map(str::to_string);
-                    if let Some(link) = found_link {
-                        if let Some(msg) = open_link(
-                            &link, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
-                            graphics,
-                        ) {
-                            flash = Some((msg, Instant::now()));
+                    let tab = &tabs[active_tab];
+                    let found_link = first_followable_link(
+                        &tab.styled_lines,
+                        tab.scroll_offset,
+                        viewport_height,
+                    )
+                    .map(str::to_string);
+                    match found_link {
+                        Some(link) => {
+                            if let Some(msg) = open_link(
+                                &link, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
+                                graphics,
+                            ) {
+                                flash = Some((msg, Instant::now()));
+                            }
+                        }
+                        None => {
+                            flash = Some(("no links on screen".into(), Instant::now()));
                         }
                     }
                 }
@@ -1928,17 +1931,10 @@ fn open_link(
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) -> Option<String> {
-    // Web / mail: hand off to the OS. (URLs are already scheme-validated by
-    // sanitize_url during layout, but re-check defensively.)
-    if let Some(safe) = crate::sanitize::sanitize_url(url) {
-        let lower = safe.to_ascii_lowercase();
-        if lower.starts_with("http://")
-            || lower.starts_with("https://")
-            || lower.starts_with("mailto:")
-        {
-            let _ = open::that_detached(&safe);
-            return None;
-        }
+    // Web / mail: hand off to the OS.
+    if let Some(safe) = web_target(url) {
+        let _ = open::that_detached(&safe);
+        return None;
     }
     if !is_followable_local(url) {
         return Some(format!("cannot follow {url}"));
@@ -1983,6 +1979,32 @@ fn open_link(
         }
         None => Some(format!("no heading #{fragment}")),
     }
+}
+
+/// A web or mail link, as handed to the OS. (URLs are already
+/// scheme-validated by sanitize_url during layout, but re-check
+/// defensively.)
+fn web_target(url: &str) -> Option<String> {
+    let safe = crate::sanitize::sanitize_url(url)?;
+    let lower = safe.to_ascii_lowercase();
+    (lower.starts_with("http://") || lower.starts_with("https://") || lower.starts_with("mailto:"))
+        .then_some(safe)
+}
+
+/// The first link `Enter` can follow among the `height` lines from
+/// `offset`: a web or mail link, or one ink follows itself.
+fn first_followable_link(
+    lines: &[crate::layout::StyledLine],
+    offset: usize,
+    height: u16,
+) -> Option<&str> {
+    lines
+        .iter()
+        .skip(offset)
+        .take(height as usize)
+        .flat_map(|line| &line.spans)
+        .filter_map(|span| span.style.link_url.as_deref())
+        .find(|url| web_target(url).is_some() || is_followable_local(url))
 }
 
 /// Links ink follows itself: a local markdown file, optionally with a
@@ -2833,6 +2855,25 @@ mod section_tests {
         // Clamped so the last screen stays full.
         assert_eq!(heading_scroll(&t, "beta", 30), Some(10));
         assert_eq!(heading_scroll(&t, "gamma", 10), None);
+    }
+
+    #[test]
+    fn enter_follows_the_first_followable_link_anywhere_on_screen() {
+        let mut doc: String = (0..12).map(|i| format!("para {i}\n\n")).collect();
+        doc.push_str("[bad](javascript:alert) [site](https://example.com) [doc](other.md)\n");
+        let t = built(&doc);
+        let line = t.plain.iter().position(|l| l.contains("site")).unwrap();
+        // Far below the old six-line window, but on screen.
+        assert!(line > 6);
+        assert_eq!(
+            first_followable_link(&t.styled_lines, 0, line as u16 + 1),
+            Some("https://example.com")
+        );
+        // Not on screen: nothing.
+        assert_eq!(first_followable_link(&t.styled_lines, 0, line as u16), None);
+        assert_eq!(web_target("mailto:a@b.c").as_deref(), Some("mailto:a@b.c"));
+        assert_eq!(web_target("javascript:alert(1)"), None);
+        assert_eq!(web_target("other.md"), None);
     }
 
     #[test]
