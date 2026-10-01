@@ -1719,7 +1719,7 @@ fn build_tab(
     let content = crate::wikilink::process_wikilinks(&content);
 
     let arena = Arena::new();
-    let options = crate::parser::options();
+    let options = crate::parser::options_for(&content);
     let root = parse_document(&arena, &content, &options);
 
     // Content must fit within the terminal even after the left margin, so cap
