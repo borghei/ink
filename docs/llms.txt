@@ -38,7 +38,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh    # macOS / Linux (picks glibc or static musl build)
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex         # Windows PowerShell (x64 / ARM64)
 cargo install ink-md                                                             # from source (Rust 1.90+)
-INK_VERSION=v0.8.0 sh install.sh                                                 # pin a version
+INK_VERSION=v0.9.0 sh install.sh                                                 # pin a version
 
 Prebuilt: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (any distro), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives include the man page and completions. Verify with SHA256SUMS or `gh attestation verify <file> --repo borghei/ink`.
 

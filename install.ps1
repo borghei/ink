@@ -4,7 +4,7 @@
 #   irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 #
 # Environment:
-#   $env:INK_VERSION = "v0.8.0"        install a specific release (default: latest)
+#   $env:INK_VERSION = "v0.9.0"        install a specific release (default: latest)
 #   $env:INK_INSTALL_DIR = "C:\tools"  install somewhere else
 #                                      (default: %LOCALAPPDATA%\Programs\ink)
 #
@@ -86,7 +86,7 @@
 
         $asset = "ink-windows-$arch.exe"
         if (-not $sums.ContainsKey($asset) -and $arch -eq 'arm64') {
-            # Releases up to v0.8.0 have no native ARM64 build; Windows on ARM
+            # Releases before v0.9.0 have no native ARM64 build; Windows on ARM
             # runs the x64 one under emulation.
             Write-Host "Release $label has no native ARM64 build; installing the x64 build (runs under emulation)."
             $asset = 'ink-windows-amd64.exe'

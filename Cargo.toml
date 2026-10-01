@@ -1,6 +1,6 @@
 [package]
 name = "ink-md"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2021"
 # Highest rust-version declared by any resolved dependency (quantette, via
 # ratatui-image). CI's msrv job builds with exactly this toolchain.
@@ -119,7 +119,7 @@ pkg-url = "{ repo }/releases/download/v{ version }/ink-macos-arm64"
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/ink-windows-amd64.exe"
 
-# Static musl builds and Windows ARM64 (first published after v0.8.0).
+# Static musl builds and Windows ARM64 (first published in v0.9.0).
 [package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
 pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-amd64-musl"
 

@@ -68,7 +68,9 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 
 ### Themes
 - 8 built-in themes: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
-- Auto-detection of terminal background (dark/light)
+- Auto-detection of terminal background (dark/light) by querying the terminal (OSC 11), falling back to COLORFGBG
+- 24-bit, 256-colour and 16-colour output chosen from the terminal; --ascii (or [behavior] ascii = true) draws borders, bullets and markers in plain ASCII, automatic on the Linux console and non-UTF-8 locales
+- --no-mouse leaves the mouse to the terminal for one session
 - Live theme preview with T key; the chosen theme is saved to config
 - ink --list-themes lists all available themes (built-in + custom)
 - 30+ customizable color properties per theme
@@ -108,7 +110,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Ctrl+d/Ctrl+u: half-page down/up
 - n/N: next/previous heading (cycles search matches after a search)
 - /: search
-- f: link-hint mode (open/follow links by letter; the overlay lists each link's text next to its URL; Y inside the overlay copies the URL instead)
+- f: link-hint mode (open/follow links by letter; the overlay lists each link's text next to its URL; Y inside the overlay copies the URL instead); #heading and file.md#heading links jump to the heading, and [ goes back
 - v/V: select text character-wise / line-wise (motions hjkl, arrows, w/b, 0/$, g/G, Ctrl+d/Ctrl+u; y copies, Esc cancels)
 - Mouse: drag selects and copies on release; double-click selects a word, triple-click a line
 - c: label the code blocks on screen and copy one's raw source by letter
