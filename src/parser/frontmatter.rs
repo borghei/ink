@@ -245,24 +245,42 @@ fn unquote(v: &str) -> String {
     v.to_string()
 }
 
-/// `[a, "b", c]` → `a, b, c` (one level; nested brackets kept raw).
+/// `[a, "b", c]` → `a, b, c` (one level; nested brackets kept raw). Only
+/// when the `[` that opens the value is closed by its very last `]`:
+/// `[text](url) and [more]` or `[draft] notes [v2]` are plain scalars.
 fn flow_list(v: &str) -> Option<String> {
-    let inner = v.trim().strip_prefix('[')?.strip_suffix(']')?;
-    let mut items = Vec::new();
-    let (mut depth, mut start, mut quote) = (0usize, 0usize, None::<char>);
+    let v = v.trim();
+    let inner = v.strip_prefix('[')?.strip_suffix(']')?;
+    // Item boundaries (top-level commas) and the outer pair, in one scan.
+    // A quote only opens a string at the start of an item, as in YAML and
+    // TOML, so the apostrophe in `[don't, x]` is just a character.
+    let mut cuts = Vec::new();
+    let (mut depth, mut quote, mut item_start) = (0usize, None::<char>, true);
     for (i, c) in inner.char_indices() {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
             (Some(_), _) => {}
-            (None, '"' | '\'') => quote = Some(c),
+            (None, '"' | '\'') if item_start => quote = Some(c),
             (None, '[' | '{') => depth += 1,
-            (None, ']' | '}') => depth = depth.saturating_sub(1),
+            // Closing the outer `[` before the end: not one list.
+            (None, ']' | '}') => depth = depth.checked_sub(1)?,
             (None, ',') if depth == 0 => {
-                items.push(unquote(&inner[start..i]));
-                start = i + 1;
+                cuts.push(i);
+                item_start = true;
+                continue;
             }
             _ => {}
         }
+        item_start = item_start && c.is_whitespace();
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut start = 0;
+    for i in cuts {
+        items.push(unquote(&inner[start..i]));
+        start = i + 1;
     }
     let last = unquote(&inner[start..]);
     if !last.is_empty() || !items.is_empty() {
@@ -729,6 +747,41 @@ mod tests {
         assert_eq!(get("desc"), ["folded text"]);
         assert_eq!(get("url"), ["https://x.y/#frag"]);
         assert_eq!(get("note"), ["plain"]);
+    }
+
+    // Regression: any value starting with `[` and ending with `]` lost its
+    // outer brackets (`[text](url) and [more]` → `text](url) and [more`).
+    #[test]
+    fn only_one_outer_bracket_pair_is_a_flow_list() {
+        for (value, shown) in [
+            ("[a, b]", "a, b"),
+            ("[\"a, b\", c]", "a, b, c"),
+            ("[[1,2],[3]]", "[1,2], [3]"),
+            ("[]", ""),
+            ("[text](url) and [more]", "[text](url) and [more]"),
+            ("[draft] notes [v2]", "[draft] notes [v2]"),
+            ("[a] [b]", "[a] [b]"),
+            ("[\"]\", x]", "], x"),
+            ("[\"open, x]", "[\"open, x]"),
+        ] {
+            let body = format!("k: {value}\n");
+            assert_eq!(
+                entries(Format::Yaml, &body),
+                [("k".to_string(), vec![shown.to_string()])],
+                "yaml {value:?}"
+            );
+            let body = format!("k = {value}\n");
+            assert_eq!(
+                entries(Format::Toml, &body),
+                [("k".to_string(), vec![shown.to_string()])],
+                "toml {value:?}"
+            );
+        }
+        // YAML: a quote mid-word is a character, not a string.
+        assert_eq!(
+            entries(Format::Yaml, "k: [don't, x]\n"),
+            [("k".to_string(), vec!["don't, x".to_string()])]
+        );
     }
 
     #[test]
