@@ -7,7 +7,7 @@
 - **Smarter installers.** `install.sh` picks the right binary for your libc and CPU, supports `INK_VERSION` pinning, works with `wget`, and no longer depends on the rate-limited GitHub API. New `install.ps1` for Windows. (#19)
 - **Man page and shell completions** ship in the `.deb`/`.rpm` and in new `.tar.gz`/`.zip` release archives. Release assets carry a build-provenance attestation (`gh attestation verify`). (#19)
 - **`--color auto|always|never`.** Piped `--plain` output is clean text by default, `ink file.md | cat` prints the document instead of failing, and `ink -` reads stdin. Previews that want colour in a pipe (fzf, `less -R`) pass `--color=always`. (#17)
-- **Anchor links.** `#heading` and `file.md#heading` jump to the heading, and every followed link goes into back/forward history with its scroll position. (#16)
+- **Anchor links.** `#heading` and `file.md#heading` jump to the heading, as do `[[page#section]]` and `[[#section]]` wikilinks, and every followed link goes into back/forward history with its scroll position. A link that cannot be followed now says so. (#16, #21)
 - **Light/dark auto-detection** by asking the terminal for its background colour, so light-profile terminals get a light theme without configuration. (#20)
 - **`--ascii` mode and a 16-colour tier** for the Linux console, legacy console fonts and screen readers; both switch on automatically where needed. With `--color=never` or `NO_COLOR` the reader uses no colour at all. (#20)
 - **`--no-mouse`** leaves the mouse to the terminal for one session, and the file browser now honours `mouse_capture`. (#20)
@@ -26,7 +26,7 @@
 
 ### Security
 - **Deeply nested documents can no longer crash ink** with a stack overflow; a 20 KB file used to. (#18)
-- **Image decode limits** stop decompression bombs: a document with six hostile inline images went from 2.2 GB of memory to 34 MB. (#17)
+- **Image decode limits** stop decompression bombs: a document with six hostile inline images went from 2.2 GB of memory to 34 MB. Tall screenshots and large photos still decode. (#17, #21)
 - **`ink outline` and `ink diff` no longer pass escape sequences** from the document to the terminal. (#17)
 
 ### Changed
