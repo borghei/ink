@@ -1,40 +1,111 @@
 name: Release
 
+# Tag pushes (v*) build, package and publish. Pull requests that touch the
+# release pipeline, and manual runs, execute the same build/package/smoke-test
+# jobs but never publish: every publishing job is gated on a tag push. That way
+# a broken matrix entry or packaging step shows up on the PR, not at tag time.
 on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'packaging/**'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'Cargo.toml'
+      - '.cargo/**'
+  workflow_dispatch:
 
+# Read-only by default; only the tag-gated `release` job gets write access.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
+    name: build ${{ matrix.artifact }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # Let every target finish so one failure doesn't hide another.
+      fail-fast: false
       matrix:
-        # Linux builders are pinned to ubuntu-22.04 on purpose: the binary links
-        # against the runner's glibc, so this sets the minimum glibc (2.35) for
-        # every Linux user — raw binary, .deb/.rpm and Homebrew on Linux alike
-        # (issue #6: an ubuntu-latest/24.04 build needed GLIBC_2.39 and broke
-        # Ubuntu 22.04 LTS). Bumping this runner raises that floor for everyone;
-        # the "glibc baseline check" step below fails the release if it moves.
+        # glibc Linux builders are pinned to ubuntu-22.04(-arm) on purpose: the
+        # binary links against the runner's glibc, so this sets the minimum
+        # glibc (2.35) for every glibc Linux user — raw binary, .deb/.rpm and
+        # Homebrew on Linux alike (issue #6: an ubuntu-latest/24.04 build
+        # needed GLIBC_2.39 and broke Ubuntu 22.04 LTS). Bumping this runner
+        # raises that floor for everyone; the "glibc baseline check" step below
+        # fails the release if it moves. Older-glibc and musl systems use the
+        # static musl builds instead.
+        #
+        # `smoke` says how the built binary is executed on the runner:
+        # native, qemu-<arch> (qemu-user; fine for static binaries) or rosetta.
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: ink-linux-amd64
-          - os: ubuntu-22.04
+            smoke: native
+          # Native arm64 runner (free for public repos): no cross toolchain,
+          # and the binary can be smoke-tested directly.
+          - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             artifact: ink-linux-arm64
+            smoke: native
+          # Static musl builds use `cross` (Docker images with a musl C
+          # toolchain). The only C code left in the tree is `ring` (rustls),
+          # which needs a musl-targeting C compiler for each arch; cross ships
+          # exactly that, is the long-proven route for Rust musl releases, and
+          # Docker is preinstalled on the Ubuntu runners. cargo-zigbuild would
+          # also work but adds a zig toolchain and gives no runner for the
+          # foreign-arch binaries; here qemu-user runs them directly since
+          # they are fully static.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-musl
+            artifact: ink-linux-amd64-musl
+            tool: cross
+            smoke: native
+          - os: ubuntu-22.04
+            target: aarch64-unknown-linux-musl
+            artifact: ink-linux-arm64-musl
+            tool: cross
+            smoke: qemu-aarch64
+          - os: ubuntu-22.04
+            target: armv7-unknown-linux-musleabihf
+            artifact: ink-linux-armv7-musl
+            tool: cross
+            smoke: qemu-arm
+          # macos-latest is Apple Silicon; the x86_64 binary is cross-built and
+          # smoke-tested under Rosetta when the image has it.
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: ink-macos-amd64
+            smoke: rosetta
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: ink-macos-arm64
+            smoke: native
+          # Windows builds link the CRT statically (.cargo/config.toml) so they
+          # run without the VC++ redistributable.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: ink-windows-amd64.exe
+            smoke: native
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            artifact: ink-windows-arm64.exe
+            smoke: native
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -42,32 +113,54 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
+      - name: Install cross
+        if: matrix.tool == 'cross'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
+
+      # ring compiles its aarch64 Windows assembly with clang. The image ships
+      # LLVM; make sure clang is on PATH and fail early with a clear message
+      # if it is not.
+      - name: Ensure clang for ring (Windows ARM64)
+        if: matrix.target == 'aarch64-pc-windows-msvc'
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu
+          if ! command -v clang >/dev/null 2>&1; then
+            printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+            export PATH="/c/Program Files/LLVM/bin:$PATH"
+          fi
+          clang --version || { echo "::error::clang not found; ring needs it to build for aarch64-pc-windows-msvc"; exit 1; }
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euxo pipefail
+          if [ "${{ matrix.tool }}" = "cross" ]; then
+            cross build --release --locked --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --target ${{ matrix.target }}
+          fi
 
-      # Guard for issue #6: refuse to ship a Linux binary that needs a newer
-      # glibc than Ubuntu 22.04 LTS provides (2.35). Catches a silent runner
-      # image bump before it reaches users.
+      - name: Locate binary
+        id: bin
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            echo "path=target/${{ matrix.target }}/release/ink.exe" >> "$GITHUB_OUTPUT"
+          else
+            echo "path=target/${{ matrix.target }}/release/ink" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Guard for issue #6: refuse to ship a glibc Linux binary that needs a
+      # newer glibc than Ubuntu 22.04 LTS provides (2.35). Catches a silent
+      # runner image bump before it reaches users. Both gnu targets build
+      # natively, so plain objdump reads either binary.
       - name: glibc baseline check
-        if: runner.os == 'Linux'
+        if: endsWith(matrix.target, '-linux-gnu')
         env:
           MAX_GLIBC: '2.35'
         run: |
           set -euo pipefail
-          bin="target/${{ matrix.target }}/release/ink"
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            objdump=aarch64-linux-gnu-objdump
-          else
-            objdump=objdump
-          fi
+          bin="${{ steps.bin.outputs.path }}"
+          objdump=objdump
           versions=$("$objdump" -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sed 's/^GLIBC_//' | sort -u -V || true)
           if [ -z "$versions" ]; then
             echo "::error::glibc baseline check: no GLIBC_* symbol versions found in $bin (is $objdump working?)"
@@ -85,23 +178,110 @@ jobs:
             exit 1
           fi
 
-      - name: Rename binary (unix)
-        if: runner.os != 'Windows'
-        run: mv target/${{ matrix.target }}/release/ink ${{ matrix.artifact }}
+      # The musl builds exist to run anywhere; a dynamic interpreter or
+      # libc.so dependency would defeat that.
+      - name: Static linking check (musl)
+        if: endsWith(matrix.target, '-musl') || endsWith(matrix.target, '-musleabihf')
+        run: |
+          set -euo pipefail
+          bin="${{ steps.bin.outputs.path }}"
+          desc=$(file -b "$bin")
+          echo "file: $desc"
+          case "$desc" in
+            *"statically linked"*|*"static-pie linked"*) ;;
+            *) echo "::error::${{ matrix.artifact }} is not statically linked: $desc"; exit 1 ;;
+          esac
+          if [ "${{ matrix.smoke }}" = "native" ]; then
+            # ldd prints "not a dynamic executable" or "statically linked"
+            # (static-pie) and may exit non-zero for static binaries.
+            out=$(ldd "$bin" 2>&1 || true)
+            echo "ldd: $out"
+            case "$out" in
+              *"not a dynamic executable"*|*"statically linked"*) ;;
+              *) echo "::error::ldd reports dynamic dependencies for ${{ matrix.artifact }}"; exit 1 ;;
+            esac
+          fi
 
-      - name: Rename binary (windows)
+      # Without crt-static the exe imports VCRUNTIME140.dll and the UCRT
+      # api-set DLLs, which a clean Windows install may lack.
+      - name: Static CRT check (Windows)
         if: runner.os == 'Windows'
-        run: mv target/${{ matrix.target }}/release/ink.exe ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          bin="${{ steps.bin.outputs.path }}"
+          if grep -a -i -o -E 'vcruntime[0-9]+\.dll|api-ms-win-crt-[a-z0-9-]+\.dll' "$bin" | sort -u | grep .; then
+            echo "::error::${{ matrix.artifact }} imports the dynamic MSVC runtime (listed above); is +crt-static set in .cargo/config.toml and RUSTFLAGS unset?"
+            exit 1
+          fi
+          echo "No dynamic CRT imports found."
+
+      - name: Smoke test
+        run: |
+          set -euo pipefail
+          bin="${{ steps.bin.outputs.path }}"
+          run=""
+          case "${{ matrix.smoke }}" in
+            native) ;;
+            qemu-*)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq qemu-user >/dev/null
+              run="${{ matrix.smoke }}"
+              ;;
+            rosetta)
+              if arch -x86_64 /usr/bin/true 2>/dev/null; then
+                run="arch -x86_64"
+              else
+                echo "::notice::Rosetta is not available on this runner; skipping the ${{ matrix.artifact }} smoke test."
+                exit 0
+              fi
+              ;;
+            *) echo "::error::unknown smoke mode ${{ matrix.smoke }}"; exit 1 ;;
+          esac
+
+          expected=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+          version_out=$($run "$bin" --version)
+          echo "--version: $version_out"
+          if [ "$version_out" != "ink $expected" ]; then
+            echo "::error::${{ matrix.artifact }} --version printed '$version_out', expected 'ink $expected'"
+            exit 1
+          fi
+
+          cat > smoke.md <<'MD'
+          # Smoke test
+
+          Hello **world**.
+
+          - item one
+
+          ```rust
+          fn main() {}
+          ```
+          MD
+          out=$($run "$bin" --plain --color=never --no-pager - < smoke.md)
+          rm -f smoke.md
+          printf '%s\n' "$out"
+          for want in "Smoke test" "Hello world" "item one" "fn main() {}"; do
+            if ! printf '%s\n' "$out" | grep -qF "$want"; then
+              echo "::error::${{ matrix.artifact }} --plain output is missing '$want'"
+              exit 1
+            fi
+          done
+          echo "Smoke test passed for ${{ matrix.artifact }}${run:+ (via $run)}."
+
+      - name: Rename binary
+        run: mv "${{ steps.bin.outputs.path }}" "${{ matrix.artifact }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
+          if-no-files-found: error
 
   # Package the Linux binaries as .deb/.rpm so apt/dnf users get a real
-  # install (binary in PATH, clean uninstall) instead of a bare binary. Runs
-  # before `release` so SHA256SUMS covers the packages too.
+  # install (binary in PATH, man page, completions, clean uninstall) instead of
+  # a bare binary, and wrap every binary in an archive with the man page and
+  # completions. Runs before `release` so SHA256SUMS covers all of it.
   packages:
     needs: build
     runs-on: ubuntu-latest
@@ -109,7 +289,26 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
+          path: bin
           merge-multiple: true
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -euo pipefail
+          cargo_version=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -1)
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$VERSION" != "$cargo_version" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match Cargo.toml version $cargo_version"
+              exit 1
+            fi
+          else
+            # PR / manual run: no tag, so package under the Cargo.toml version.
+            VERSION="$cargo_version"
+          fi
+          echo "Packaging version $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Install nfpm
         env:
@@ -119,16 +318,25 @@ jobs:
           curl -fsSL "https://github.com/goreleaser/nfpm/releases/download/${tag}/nfpm_${tag#v}_amd64.deb" -o /tmp/nfpm.deb
           sudo dpkg -i /tmp/nfpm.deb
 
-      - name: Build deb and rpm packages
+      # Man page and completions are arch-independent, so generate them once
+      # from the native x86_64 binary (artifacts lose the exec bit in transit).
+      - name: Generate man page and completions
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          chmod +x bin/ink-*
+          packaging/stage.sh bin/ink-linux-amd64 dist
+
+      - name: Build deb and rpm packages
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
           for pair in "amd64:ink-linux-amd64" "arm64:ink-linux-arm64"; do
             ARCH="${pair%%:*}"
             BINARY="${pair##*:}"
             # nfpm does not expand env vars in `contents.src`, so stage the
             # arch-specific artifact under the fixed name nfpm.yaml expects.
-            cp "$BINARY" ink
+            cp "bin/$BINARY" ink
             chmod +x ink
             for fmt in deb rpm; do
               VERSION="$VERSION" ARCH="$ARCH" \
@@ -138,6 +346,58 @@ jobs:
           rm -f ink
           ls -l ink-md*
 
+      - name: Install the amd64 deb
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          sudo dpkg -i "ink-md_${VERSION}_amd64.deb"
+          dpkg -L ink-md
+          ink --version
+          for f in /usr/share/man/man1/ink.1.gz /usr/share/bash-completion/completions/ink \
+                   /usr/share/zsh/vendor-completions/_ink /usr/share/fish/vendor_completions.d/ink.fish; do
+            dpkg -L ink-md | grep -qx "$f" || { echo "::error::deb is missing $f"; exit 1; }
+          done
+          sudo dpkg -r ink-md
+
+      # Additional assets: ink-<version>-<os>-<arch>.tar.gz / .zip with the
+      # binary, LICENSE, README, man page and completions under one top-level
+      # directory. The raw binaries stay published unchanged alongside.
+      - name: Build archives
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Archives are written to the top level (next to the packages) so the
+          # uploaded artifact stays flat and `ink-*` in the release job sees them.
+          for bin in bin/ink-*; do
+            asset=$(basename "$bin")
+            platform="${asset#ink-}"
+            platform="${platform%.exe}"
+            name="ink-${VERSION}-${platform}"
+            stage="staging/$name"
+            mkdir -p "$stage/completions"
+            cp LICENSE README.md "$stage/"
+            case "$asset" in
+              *.exe)
+                cp "$bin" "$stage/ink.exe"
+                cp dist/completions/_ink.ps1 "$stage/completions/"
+                (cd staging && zip -qr "../$name.zip" "$name")
+                ;;
+              *)
+                cp "$bin" "$stage/ink"
+                chmod 755 "$stage/ink"
+                cp dist/ink.1 "$stage/"
+                cp dist/completions/ink.bash dist/completions/_ink dist/completions/ink.fish "$stage/completions/"
+                tar -C staging --owner=0 --group=0 -czf "$name.tar.gz" "$name"
+                ;;
+            esac
+          done
+          rm -rf staging
+          ls -l ink-"$VERSION"-*
+          for a in ink-"$VERSION"-*.tar.gz; do tar -tzf "$a" | sed "s|^|  $a: |"; done
+          for a in ink-"$VERSION"-*.zip; do unzip -l "$a"; done
+
       - name: Upload package artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -145,17 +405,43 @@ jobs:
           path: |
             ink-md*.deb
             ink-md*.rpm
+            ink-*.tar.gz
+            ink-*.zip
+          if-no-files-found: error
 
   release:
     needs: [build, packages]
+    # Publishing happens only for a pushed v* tag — never for PRs or manual
+    # runs, even a manual run started from a tag ref.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
 
+      # The glob matches only regular files at the top level: raw binaries,
+      # .deb/.rpm and the archives (uploaded flat). Fail on anything else
+      # rather than write a bogus manifest.
       - name: Generate checksums
-        run: shasum -a 256 ink-* > SHA256SUMS
+        run: |
+          set -euo pipefail
+          for f in ink-*; do
+            [ -f "$f" ] || { echo "::error::unexpected non-file release asset: $f"; exit 1; }
+          done
+          shasum -a 256 ink-* > SHA256SUMS
+          cat SHA256SUMS
+
+      # Signed SLSA build provenance for every asset listed in SHA256SUMS.
+      # Verify with: gh attestation verify <file> --repo borghei/ink
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-checksums: SHA256SUMS
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -171,6 +457,7 @@ jobs:
   # absent; never fails the release — the binaries have already published.
   crates:
     needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -198,6 +485,7 @@ jobs:
   # tolerance lives on the step instead.)
   homebrew:
     needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/homebrew.yml
     with:
       tag: ${{ github.ref_name }}

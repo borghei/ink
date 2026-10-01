@@ -26,6 +26,20 @@ ink renders markdown in your terminal with syntax highlighting, inline images, m
 curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 ```
 
+The installer picks the right binary for your OS, CPU and libc (static musl build on Alpine, Raspberry Pi and older-glibc systems), checks it against `SHA256SUMS` and installs to `/usr/local/bin` (using `sudo` only if it has to). Pin a version with `INK_VERSION=v0.8.0` or change the target with `INK_INSTALL_DIR="$HOME/.local/bin"`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.8.0 INK_INSTALL_DIR="$HOME/.local/bin" sh
+```
+
+### Quick install (Windows PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
+```
+
+Installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.8.0"` first to pin a version.
+
 ### Homebrew (macOS / Linux)
 
 ```bash
@@ -76,7 +90,24 @@ scoop install ink
 
 ### Pre-built binaries
 
-Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases). Available for Linux (amd64, arm64), macOS (amd64, arm64), and Windows (amd64); `SHA256SUMS` is published alongside. The Linux binaries are built against glibc 2.35, so they run on Ubuntu 22.04 LTS, Debian 12 and newer.
+Grab the latest binary for your platform from the [releases page](https://github.com/borghei/ink/releases):
+
+| Platform | Asset |
+|---|---|
+| Linux x86_64 / arm64 (glibc 2.35+: Ubuntu 22.04, Debian 12 and newer) | `ink-linux-amd64`, `ink-linux-arm64` |
+| Linux x86_64 / arm64 / armv7, static (any distro: Alpine, Debian 11, Ubuntu 20.04, RHEL 8, NixOS, containers, Raspberry Pi) | `ink-linux-amd64-musl`, `ink-linux-arm64-musl`, `ink-linux-armv7-musl` |
+| macOS Intel / Apple Silicon | `ink-macos-amd64`, `ink-macos-arm64` |
+| Windows x64 / ARM64 | `ink-windows-amd64.exe`, `ink-windows-arm64.exe` |
+
+The glibc builds need glibc 2.35 or newer; older and musl-based systems use the static builds, and the install script picks for you. The Windows builds link the C runtime statically, so no Visual C++ redistributable is needed. Each binary also comes as an archive (`ink-<version>-<os>-<arch>.tar.gz`, `.zip` on Windows) bundling the man page and bash/zsh/fish completions, and the `.deb`/`.rpm` packages install those too.
+
+`SHA256SUMS` is published alongside, and every asset carries a signed build provenance attestation you can check with the GitHub CLI:
+
+```bash
+gh attestation verify ink-linux-amd64 --repo borghei/ink
+```
+
+The static musl builds and Windows ARM64 binaries are new after v0.8.0; earlier releases only have the glibc, macOS and Windows x64 binaries.
 
 ### From source
 

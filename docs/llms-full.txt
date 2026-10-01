@@ -96,7 +96,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Link destinations are scheme-validated (http/https/mailto/relative only); javascript:, file:, data: and control-byte URLs are dropped
 - Remote images off by default; SSRF protections when enabled (see Images)
 - Relative file/image paths are canonicalized and contained to the document's directory; absolute paths rejected
-- install.sh verifies a published SHA256SUMS manifest before installing; CI runs cargo audit
+- install.sh / install.ps1 verify a published SHA256SUMS manifest before installing; release assets carry signed build provenance (`gh attestation verify <file> --repo borghei/ink`); CI runs cargo audit
 
 ### Keybindings
 - j/k/↑/↓: scroll up/down
@@ -156,4 +156,7 @@ preset = "emacs"        # default | vim | emacs
 - Repository: https://github.com/borghei/ink
 - Website: https://borghei.github.io/ink/
 - Author: Amin Borghei <borghei.mohammadamin@gmail.com>
-- Crates.io: https://crates.io/crates/ink-md (install with `cargo install ink-md`)
+- Crates.io: https://crates.io/crates/ink-md (install with `cargo install ink-md`, Rust 1.90+)
+- Install script (macOS/Linux): `curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh` (picks the glibc or static musl build; pin with INK_VERSION=v0.8.0, target dir INK_INSTALL_DIR)
+- Install script (Windows): `irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex` (x64/ARM64, installs to %LOCALAPPDATA%\Programs\ink)
+- Prebuilt binaries: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (Alpine, older glibc, Raspberry Pi), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives with man page and completions
