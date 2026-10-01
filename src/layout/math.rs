@@ -1529,7 +1529,10 @@ mod tests {
     }
 
     /// Runs `f` on a 1 MB stack, as a worker thread would, and fails if it
-    /// overflows or takes longer than half a second (debug build).
+    /// overflows or is far slower than linear work should be. The bound is
+    /// loose on purpose: these inputs take ~0.1 s in a local debug build and
+    /// ~0.5 s on a busy CI runner, while the quadratic behaviour this guards
+    /// against took minutes.
     fn on_small_stack(name: &str, f: impl FnOnce() + Send + 'static) {
         let start = std::time::Instant::now();
         std::thread::Builder::new()
@@ -1539,7 +1542,7 @@ mod tests {
             .join()
             .unwrap_or_else(|_| panic!("{name}: overflowed its stack"));
         let took = start.elapsed();
-        assert!(took.as_millis() < 500, "{name}: took {took:?}");
+        assert!(took.as_secs() < 20, "{name}: took {took:?}");
     }
 
     // Regression: `\sqrt[` rendered its index with an unchecked recursive
