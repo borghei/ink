@@ -7,7 +7,18 @@ use anyhow::Result;
 use comrak::{parse_document, Arena};
 
 /// Render markdown to ANSI-styled plain text (no TUI, pipe-friendly).
+///
+/// Styled unless `NO_COLOR` is set; the CLI decides with
+/// [`render_plain_with_color`] instead, which also honors `--color` and
+/// whether stdout is a terminal.
 pub fn render_plain(source: &str, args: &Args) -> Result<String> {
+    render_plain_with_color(source, args, !theme::caps::caps().no_color)
+}
+
+/// Render markdown to plain text. With `color` false the output contains no
+/// escape sequences at all — no SGR color or attributes, no OSC 8 links —
+/// so it is safe for files, pipes, and `git` textconv.
+pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result<String> {
     let (_, content) = if args.frontmatter {
         (None, source.to_string())
     } else {
@@ -41,6 +52,13 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
     let caps = theme::caps::caps();
     let mut output = String::new();
     for line in &styled_lines {
+        if !color {
+            for span in &line.spans {
+                output.push_str(&span.text);
+            }
+            output.push('\n');
+            continue;
+        }
         for span in &line.spans {
             let mut codes = Vec::new();
             if span.style.bold {
@@ -58,9 +76,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
             if span.style.dim {
                 codes.push("2");
             }
-            // NO_COLOR: keep text attributes, drop color (per no-color.org).
-            let color_on = !caps.no_color;
-            if color_on {
+            if span.style.fg.is_some() || span.style.bg.is_some() {
                 if let Some(ref fg) = span.style.fg {
                     output.push_str(&sgr_color(theme::hex_to_rgb(fg), true, caps.truecolor));
                 }
@@ -89,7 +105,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
                 output.push_str("\x1b]8;;\x1b\\");
             }
 
-            let emitted_color = color_on && (span.style.fg.is_some() || span.style.bg.is_some());
+            let emitted_color = span.style.fg.is_some() || span.style.bg.is_some();
             if emitted_color
                 || span.style.bold
                 || span.style.italic

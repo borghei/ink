@@ -1,6 +1,6 @@
 use crate::{app, browser, config, input, render, stats, theme};
 use anyhow::Result;
-use clap::{Parser as ClapParser, Subcommand};
+use clap::{Parser as ClapParser, Subcommand, ValueEnum};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -15,7 +15,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
 
-    /// Markdown file path(s) or URL (reads stdin if omitted)
+    /// Markdown file path(s) or URL (reads stdin if omitted or `-`)
     #[arg(value_name = "FILE|URL")]
     pub input: Vec<String>,
 
@@ -23,17 +23,24 @@ pub struct Cli {
     #[arg(short, long, default_value = "auto")]
     pub theme: String,
 
-    /// Max rendering width in columns (or: narrow, wide, full)
-    #[arg(short, long)]
-    pub width: Option<String>,
+    /// Max rendering width in columns, 20-1000 (or: narrow, wide, full)
+    #[arg(short, long, value_parser = parse_width)]
+    pub width: Option<WidthArg>,
 
     /// Presentation mode (split on ---)
     #[arg(short, long)]
     pub slides: bool,
 
-    /// Plain output mode (no TUI, pipe-friendly)
+    /// Plain output mode (no TUI, pipe-friendly); automatic when stdout is
+    /// not a terminal
     #[arg(short, long)]
     pub plain: bool,
+
+    /// When to emit color and hyperlinks in --plain and diff output.
+    /// `auto`: only when stdout is a terminal, honoring NO_COLOR,
+    /// CLICOLOR_FORCE / FORCE_COLOR and TERM=dumb
+    #[arg(long, value_enum, value_name = "WHEN", default_value_t, global = true)]
+    pub color: theme::caps::ColorChoice,
 
     /// Watch file for changes and re-render
     #[arg(long)]
@@ -52,8 +59,8 @@ pub struct Cli {
     pub remote_images: bool,
 
     /// Image rendering protocol: auto, kitty, iterm2, sixel, halfblocks
-    #[arg(long, default_value = "auto")]
-    pub image_protocol: String,
+    #[arg(long, default_value = "auto", value_parser = parse_protocol)]
+    pub image_protocol: crate::graphics::ProtocolChoice,
 
     /// List available themes and exit
     #[arg(long)]
@@ -67,9 +74,42 @@ pub struct Cli {
     #[arg(long)]
     pub frontmatter: bool,
 
-    /// Line spacing: compact, normal, relaxed [default: normal]
-    #[arg(long)]
-    pub spacing: Option<String>,
+    /// Line spacing [default: normal]
+    #[arg(long, value_enum)]
+    pub spacing: Option<Spacing>,
+}
+
+/// A parsed `--width` value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum WidthArg {
+    /// A column count (`narrow` = 60, `wide` = 100).
+    Columns(u16),
+    /// `full`: no width cap.
+    Full,
+}
+
+/// `--width` parser: a column count in [`config::WIDTH_RANGE`] or a keyword.
+fn parse_width(s: &str) -> Result<WidthArg, String> {
+    let (lo, hi) = (config::WIDTH_RANGE.start(), config::WIDTH_RANGE.end());
+    match s {
+        "narrow" => Ok(WidthArg::Columns(60)),
+        "wide" => Ok(WidthArg::Columns(100)),
+        "full" => Ok(WidthArg::Full),
+        _ => s
+            .parse::<u16>()
+            .ok()
+            .filter(|n| config::WIDTH_RANGE.contains(n))
+            .map(WidthArg::Columns)
+            .ok_or_else(|| {
+                format!("expected a column count from {lo} to {hi}, or one of: narrow, wide, full")
+            }),
+    }
+}
+
+/// `--image-protocol` parser (keeps the aliases `ProtocolChoice::parse` accepts).
+fn parse_protocol(s: &str) -> Result<crate::graphics::ProtocolChoice, String> {
+    crate::graphics::ProtocolChoice::parse(s)
+        .ok_or_else(|| "valid values: auto, kitty, iterm2, sixel, halfblocks".to_string())
 }
 
 #[derive(Subcommand, Debug)]
@@ -149,7 +189,7 @@ pub struct Args {
     pub clipboard: crate::clipboard::ClipboardMode,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
 pub enum Spacing {
     Compact,
     Normal,
@@ -161,8 +201,21 @@ pub fn run() -> Result<()> {
 
     // Load config + initialize keymap up front so subcommands (e.g. `keybindings`)
     // can read the resolved map.
-    let user_config = config::load_config();
+    // Config problems are reported here, on stderr, before any alternate
+    // screen can hide them; the valid keys still apply.
+    let config::ConfigLoad {
+        config: user_config,
+        warnings,
+    } = config::load_config_with_warnings();
+    for w in &warnings {
+        eprintln!("{w}");
+    }
     input::init_keymap(user_config.as_ref().and_then(|c| c.keybindings.as_ref()));
+
+    // Escape sequences only when wanted: `--color`, then NO_COLOR, the
+    // force variables, TERM=dumb, and finally whether stdout is a terminal.
+    let stdout_tty = std::io::stdout().is_terminal();
+    let color = theme::caps::color_enabled(cli.color, stdout_tty);
 
     // Handle subcommands
     if let Some(cmd) = &cli.command {
@@ -180,7 +233,7 @@ pub fn run() -> Result<()> {
             Commands::Diff { file_a, file_b } => {
                 let source_a = read_file(file_a)?;
                 let source_b = read_file(file_b)?;
-                stats::print_diff(&source_a, &source_b, file_a, file_b);
+                stats::print_diff(&source_a, &source_b, file_a, file_b, color);
                 Ok(())
             }
             Commands::ShellSetup { shell } => {
@@ -224,16 +277,14 @@ pub fn run() -> Result<()> {
 
     let width = resolve_width(&cli.width, &user_config);
     // CLI flag wins; otherwise the config file's key; otherwise the default.
-    let spacing_choice = cli
+    // (config values were validated on load, so the parse cannot fail).
+    let spacing = cli
         .spacing
-        .clone()
-        .or_else(|| user_config.as_ref().and_then(|c| c.spacing.clone()))
-        .unwrap_or_else(|| "normal".to_string());
-    let spacing = match spacing_choice.as_str() {
-        "compact" => Spacing::Compact,
-        "relaxed" => Spacing::Relaxed,
-        _ => Spacing::Normal,
-    };
+        .or_else(|| {
+            let s = user_config.as_ref()?.spacing.as_deref()?;
+            Spacing::from_str(s, false).ok()
+        })
+        .unwrap_or(Spacing::Normal);
     let cfg_flag = |get: fn(&config::Config) -> Option<bool>| {
         user_config.as_ref().and_then(get).unwrap_or(false)
     };
@@ -253,12 +304,23 @@ pub fn run() -> Result<()> {
     // unknown theme warns here instead of inside the alternate screen.
     let _ = theme::resolve_theme(&theme);
 
+    // `ink -` means stdin: a lone `-` takes the same path as no argument
+    // (but never opens the file browser, even when stdin is a terminal).
+    let stdin_dash = cli.input == ["-"];
+    let inputs = if stdin_dash {
+        Vec::new()
+    } else {
+        cli.input.clone()
+    };
+
     let args = Args {
-        inputs: cli.input.clone(),
+        inputs,
         theme,
         width,
         slides: cli.slides,
-        plain: cli.plain,
+        // The interactive reader needs a terminal: with stdout piped or
+        // redirected (`ink file.md | cat`), render plain output instead.
+        plain: cli.plain || !stdout_tty,
         watch: cli.watch,
         toc,
         images: if cli.no_images {
@@ -268,8 +330,7 @@ pub fn run() -> Result<()> {
         } else {
             crate::image::ImageMode::LocalOnly
         },
-        image_protocol: crate::graphics::ProtocolChoice::parse(&cli.image_protocol)
-            .unwrap_or(crate::graphics::ProtocolChoice::Auto),
+        image_protocol: cli.image_protocol,
         frontmatter,
         spacing,
         mouse_capture: user_config
@@ -292,7 +353,7 @@ pub fn run() -> Result<()> {
 
     // Check if input is a directory or no input with a TTY → launch file browser
     let browse_dir = if args.inputs.is_empty() {
-        if std::io::stdin().is_terminal() {
+        if std::io::stdin().is_terminal() && !stdin_dash {
             Some(std::env::current_dir()?)
         } else {
             None
@@ -332,7 +393,7 @@ pub fn run() -> Result<()> {
             let mut file_args = args.clone();
             file_args.inputs = vec![selected.to_string_lossy().to_string()];
             if file_args.plain {
-                let rendered = render::plain::render_plain(&source, &file_args)?;
+                let rendered = render::plain::render_plain_with_color(&source, &file_args, color)?;
                 write_stdout(&rendered);
                 break;
             }
@@ -354,7 +415,9 @@ pub fn run() -> Result<()> {
         let sources = read_all_inputs(&args)?;
         let mut rendered = String::new();
         for source in &sources {
-            rendered.push_str(&render::plain::render_plain(source, &args)?);
+            rendered.push_str(&render::plain::render_plain_with_color(
+                source, &args, color,
+            )?);
         }
         emit_plain(&rendered, cli.no_pager);
         return Ok(());
@@ -423,21 +486,32 @@ fn write_stdout(s: &str) {
     }
 }
 
-/// Read every input for --plain: all named files/URLs, or stdin when none.
+/// Read every input for --plain: all named files/URLs (`-` is stdin), or
+/// stdin when none.
 fn read_all_inputs(args: &Args) -> Result<Vec<String>> {
     if args.inputs.is_empty() {
         return Ok(vec![read_input(args)?]);
     }
-    args.inputs
-        .iter()
-        .map(|input| {
-            if input.starts_with("http://") || input.starts_with("https://") {
-                crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
-            } else {
-                read_file(input)
-            }
-        })
-        .collect()
+    args.inputs.iter().map(|input| read_source(input)).collect()
+}
+
+/// Read one input: `-` is stdin, `http(s)://` is fetched, anything else is
+/// a file.
+fn read_source(input: &str) -> Result<String> {
+    if input == "-" {
+        read_stdin()
+    } else if input.starts_with("http://") || input.starts_with("https://") {
+        crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
+    } else {
+        read_file(input)
+    }
+}
+
+fn read_stdin() -> Result<String> {
+    use std::io::Read;
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    Ok(buf)
 }
 
 /// Read a file as UTF-8, falling back to a lossy decode (with a stderr note)
@@ -455,20 +529,12 @@ fn read_file(path: &str) -> Result<String> {
     }
 }
 
-fn resolve_width(width_str: &Option<String>, config: &Option<config::Config>) -> Option<u16> {
-    if let Some(w) = width_str {
-        match w.as_str() {
-            "narrow" => return Some(60),
-            "wide" => return Some(100),
-            "full" => return None,
-            _ => {
-                if let Ok(n) = w.parse::<u16>() {
-                    return Some(n);
-                }
-            }
-        }
+fn resolve_width(width: &Option<WidthArg>, config: &Option<config::Config>) -> Option<u16> {
+    match width {
+        Some(WidthArg::Columns(n)) => Some(*n),
+        Some(WidthArg::Full) => None,
+        None => config.as_ref().and_then(|c| c.width),
     }
-    config.as_ref().and_then(|c| c.width)
 }
 
 fn config_init(force: bool) -> Result<()> {
@@ -489,7 +555,7 @@ fn config_init(force: bool) -> Result<()> {
     Ok(())
 }
 
-const STARTER_CONFIG: &str = r#"# ink configuration
+pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # https://github.com/borghei/ink
 
 # Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
@@ -652,11 +718,12 @@ alias md="ink"
 # Browse markdown files in current directory
 alias mdb="ink ."
 
-# Use ink for fzf markdown preview
-export FZF_DEFAULT_OPTS='--preview "ink --plain {{}} 2>/dev/null"'
+# Use ink for fzf markdown preview (fzf pipes the preview, so ask for color)
+export FZF_DEFAULT_OPTS='--preview "ink --plain --color=always {{}} 2>/dev/null"'
 
-# Use ink as a git pager for markdown diffs
-# git config --global diff.markdown.textconv "ink --plain""#
+# Render markdown in git diffs (piped output is escape-free by default)
+# git config --global diff.markdown.textconv "ink --plain"
+# echo '*.md diff=markdown' >> ~/.gitattributes"#
             );
         }
         "fish" => {
@@ -681,17 +748,8 @@ alias mdb "ink .""#
 }
 
 fn read_input(args: &Args) -> Result<String> {
-    if args.inputs.is_empty() {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        return Ok(buf);
-    }
-
-    let input = &args.inputs[0];
-    if input.starts_with("http://") || input.starts_with("https://") {
-        crate::net::fetch_text(input, crate::net::DOC_FETCH_CAP)
-    } else {
-        read_file(input)
+    match args.inputs.first() {
+        None => read_stdin(),
+        Some(input) => read_source(input),
     }
 }

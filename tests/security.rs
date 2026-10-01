@@ -126,3 +126,70 @@ fn remote_images_blocked_by_default() {
         Err(ImageUnavailable::RemoteBlocked)
     );
 }
+
+/// A document whose heading and body carry raw ESC/OSC/BEL bytes: an OSC 0
+/// window-title set, a CSI clear-screen, and a bare BEL.
+const HOSTILE_DOC: &str =
+    "# a\x1b]0;TITLE\x07b\n\nbody \x1b[2J text\x07\n\n## second \x1b]8;;http://x\x1b\\link\n";
+
+fn ink_cmd() -> assert_cmd::Command {
+    assert_cmd::Command::cargo_bin("ink").unwrap()
+}
+
+// Regression: `ink outline` printed heading text without the sanitizer, so
+// a heading could set the terminal title.
+#[test]
+fn outline_strips_escapes_from_headings() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("hostile.md");
+    std::fs::write(&path, HOSTILE_DOC).unwrap();
+    let out = ink_cmd().arg("outline").arg(&path).output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("a]0;TITLEb"),
+        "heading text kept: {stdout:?}"
+    );
+    assert!(!stdout.contains('\x1b'), "ESC leaked: {stdout:?}");
+    assert!(!stdout.contains('\x07'), "BEL leaked: {stdout:?}");
+}
+
+// Regression: `ink diff` printed changed lines verbatim.
+#[test]
+fn diff_strips_escapes_from_document_lines() {
+    let dir = tempfile::tempdir().unwrap();
+    let a = dir.path().join("a.md");
+    let b = dir.path().join("b.md");
+    std::fs::write(&a, "# plain\n").unwrap();
+    std::fs::write(&b, HOSTILE_DOC).unwrap();
+    // Piped stdout: no styling, so no ESC may appear at all.
+    let out = ink_cmd()
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("FORCE_COLOR")
+        .arg("diff")
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        stdout.contains("body [2J text"),
+        "line text kept: {stdout:?}"
+    );
+    assert!(!stdout.contains('\x1b'), "ESC leaked: {stdout:?}");
+    assert!(!stdout.contains('\x07'), "BEL leaked: {stdout:?}");
+    // With color forced, only ink's own SGR styling may appear — no OSC, no
+    // injected CSI.
+    let out = ink_cmd()
+        .args(["diff", "--color=always"])
+        .arg(&a)
+        .arg(&b)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    assert!(stdout.contains("\x1b[32m"), "styled: {stdout:?}");
+    assert!(!stdout.contains('\x07'), "BEL leaked: {stdout:?}");
+    assert!(!stdout.contains("\x1b]"), "OSC leaked: {stdout:?}");
+    assert!(!stdout.contains("\x1b[2J"), "CSI leaked: {stdout:?}");
+}
