@@ -642,3 +642,84 @@ fn a_click_off_any_link_does_nothing() {
     assert!(!contains(&after, b"ARRIVED"));
     assert!(!contains(&after, b"\x1b]52;"));
 }
+
+/// Index of the first `needle` at or after `from`.
+fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
+    hay.get(from..)?
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .map(|i| i + from)
+}
+
+/// Runs the reader on a short document with `editor` as `$EDITOR`, presses
+/// `e`, and returns the output from the key press on, plus the document.
+fn after_edit(editor: &str) -> (Vec<u8>, String) {
+    let dir = tempfile::tempdir().unwrap();
+    let doc = dir.path().join("doc.md");
+    std::fs::write(&doc, "# Notes\n\nfirst line\n").unwrap();
+    let marks = Marks::default();
+    let args = reader_args(&doc);
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(
+        &args,
+        &[("EDITOR", editor), ("VISUAL", "")],
+        type_steps(vec![b"e".to_vec()], Marks::clone(&marks)),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let at = *marks.borrow().first().expect("e not sent");
+    (
+        s.output[at..].to_vec(),
+        std::fs::read_to_string(&doc).unwrap(),
+    )
+}
+
+#[test]
+fn e_suspends_for_the_editor_and_reloads_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("fake-editor.sh");
+    // Appends a line to its last argument (the file) and records its argv.
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\necho \"$@\" > '{}'\nfor last; do :; done\nprintf 'EDITEDBYSCRIPT\\n' >> \"$last\"\n",
+            dir.path().join("argv").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let (after, doc) = after_edit(script.to_str().unwrap());
+    assert!(doc.ends_with("first line\nEDITEDBYSCRIPT\n"), "{doc:?}");
+    // An unknown editor gets just the file, no line argument.
+    let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+    assert!(argv.trim_end().ends_with("doc.md"), "{argv:?}");
+    assert!(!argv.contains('+'), "{argv:?}");
+    // The alternate screen was left for the editor and entered again…
+    let left = find_from(&after, b"\x1b[?1049l", 0).expect("never left the alternate screen");
+    let back = find_from(&after, b"\x1b[?1049h", left).expect("never came back");
+    // …with the mouse captured again, and the new content drawn.
+    assert!(
+        find_from(&after, b"\x1b[?1006h", left).is_some(),
+        "mouse not re-enabled"
+    );
+    assert!(
+        find_from(&after, b"EDITEDBYSCRIPT", back).is_some(),
+        "not reloaded"
+    );
+    assert!(
+        find_from(&after, b"reloaded", back).is_some(),
+        "no reload message"
+    );
+}
+
+#[test]
+fn an_editor_that_cannot_start_leaves_the_reader_usable() {
+    let (after, doc) = after_edit("/nonexistent/editor --flag");
+    assert_eq!(doc, "# Notes\n\nfirst line\n");
+    let left = find_from(&after, b"\x1b[?1049l", 0).expect("never left the alternate screen");
+    let back = find_from(&after, b"\x1b[?1049h", left).expect("never came back");
+    assert!(
+        find_from(&after, b"/nonexistent/editor:", back).is_some(),
+        "{:?}",
+        String::from_utf8_lossy(&after)
+    );
+}

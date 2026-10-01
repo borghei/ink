@@ -75,6 +75,8 @@ pub enum Action {
 
     /// Move keyboard focus into the table of contents (opening it).
     TocFocus,
+    /// Open the current file in `$VISUAL` / `$EDITOR`.
+    Edit,
     /// A key for the focused table of contents.
     Toc(crate::toc::TocKey),
 
@@ -195,6 +197,7 @@ pub fn keymap_summary() -> Vec<(&'static str, Vec<String>)> {
         "select text",
         "copy code block",
         "copy section",
+        "edit in $EDITOR",
         "theme picker",
         "tabs",
         "back / forward",
@@ -227,6 +230,7 @@ fn action_label(a: &Action) -> &'static str {
         Action::SelectMode | Action::SelectLineMode => "select text",
         Action::CopyCode => "copy code block",
         Action::CopySection => "copy section",
+        Action::Edit => "edit in $EDITOR",
         Action::ThemePicker => "theme picker",
         Action::NextTab | Action::PrevTab => "tabs",
         Action::NavBack | Action::NavForward => "back / forward",

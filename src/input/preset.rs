@@ -34,6 +34,7 @@ pub const DEFAULT: Preset = &[
     ("select_line_mode", &["shift-v"]),
     ("copy_code", &["c"]),
     ("copy_section", &["shift-y"]),
+    ("edit", &["e"]),
 ];
 
 /// Vim preset is just an alias for the default.
@@ -70,6 +71,7 @@ pub const EMACS: Preset = &[
     ("select_line_mode", &["shift-v"]),
     ("copy_code", &["c"]),
     ("copy_section", &["shift-y"]),
+    ("edit", &["e"]),
 ];
 
 pub fn lookup(name: &str) -> Option<Preset> {

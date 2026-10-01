@@ -806,6 +806,7 @@ fn print_keybindings() {
             SelectLineMode => "select_line_mode",
             CopyCode => "copy_code",
             CopySection => "copy_section",
+            Edit => "edit",
             _ => "?",
         }
         .to_string()

@@ -310,6 +310,7 @@ ink diff old.md new.md
 | `v` / `V` | Select text — character-wise / line-wise (`y` copies, `Esc` cancels) |
 | `c` | Copy a code block by letter |
 | `Y` | Copy the current section as markdown |
+| `e` | Edit the file in `$VISUAL` / `$EDITOR` (opens at the heading you are reading, reloads when you quit the editor) |
 | `t` | Toggle table of contents |
 | `o` | Focus the table of contents (`j`/`k` move, `Enter` jumps, `h`/`l` fold, `/` filters, `Esc` returns) |
 | `T` | Theme picker (choice is saved to config) |
@@ -332,6 +333,7 @@ preset = "emacs"   # default | vim | emacs
 # Per-action overrides, applied on top of the preset.
 toggle_toc = ["ctrl-t"]
 toc_focus = ["ctrl-o"]
+edit = ["alt-e"]
 ```
 
 The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), `Ctrl+F`/`Ctrl+B` (next/prev heading), and `Ctrl+X Ctrl+C` (chord exit).

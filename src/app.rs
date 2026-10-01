@@ -34,6 +34,10 @@ struct Tab {
     /// The markdown actually parsed: frontmatter stripped, wikilinks expanded.
     /// Heading `source_line`s index into this, so `Y` slices sections from it.
     content: String,
+    /// Lines of `source` above `content` (a stripped frontmatter block), so a
+    /// `content` line maps back to a line of the file; `None` when that
+    /// mapping is not known to hold.
+    line_offset: Option<usize>,
     styled_lines: Vec<crate::layout::StyledLine>,
     ratatui_lines: Vec<Line<'static>>,
     /// Per-line rendered text. Selection columns, clipboard extraction, and
@@ -206,6 +210,19 @@ pub(crate) fn restore_terminal() -> io::Result<()> {
     raw.and(screen)
 }
 
+/// Take the terminal over for the TUI: raw mode, alternate screen, and mouse
+/// reporting when `mouse_capture` is on. The counterpart of
+/// [`restore_terminal`], shared by startup (reader and file browser) and the
+/// return from `$EDITOR`.
+pub(crate) fn enter_tui(mouse_capture: bool) -> io::Result<()> {
+    enable_raw_mode()?;
+    execute!(io::stdout(), EnterAlternateScreen)?;
+    if mouse_capture {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    }
+    Ok(())
+}
+
 /// Restore the terminal before a panic reaches the default handler.
 ///
 /// The normal restore path runs after `run_inner` returns, which a panic skips
@@ -235,12 +252,35 @@ mod term_signal {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, OnceLock};
 
+    use signal_hook::SigId;
+    use std::sync::Mutex;
+
     struct Flags {
         which: Arc<AtomicUsize>,
         any: Arc<AtomicBool>,
+        /// The SIGINT registrations, so they can be paused while an
+        /// external editor owns the terminal.
+        interrupt: Mutex<Vec<SigId>>,
     }
 
     static FLAGS: OnceLock<Flags> = OnceLock::new();
+
+    fn register(sig: i32, flags: &Flags) -> Vec<SigId> {
+        // A second signal while the first is still pending (the loop is
+        // stuck) terminates at once instead of being swallowed.
+        [
+            signal_hook::flag::register_conditional_shutdown(
+                sig,
+                128 + sig,
+                Arc::clone(&flags.any),
+            ),
+            signal_hook::flag::register(sig, Arc::clone(&flags.any)),
+            signal_hook::flag::register_usize(sig, Arc::clone(&flags.which), sig as usize),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
 
     pub fn install() {
         FLAGS.get_or_init(|| {
@@ -248,21 +288,40 @@ mod term_signal {
             let flags = Flags {
                 which: Arc::new(AtomicUsize::new(0)),
                 any: Arc::new(AtomicBool::new(false)),
+                interrupt: Mutex::new(Vec::new()),
             };
-            for sig in [SIGTERM, SIGHUP, SIGINT] {
-                // A second signal while the first is still pending (the loop
-                // is stuck) terminates at once instead of being swallowed.
-                let _ = signal_hook::flag::register_conditional_shutdown(
-                    sig,
-                    128 + sig,
-                    Arc::clone(&flags.any),
-                );
-                let _ = signal_hook::flag::register(sig, Arc::clone(&flags.any));
-                let _ =
-                    signal_hook::flag::register_usize(sig, Arc::clone(&flags.which), sig as usize);
+            for sig in [SIGTERM, SIGHUP] {
+                register(sig, &flags);
+            }
+            let ids = register(SIGINT, &flags);
+            if let Ok(mut held) = flags.interrupt.lock() {
+                *held = ids;
             }
             flags
         });
+    }
+
+    /// While an external editor runs in cooked mode, Ctrl-C sends SIGINT to
+    /// the whole foreground process group — ink included. It is meant for
+    /// the editor: ignore it until `resume_interrupt`. (SIGTERM and SIGHUP
+    /// still end ink, after the editor returns.)
+    pub fn pause_interrupt() {
+        if let Some(flags) = FLAGS.get() {
+            if let Ok(mut held) = flags.interrupt.lock() {
+                for id in held.drain(..) {
+                    signal_hook::low_level::unregister(id);
+                }
+            }
+        }
+    }
+
+    pub fn resume_interrupt() {
+        if let Some(flags) = FLAGS.get() {
+            let ids = register(signal_hook::consts::SIGINT, flags);
+            if let Ok(mut held) = flags.interrupt.lock() {
+                held.extend(ids);
+            }
+        }
     }
 
     pub fn pending() -> Option<i32> {
@@ -317,18 +376,13 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
     };
 
     install_panic_hook();
-    enable_raw_mode()?;
+    enter_tui(mouse_capture)?;
     // A background-colour reply that missed the startup query must not be
     // read as key presses.
     if theme::detect::reply_may_arrive_late() {
         input::discard_late_reply();
     }
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    if mouse_capture {
-        execute!(stdout, EnableMouseCapture)?;
-    }
-    let backend = CrosstermBackend::new(stdout);
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
     let result = run_inner(&mut terminal, source, args, &graphics);
@@ -1350,6 +1404,23 @@ fn run_inner(
                     }
                 }
 
+                // Open the file in $VISUAL/$EDITOR at the line on screen,
+                // then reload it.
+                Action::Edit => {
+                    let width = terminal.size()?.width;
+                    let msg = edit_in_editor(
+                        terminal,
+                        &mut tabs[active_tab],
+                        &args,
+                        viewport_height as usize,
+                        width,
+                        theme_gen,
+                        graphics,
+                    );
+                    search.update_matches(&tabs[active_tab].lowered);
+                    flash = msg.map(|m| (m, Instant::now()));
+                }
+
                 // Copy the section the viewport starts in, as markdown source.
                 Action::CopySection => {
                     let tab = &tabs[active_tab];
@@ -1499,6 +1570,190 @@ fn screen_to_doc(area: Rect, tab: &Tab, col: u16, row: u16) -> Option<Pos> {
     // right half of a wide character selects that character.
     let col = selection::snap_col(&tab.plain[line], (col - area.x) as usize);
     Some(Pos::new(line, col))
+}
+
+/// Why a document cannot be opened in an editor, or `None` when it can.
+fn not_editable(tab: &Tab) -> Option<String> {
+    if tab.filename == "stdin" || tab.filename == "-" {
+        Some("nothing to edit: document came from stdin".into())
+    } else if !is_local_file(&tab.filename) {
+        Some("nothing to edit: document came from a URL".into())
+    } else if tab.mtime.is_none() {
+        Some(format!("nothing to edit: {} is not a file", tab.filename))
+    } else {
+        None
+    }
+}
+
+/// The heading the viewport is in: the last one at or above its top (one
+/// on the second row counts, as for the TOC), with its index.
+fn viewport_heading(tab: &Tab) -> Option<(usize, &crate::toc::TocEntry)> {
+    tab.toc
+        .headings
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, h)| h.line_index <= tab.scroll_offset + 1)
+}
+
+/// The 1-based line of the file to open the editor at, for the top of the
+/// viewport.
+///
+/// Layout records source positions for headings only, so this is the line
+/// of the heading the viewport is in (line 1 at the very top of the
+/// document), not the exact line on screen. The line is only trusted when
+/// the file on disk (`file`) still has, at that line, what the document was
+/// loaded from; otherwise there is no line.
+fn editor_line(tab: &Tab, file: &str) -> Option<usize> {
+    let content_line = match viewport_heading(tab) {
+        Some((_, h)) => h.source_line,
+        None if tab.scroll_offset == 0 => 1,
+        None => return None,
+    };
+    let line = content_line.checked_add(tab.line_offset?)?;
+    let loaded = tab.source.lines().nth(line.checked_sub(1)?)?;
+    (file.lines().nth(line - 1) == Some(loaded)).then_some(line)
+}
+
+/// Suspend the TUI, run the editor on the current file, and restore the TUI
+/// and reload the file. Returns the message for the status bar.
+#[allow(clippy::too_many_arguments)]
+fn edit_in_editor(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    tab: &mut Tab,
+    args: &Args,
+    viewport: usize,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) -> Option<String> {
+    if let Some(why) = not_editable(tab) {
+        return Some(why);
+    }
+    let on_disk = std::fs::read_to_string(&tab.filename).unwrap_or_default();
+    let line = editor_line(tab, &on_disk);
+    let command = crate::editor::editor_command(
+        std::env::var("VISUAL").ok().as_deref(),
+        std::env::var("EDITOR").ok().as_deref(),
+    );
+    let Some(argv) = crate::editor::editor_argv(&command, &tab.filename, line) else {
+        return Some("no editor: set $VISUAL or $EDITOR".into());
+    };
+    let outcome = run_suspended(terminal, &argv, args.mouse_capture);
+    let reload = reload_after_edit(tab, args, viewport, term_width, gen, graphics);
+    match (outcome, reload) {
+        (Err(e), _) | (_, Err(e)) => Some(e),
+        (Ok(status), Ok(())) if !status.success() => Some(editor_failure(&argv[0], status)),
+        (Ok(_), Ok(())) => Some(format!("reloaded {}", short_name(&tab.filename))),
+    }
+}
+
+fn short_name(path: &str) -> &str {
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(path)
+}
+
+fn editor_failure(program: &str, status: std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(sig) = status.signal() {
+            return format!("{} was killed by signal {sig}", short_name(program));
+        }
+    }
+    match status.code() {
+        Some(code) => format!("{} exited with status {code}", short_name(program)),
+        None => format!("{} failed", short_name(program)),
+    }
+}
+
+/// Hand the terminal to `argv` and take it back: the same restore and setup
+/// as exit and startup, so every path (the editor failing to start, exiting
+/// non-zero, killed by a signal) ends with the TUI restored. Ctrl-C is the
+/// editor's while it runs.
+fn run_suspended(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    argv: &[String],
+    mouse_capture: bool,
+) -> Result<std::process::ExitStatus, String> {
+    let _ = restore_terminal();
+    #[cfg(unix)]
+    term_signal::pause_interrupt();
+    let status = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .status();
+    #[cfg(unix)]
+    term_signal::resume_interrupt();
+    let back = enter_tui(mouse_capture).and_then(|()| {
+        // Everything on screen is gone: a fresh terminal has no previous
+        // frame to diff against, so the next draw repaints every cell.
+        // (`Terminal::clear` would ask the terminal for its cursor position
+        // and stall on one that does not answer.)
+        execute!(
+            io::stdout(),
+            crossterm::terminal::Clear(crossterm::terminal::ClearType::All)
+        )?;
+        *terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+        Ok(())
+    });
+    back.map_err(|e| format!("could not restore the terminal: {e}"))?;
+    status.map_err(|e| format!("could not run {}: {e}", argv[0]))
+}
+
+/// Re-read an edited file and keep the reader where it was: on the same
+/// heading (matched by text and occurrence, so lines added above it do not
+/// matter) at the same distance below it, or at the same offset when there
+/// is no such heading.
+fn reload_after_edit(
+    tab: &mut Tab,
+    args: &Args,
+    viewport: usize,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) -> Result<(), String> {
+    let src = std::fs::read_to_string(&tab.filename)
+        .map_err(|e| format!("cannot reload {}: {e}", short_name(&tab.filename)))?;
+    let anchor = viewport_heading(tab).map(|(i, h)| {
+        let nth = tab.toc.headings[..i]
+            .iter()
+            .filter(|o| o.text == h.text)
+            .count();
+        (
+            h.text.clone(),
+            nth,
+            tab.scroll_offset as isize - h.line_index as isize,
+        )
+    });
+    let scroll = tab.scroll_offset;
+    let toc_visible = tab.toc.visible;
+    let toc_nav = std::mem::take(&mut tab.toc.nav);
+    let filename = tab.filename.clone();
+    *tab = build_tab(
+        src,
+        &filename,
+        args,
+        effective_width(term_width, toc_visible),
+        gen,
+        graphics,
+    );
+    tab.toc.visible = toc_visible;
+    tab.toc.inherit(toc_nav);
+    let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
+    let same_heading = anchor.and_then(|(text, nth, delta)| {
+        let h = tab
+            .toc
+            .headings
+            .iter()
+            .filter(|h| h.text == text)
+            .nth(nth)?;
+        Some((h.line_index as isize + delta).max(0) as usize)
+    });
+    tab.scroll_offset = same_heading.unwrap_or(scroll).min(max_scroll);
+    tab.toc.update_selection(tab.scroll_offset);
+    Ok(())
 }
 
 /// The link under a document position, if any: the `link_url` of the span
@@ -1945,14 +2200,20 @@ fn build_tab(
     } else {
         None
     };
-    let (_, content) = if args.frontmatter {
+    let (_, stripped) = if args.frontmatter {
         (None, source.to_string())
     } else {
         frontmatter::strip_frontmatter(&source)
     };
 
     // Pre-process wikilinks before parsing
-    let content = crate::wikilink::process_wikilinks(&content);
+    let content = crate::wikilink::process_wikilinks(&stripped);
+    // Frontmatter comes off the top whole, and wikilinks never add or remove
+    // a line; if either ever stops holding, the mapping is unknown.
+    let line_offset = source
+        .strip_suffix(stripped.as_str())
+        .map(|head| head.matches('\n').count())
+        .filter(|_| content.matches('\n').count() == stripped.matches('\n').count());
 
     let arena = Arena::new();
     let options = crate::parser::options_for(&content);
@@ -2051,6 +2312,7 @@ fn build_tab(
         source,
         mtime,
         content,
+        line_offset,
         styled_lines,
         ratatui_lines,
         plain,
@@ -2264,6 +2526,7 @@ mod section_tests {
             source: content.into(),
             mtime: None,
             content: content.into(),
+            line_offset: Some(0),
             styled_lines: Vec::new(),
             ratatui_lines: Vec::new(),
             plain,
@@ -2586,6 +2849,87 @@ mod section_tests {
         // The left margin is not a link either.
         assert_eq!(link_at(&t, Pos::new(line, 0)), None);
         assert_eq!(link_at(&t, Pos::new(999, 0)), None);
+    }
+
+    const FM_DOC: &str = "---\ntitle: x\n---\n# A\n\ntext\n\n## B\n\nmore\n";
+
+    fn scrolled_to(mut t: Tab, heading: &str) -> Tab {
+        let h = t.toc.headings.iter().find(|h| h.text == heading).unwrap();
+        t.scroll_offset = h.line_index.saturating_sub(1);
+        t
+    }
+
+    #[test]
+    fn the_editor_line_is_the_viewport_heading_in_file_coordinates() {
+        let t = built(FM_DOC);
+        // Three frontmatter lines sit above the parsed content.
+        assert_eq!(t.line_offset, Some(3));
+        let t = scrolled_to(t, "B");
+        assert_eq!(editor_line(&t, FM_DOC), Some(8));
+        assert_eq!(FM_DOC.lines().nth(7), Some("## B"));
+        // Scrolled a little past the heading: still that heading's line.
+        let mut t = t;
+        t.scroll_offset += 2;
+        assert_eq!(editor_line(&t, FM_DOC), Some(8));
+        // At the very top: the first heading.
+        let t = built(FM_DOC);
+        assert_eq!(editor_line(&t, FM_DOC), Some(4));
+    }
+
+    #[test]
+    fn the_editor_line_is_dropped_when_it_cannot_be_trusted() {
+        let t = scrolled_to(built(FM_DOC), "B");
+        // The file changed on disk at that line since it was loaded.
+        let edited = FM_DOC.replace("## B", "## Renamed");
+        assert_eq!(editor_line(&t, &edited), None);
+        // An unknown source-to-file mapping.
+        let mut t = t;
+        t.line_offset = None;
+        assert_eq!(editor_line(&t, FM_DOC), None);
+        // Scrolled into text above any heading.
+        let mut t = built("intro\n\n\n\n\n\n\n\n# Late\n");
+        t.scroll_offset = 2;
+        assert_eq!(editor_line(&t, "intro\n\n\n\n\n\n\n\n# Late\n"), None);
+    }
+
+    #[test]
+    fn only_local_files_are_editable() {
+        let mut t = built("# x\n");
+        t.filename = "stdin".into();
+        assert!(not_editable(&t).unwrap().contains("stdin"));
+        t.filename = "https://example.com/a.md".into();
+        assert!(not_editable(&t).unwrap().contains("URL"));
+        t.filename = "t.md".into();
+        t.mtime = None;
+        assert!(not_editable(&t).is_some());
+        t.mtime = Some(SystemTime::now());
+        assert_eq!(not_editable(&t), None);
+    }
+
+    #[test]
+    fn reloading_after_an_edit_stays_on_the_same_heading() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        let doc: String = (0..30)
+            .map(|i| format!("## H{i}\n\nbody {i}\n\n"))
+            .collect();
+        std::fs::write(&path, &doc).unwrap();
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let args = test_args();
+        let name = path.to_str().unwrap();
+        let t = build_tab(doc.as_str(), name, &args, 80, 0, &graphics);
+        let mut t = scrolled_to(t, "H20");
+        t.scroll_offset += 1;
+        // Lines added above the heading the reader is in.
+        std::fs::write(&path, format!("# New\n\nadded\n\nlines\n\n{doc}")).unwrap();
+        reload_after_edit(&mut t, &args, 10, 80, 0, &graphics).unwrap();
+        let h20 = t.toc.headings.iter().find(|h| h.text == "H20").unwrap();
+        assert_eq!(t.scroll_offset, h20.line_index);
+        assert!(t.content.starts_with("# New"));
+        // A file that is gone reports it.
+        std::fs::remove_file(&path).unwrap();
+        let err = reload_after_edit(&mut t, &args, 10, 80, 0, &graphics).unwrap_err();
+        assert!(err.contains("cannot reload"), "{err}");
     }
 
     #[test]
