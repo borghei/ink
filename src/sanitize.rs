@@ -94,6 +94,13 @@ pub fn resolve_local(base: &Path, target: &str) -> Option<PathBuf> {
     })
 }
 
+/// [`resolve_local`] without the `?`/`#` suffix fallback: the target names
+/// the file exactly (or percent-encoded). For callers that split a fragment
+/// off themselves and must know whether it was part of the name.
+pub fn resolve_local_exact(base: &Path, target: &str) -> Option<PathBuf> {
+    resolve_variants(base, target)
+}
+
 fn resolve_variants(base: &Path, target: &str) -> Option<PathBuf> {
     try_resolve(base, target).or_else(|| {
         percent_decode(target)

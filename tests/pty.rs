@@ -193,6 +193,45 @@ fn the_reader_uses_the_light_theme_and_leaves_no_reply_on_screen() {
     assert!(contains(&s.output, b"\x1b[?1049l"), "{tail:?}");
 }
 
+#[test]
+fn a_reply_that_arrives_after_300_ms_is_still_consumed() {
+    // A slow link nobody flags as SSH (docker exec, mosh, serial): the
+    // answer comes 300 ms after the query. The query must still read it —
+    // the light theme proves it was parsed — so it is never drawn or typed.
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/test.md");
+    let mut asked_at: Option<Duration> = None;
+    let mut answered = false;
+    let mut quit = quit_when_up();
+    let s = run_in_pty(
+        &["--image-protocol", "halfblocks", fixture],
+        &[("COLORTERM", "truecolor")],
+        |out, t| {
+            if asked_at.is_none() && contains(out, b"\x1b]11;?") {
+                asked_at = Some(t);
+            }
+            match asked_at {
+                Some(at) if !answered && t >= at + Duration::from_millis(300) => {
+                    answered = true;
+                    Some(b"\x1b]11;rgb:ffff/ffff/ffff\x07\x1b[?62;22c".to_vec())
+                }
+                _ => quit(out, t),
+            }
+        },
+    );
+    assert!(answered, "ink never asked");
+    assert!(contains(&s.output, b"48;2;255;255;255"), "reply not used");
+    assert!(!contains(&s.output, b"rgb:ffff"), "reply echoed");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+}
+
+#[test]
+fn list_themes_never_queries_the_terminal() {
+    let s = run_in_pty(&["--list-themes"], &[], |_, _| None);
+    assert!(String::from_utf8_lossy(&s.output).contains("dracula"));
+    assert!(!contains(&s.output, b"\x1b]11;?"), "OSC 11 query written");
+    assert!(!contains(&s.output, b"\x1b[c"), "DA1 query written");
+}
+
 /// Quits the reader (`q`) once it has entered the alternate screen, retrying
 /// in case a slow start swallowed the key.
 fn quit_when_up() -> impl FnMut(&[u8], Duration) -> Option<Vec<u8>> {

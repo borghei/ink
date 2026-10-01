@@ -231,22 +231,33 @@ const DECORATION: &[char] = &[
 /// Used to place the visual-mode cursor: a selection that starts on the `█` of
 /// a heading copies a glyph the document never contained.
 pub fn content_start_col(text: &str) -> usize {
+    content_start_col_in(text, crate::glyphs::current().ascii)
+}
+
+/// [`content_start_col`] for an explicit glyph set. ASCII mode draws the
+/// same structure with `#` (heading levels, as a run: `###`), `|` (bars,
+/// borders), `*` (bullets) and `+` (corners).
+fn content_start_col_in(text: &str, ascii: bool) -> usize {
     let mut col = 0usize;
     let mut seen_decoration = false;
-    // ASCII mode draws the same structure with `#` (heading levels, as a
-    // run: `###`), `|` (bars, borders), `*` (bullets) and `+` (corners).
-    let ascii = crate::glyphs::current().ascii;
-    for g in text.graphemes(true) {
+    for (at, g) in text.grapheme_indices(true) {
         let is_space = g.chars().all(char::is_whitespace);
-        let is_decoration = g.chars().all(|c| DECORATION.contains(&c))
-            || (ascii && matches!(g, "#" | "|" | "*" | "+"));
+        let is_decoration =
+            g.chars().all(|c| DECORATION.contains(&c)) || (ascii && matches!(g, "|" | "*" | "+"));
         if is_space {
             col += g.width().max(1);
             continue;
         }
         if ascii && g == "#" {
-            col += 1;
-            continue;
+            // A heading marker only as the line's first mark and followed by
+            // a space (`## Title`); `| # comment` and `#include` in a code
+            // box are content.
+            let rest = &text[at..];
+            let run = rest.len() - rest.trim_start_matches('#').len();
+            if !seen_decoration && rest[run..].starts_with(' ') {
+                return col + run + 1;
+            }
+            break;
         }
         if is_decoration && !seen_decoration {
             seen_decoration = true;
@@ -475,6 +486,22 @@ mod tests {
         // Only one run is skipped: a second bar is content (nested quote).
         assert_eq!(content_start_col("  │ │ nested"), 4);
         assert_eq!(content_start_col(""), 0);
+    }
+
+    #[test]
+    fn ascii_hash_is_decoration_only_as_a_heading_marker() {
+        let col = |t| content_start_col_in(t, true);
+        // Headings: past the `#` run and its space, onto the `T`.
+        assert_eq!(col("  # Title"), 4);
+        assert_eq!(col("  ### Third"), 6);
+        // Code-box lines keep their `#`: the box rule is the decoration.
+        assert_eq!(col("  | # install deps"), 4);
+        assert_eq!(col("  | #include <stdio.h>"), 4);
+        // A bare `#word` is not a heading marker either.
+        assert_eq!(col("  #hashtag"), 2);
+        // The other ASCII decorations still count once.
+        assert_eq!(col("  * item"), 4);
+        assert_eq!(col("  | | nested"), 4);
     }
 
     #[test]

@@ -237,20 +237,48 @@ const CLIP_EXE: Helper = Helper {
     args: &[],
     encoding: Encoding::Utf16LeBom,
 };
-/// WSL with `clip.exe` missing from PATH (Windows PATH appending turned
-/// off): PowerShell, told to read stdin as UTF-8, sets the clipboard.
+/// WSL with `clip.exe` missing (Windows PATH appending turned off and no
+/// `clip.exe` at the usual mount points): PowerShell, told to read stdin as
+/// UTF-8, sets the clipboard.
 const POWERSHELL: Helper = Helper {
     program: "powershell.exe",
-    args: &[
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "[Console]::InputEncoding = [Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
-    ],
+    args: POWERSHELL_ARGS,
     encoding: Encoding::Utf8,
 };
+const POWERSHELL_ARGS: &[&str] = &[
+    "-NoProfile",
+    "-NonInteractive",
+    "-Command",
+    "[Console]::InputEncoding = [Text.Encoding]::UTF8; Set-Clipboard -Value ([Console]::In.ReadToEnd())",
+];
 
-/// Pick the clipboard helper, given the session and which programs exist.
+/// `appendWindowsPath = false` in `/etc/wsl.conf` takes the Windows
+/// directories off PATH, so neither `clip.exe` nor `powershell.exe` is found
+/// by name. WSL still mounts the Windows drive: at `/mnt/c` by default, at
+/// `/c` with `[automount] root = /`.
+const WSL_CLIP_EXE: [Helper; 2] = [
+    Helper {
+        program: "/mnt/c/Windows/System32/clip.exe",
+        ..CLIP_EXE
+    },
+    Helper {
+        program: "/c/Windows/System32/clip.exe",
+        ..CLIP_EXE
+    },
+];
+const WSL_POWERSHELL: [Helper; 2] = [
+    Helper {
+        program: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        ..POWERSHELL
+    },
+    Helper {
+        program: "/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        ..POWERSHELL
+    },
+];
+
+/// Pick the clipboard helper, given the session and which programs exist
+/// (`available` gets a bare name to look up on PATH, or an absolute path).
 ///
 /// Ordered by how specific the signal is: a Wayland session that also exports
 /// `DISPLAY` (XWayland) should still get `wl-copy`, and Termux (which may run
@@ -263,7 +291,11 @@ pub fn choose_helper(env: HelperEnv, available: &dyn Fn(&str) -> bool) -> Option
         (XCLIP, env.x11),
         (XSEL, env.x11),
         (CLIP_EXE, true),
+        (WSL_CLIP_EXE[0], env.wsl),
+        (WSL_CLIP_EXE[1], env.wsl),
         (POWERSHELL, env.wsl),
+        (WSL_POWERSHELL[0], env.wsl),
+        (WSL_POWERSHELL[1], env.wsl),
     ];
     candidates
         .into_iter()
@@ -273,7 +305,16 @@ pub fn choose_helper(env: HelperEnv, available: &dyn Fn(&str) -> bool) -> Option
 
 /// The clipboard helper to use on this machine.
 pub fn native_helper() -> Option<Helper> {
-    choose_helper(HelperEnv::detect(), &on_path)
+    choose_helper(HelperEnv::detect(), &program_exists)
+}
+
+/// A bare program name is looked up on PATH; a path is checked directly.
+fn program_exists(program: &str) -> bool {
+    if program.contains('/') {
+        std::path::Path::new(program).is_file()
+    } else {
+        on_path(program)
+    }
 }
 
 fn on_path(program: &str) -> bool {
@@ -483,6 +524,48 @@ mod tests {
         assert_eq!(pick(wsl, &["powershell.exe"]), Some("powershell.exe"));
         assert_eq!(pick(HelperEnv::default(), &["powershell.exe"]), None);
         assert_eq!(pick(HelperEnv::default(), &["clip.exe"]), Some("clip.exe"));
+    }
+
+    #[test]
+    fn wsl_without_the_windows_path_finds_the_helpers_on_the_c_drive() {
+        let wsl = HelperEnv {
+            wsl: true,
+            ..Default::default()
+        };
+        // appendWindowsPath=false: nothing by name, the drive still mounted.
+        let mounted = &[
+            "/mnt/c/Windows/System32/clip.exe",
+            "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+        ];
+        let clip = choose_helper(wsl, &only(mounted)).unwrap();
+        assert_eq!(clip.program, "/mnt/c/Windows/System32/clip.exe");
+        assert_eq!(clip.encoding, Encoding::Utf16LeBom);
+        // No clip.exe at all: PowerShell by its full path, same arguments.
+        let ps = pick(
+            wsl,
+            &["/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"],
+        );
+        assert_eq!(
+            ps,
+            Some("/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe")
+        );
+        let ps = choose_helper(
+            wsl,
+            &only(&["/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"]),
+        )
+        .unwrap();
+        assert_eq!(ps.args, POWERSHELL.args);
+        // `[automount] root = /` mounts the drive at /c.
+        assert_eq!(
+            pick(wsl, &["/c/Windows/System32/clip.exe"]),
+            Some("/c/Windows/System32/clip.exe")
+        );
+        // On PATH still wins; outside WSL the mount paths are never probed.
+        assert_eq!(
+            pick(wsl, &["clip.exe", "/mnt/c/Windows/System32/clip.exe"]),
+            Some("clip.exe")
+        );
+        assert_eq!(pick(HelperEnv::default(), mounted), None);
     }
 
     #[test]

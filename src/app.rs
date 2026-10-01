@@ -19,12 +19,18 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use std::io;
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::{Duration, Instant, SystemTime};
 
 struct Tab {
     filename: String,
-    #[allow(dead_code)]
-    source: String,
+    /// The document as loaded. Shared, not copied, with every history entry
+    /// made from this tab: an in-page jump records a pointer.
+    source: Arc<str>,
+    /// Modification time of `filename` when `source` was read from it; `None`
+    /// for stdin and URL documents. Going back to a file that has changed
+    /// since re-reads it.
+    mtime: Option<SystemTime>,
     /// The markdown actually parsed: frontmatter stripped, wikilinks expanded.
     /// Heading `source_line`s index into this, so `Y` slices sections from it.
     content: String,
@@ -39,6 +45,10 @@ struct Tab {
     lowered: Vec<String>,
     scroll_offset: usize,
     toc: TocState,
+    /// Every top-level heading's anchor text (`LayoutHeading::anchor`) and
+    /// display line, in order, for `#fragment` links. Unlike the TOC this
+    /// keeps headings whose display text is empty (``## `--width` ``).
+    anchors: Vec<(String, usize)>,
     word_count: usize,
     reading_time: usize,
     /// Terminal width + theme generation this tab was laid out for. Used to
@@ -66,13 +76,15 @@ struct ImagePlacement {
 
 /// A place to return to with `[` / `]`.
 ///
-/// Carries the source that was on screen, so going back to stdin or a URL
-/// document (or a file that has since moved) rebuilds what was shown instead
-/// of trying to re-read the name as a local path.
+/// Carries the source that was on screen (shared with the tab, not copied),
+/// so going back to stdin or a URL document (or a file that has since moved)
+/// rebuilds what was shown instead of trying to re-read the name as a local
+/// path. A local file that has changed since is re-read instead.
 #[derive(Debug, Clone, PartialEq)]
 struct NavEntry {
     filename: String,
-    source: String,
+    source: Arc<str>,
+    mtime: Option<SystemTime>,
     scroll_offset: usize,
 }
 
@@ -80,11 +92,15 @@ impl NavEntry {
     fn of(tab: &Tab) -> Self {
         Self {
             filename: tab.filename.clone(),
-            source: tab.source.clone(),
+            source: Arc::clone(&tab.source),
+            mtime: tab.mtime,
             scroll_offset: tab.scroll_offset,
         }
     }
 }
+
+/// How many places `[` can go back to; the oldest are dropped beyond it.
+const NAV_HISTORY_CAP: usize = 256;
 
 /// Back/forward stacks shared by every way of following a link.
 #[derive(Debug, Default)]
@@ -97,7 +113,7 @@ impl NavHistory {
     /// Remember `here` before moving somewhere new; a new branch drops the
     /// forward stack, as in a browser.
     fn record(&mut self, here: NavEntry) {
-        self.back.push(here);
+        self.push_back(here);
         self.forward.clear();
     }
 
@@ -111,8 +127,15 @@ impl NavHistory {
     /// Step forward from `here`, returning where to go.
     fn go_forward(&mut self, here: NavEntry) -> Option<NavEntry> {
         let to = self.forward.pop()?;
-        self.back.push(here);
+        self.push_back(here);
         Some(to)
+    }
+
+    fn push_back(&mut self, here: NavEntry) {
+        if self.back.len() >= NAV_HISTORY_CAP {
+            self.back.remove(0);
+        }
+        self.back.push(here);
     }
 }
 
@@ -295,6 +318,11 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
 
     install_panic_hook();
     enable_raw_mode()?;
+    // A background-colour reply that missed the startup query must not be
+    // read as key presses.
+    if theme::detect::reply_may_arrive_late() {
+        input::discard_late_reply();
+    }
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     if mouse_capture {
@@ -1520,14 +1548,12 @@ fn open_link(
         }
     }
     if !is_followable_local(url) {
-        return None;
+        return Some(format!("cannot follow {url}"));
     }
-    let (path, fragment) = split_fragment(url);
     let size = terminal.size().ok();
     let viewport = size.map(|s| s.height.saturating_sub(3)).unwrap_or(24) as usize;
 
-    if path.is_empty() {
-        let fragment = fragment.unwrap_or("");
+    if let Some(fragment) = url.strip_prefix('#') {
         let tab = &mut tabs[active_tab];
         let Some(line) = heading_scroll(tab, fragment, viewport) else {
             return Some(format!("no heading #{fragment}"));
@@ -1541,10 +1567,9 @@ fn open_link(
         .parent()
         .unwrap_or(std::path::Path::new("."))
         .to_path_buf();
-    let src = crate::sanitize::resolve_local(&base, path)
-        .and_then(|target| Some((std::fs::read_to_string(&target).ok()?, target)));
-    let Some((src, target)) = src else {
-        return Some(format!("cannot open {path}"));
+    let Some((src, target, path, fragment)) = read_link_target(&base, url) else {
+        let shown = link_targets(url).last().map_or(url, |(path, _)| *path);
+        return Some(format!("cannot open {shown}"));
     };
     nav.record(NavEntry::of(&tabs[active_tab]));
     let width = effective_width(size.map(|s| s.width).unwrap_or(80), args.toc);
@@ -1570,20 +1595,44 @@ fn open_link(
 /// Links ink follows itself: a local markdown file, optionally with a
 /// `#heading` suffix, or a bare `#heading` in the current document.
 fn is_followable_local(url: &str) -> bool {
-    let (path, fragment) = split_fragment(url);
-    if path.is_empty() {
-        return fragment.is_some_and(|f| !f.is_empty());
+    match url.strip_prefix('#') {
+        Some(fragment) => !fragment.is_empty(),
+        None => !link_targets(url).is_empty(),
     }
-    let lower = path.to_ascii_lowercase();
-    !lower.contains("://") && (lower.ends_with(".md") || lower.ends_with(".markdown"))
 }
 
-/// `other.md#intro` -> (`other.md`, Some(`intro`)); `#intro` -> (``, Some(`intro`)).
-fn split_fragment(url: &str) -> (&str, Option<&str>) {
-    match url.split_once('#') {
-        Some((path, frag)) => (path, Some(frag)),
-        None => (url, None),
+/// Read the file a local link points at, relative to `base`: the first of
+/// [`link_targets`] whose file exists wins, so a `#` that is part of the
+/// name (`c#-notes.md`) is not taken for a fragment. Returns the source, the
+/// resolved path, the link's file part and its fragment.
+fn read_link_target<'u>(
+    base: &std::path::Path,
+    url: &'u str,
+) -> Option<(String, std::path::PathBuf, &'u str, Option<&'u str>)> {
+    link_targets(url).into_iter().find_map(|(path, fragment)| {
+        let target = crate::sanitize::resolve_local_exact(base, path)?;
+        let src = std::fs::read_to_string(&target).ok()?;
+        Some((src, target, path, fragment))
+    })
+}
+
+/// The ways to read a local link as (markdown file, fragment), most literal
+/// first: the whole link as a file name (`#` is legal in names, and `%23`
+/// is decoded when resolving), then split at the last `#`, then at the
+/// first. Readings whose file part is not markdown are dropped.
+fn link_targets(url: &str) -> Vec<(&str, Option<&str>)> {
+    let mut out = vec![(url, None)];
+    for i in [url.rfind('#'), url.find('#')].into_iter().flatten() {
+        let reading = (&url[..i], Some(&url[i + 1..]));
+        if !out.contains(&reading) {
+            out.push(reading);
+        }
     }
+    out.retain(|(path, _)| {
+        let lower = path.to_ascii_lowercase();
+        !lower.contains("://") && (lower.ends_with(".md") || lower.ends_with(".markdown"))
+    });
+    out
 }
 
 /// GitHub-style anchor for a heading: lowercased, whitespace to `-`, every
@@ -1637,24 +1686,46 @@ fn find_heading<'a>(texts: impl IntoIterator<Item = &'a str>, fragment: &str) ->
 /// Scroll offset that puts the heading named by `fragment` at the top of the
 /// viewport, framed the way `n`/`N` heading jumps frame it.
 fn heading_scroll(tab: &Tab, fragment: &str, viewport: usize) -> Option<usize> {
-    let headings = &tab.toc.headings;
-    let i = find_heading(headings.iter().map(|h| h.text.as_str()), fragment)?;
+    let anchors = &tab.anchors;
+    let i = find_heading(anchors.iter().map(|(text, _)| text.as_str()), fragment)?;
     let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
-    Some(headings[i].line_index.saturating_sub(1).min(max_scroll))
+    Some(anchors[i].1.saturating_sub(1).min(max_scroll))
 }
 
 /// Show a history entry: the same document just scrolls back; anything else
-/// is rebuilt from the source the entry carries.
+/// is rebuilt from the source the entry carries — or, for a local file that
+/// has changed on disk since, from the file (as v0.8.0 always did).
 fn restore_nav_entry(
     tab: &mut Tab,
-    entry: NavEntry,
+    mut entry: NavEntry,
     args: &Args,
     width: u16,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    if tab.filename != entry.filename || tab.source != entry.source {
-        *tab = build_tab(entry.source, &entry.filename, args, width, gen, graphics);
+    // A slide's source is one slide, not the file: never swap in the file.
+    if !args.slides {
+        let now = std::fs::metadata(&entry.filename)
+            .and_then(|m| m.modified())
+            .ok();
+        if file_changed(entry.mtime, now) {
+            if let Ok(fresh) = std::fs::read_to_string(&entry.filename) {
+                entry.source = fresh.into();
+                entry.mtime = now;
+            }
+        }
+    }
+    let same_source = Arc::ptr_eq(&tab.source, &entry.source) || tab.source == entry.source;
+    if tab.filename != entry.filename || !same_source {
+        *tab = build_tab(
+            Arc::clone(&entry.source),
+            &entry.filename,
+            args,
+            width,
+            gen,
+            graphics,
+        );
+        tab.mtime = entry.mtime;
     }
     tab.scroll_offset = entry
         .scroll_offset
@@ -1684,12 +1755,15 @@ fn rebuild_tab(
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    let source = tab.source.clone();
+    let source = Arc::clone(&tab.source);
     let filename = tab.filename.clone();
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
+    let mtime = tab.mtime;
     let width = effective_width(term_width, toc_visible);
     *tab = build_tab(source, &filename, args, width, gen, graphics);
+    // Same source as before, so the same snapshot time.
+    tab.mtime = mtime;
     // Clamp: the new layout may have far fewer lines (e.g. after widening) —
     // an unclamped stale offset blanked the viewport and panicked link-mode.
     tab.scroll_offset = scroll.min(tab.ratatui_lines.len().saturating_sub(1));
@@ -1709,16 +1783,29 @@ fn ensure_tab_current(
     }
 }
 
+/// Has a file changed since a snapshot of it was taken? Only a local file
+/// has a snapshot time (`Some`); a file that is gone (`now == None`) keeps
+/// its snapshot.
+fn file_changed(snapshot: Option<SystemTime>, now: Option<SystemTime>) -> bool {
+    matches!((snapshot, now), (Some(then), Some(now)) if then != now)
+}
+
 fn build_tab(
-    source: String,
+    source: impl Into<Arc<str>>,
     filename: &str,
     args: &Args,
     term_width: u16,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) -> Tab {
+    let source: Arc<str> = source.into();
+    let mtime = if is_local_file(filename) {
+        std::fs::metadata(filename).and_then(|m| m.modified()).ok()
+    } else {
+        None
+    };
     let (_, content) = if args.frontmatter {
-        (None, source.clone())
+        (None, source.to_string())
     } else {
         frontmatter::strip_frontmatter(&source)
     };
@@ -1749,8 +1836,9 @@ fn build_tab(
         headings,
         images: image_specs,
         code_blocks,
-    } = layout::layout_document(
+    } = layout::layout_document_with_source(
         root,
+        Some(&content),
         &theme::resolve_theme(&args.theme),
         max_content_width,
         args.spacing,
@@ -1793,6 +1881,11 @@ fn build_tab(
 
     let (word_count, reading_time) = stats::document_stats(&content);
 
+    let anchors: Vec<(String, usize)> = headings
+        .iter()
+        .map(|h| (h.anchor.clone(), h.line_index))
+        .collect();
+
     // Headings carry their exact display-line index straight from layout —
     // no substring reverse-scan, and duplicate/split headings map correctly.
     let toc_entries: Vec<crate::toc::TocEntry> = headings
@@ -1815,6 +1908,7 @@ fn build_tab(
     Tab {
         filename: filename.to_string(),
         source,
+        mtime,
         content,
         styled_lines,
         ratatui_lines,
@@ -1823,6 +1917,7 @@ fn build_tab(
         lowered,
         scroll_offset: 0,
         toc,
+        anchors,
         word_count,
         reading_time,
         built_width: term_width,
@@ -2019,9 +2114,14 @@ mod section_tests {
             )
             .collect();
         toc.update_selection(scroll);
+        let anchors = headings
+            .iter()
+            .map(|(_, text, line_index, _)| ((*text).to_string(), *line_index))
+            .collect();
         Tab {
             filename: "t.md".into(),
             source: content.into(),
+            mtime: None,
             content: content.into(),
             styled_lines: Vec::new(),
             ratatui_lines: Vec::new(),
@@ -2030,6 +2130,7 @@ mod section_tests {
             lowered: Vec::new(),
             scroll_offset: scroll,
             toc,
+            anchors,
             word_count: 0,
             reading_time: 0,
             built_width: 80,
@@ -2155,15 +2256,168 @@ mod section_tests {
 
     #[test]
     fn fragment_splitting_and_followable_links() {
-        assert_eq!(split_fragment("#a"), ("", Some("a")));
-        assert_eq!(split_fragment("doc.md#a"), ("doc.md", Some("a")));
-        assert_eq!(split_fragment("doc.md"), ("doc.md", None));
+        assert_eq!(link_targets("doc.md#a"), [("doc.md", Some("a"))]);
+        assert_eq!(link_targets("doc.md"), [("doc.md", None)]);
+        // Literal name first, then the last `#`, then the first.
+        assert_eq!(
+            link_targets("c#-notes.md#intro"),
+            [("c#-notes.md", Some("intro"))]
+        );
+        assert_eq!(link_targets("issue#12.md"), [("issue#12.md", None)]);
+        assert_eq!(
+            link_targets("a#b.md#c.md"),
+            [("a#b.md#c.md", None), ("a#b.md", Some("c.md"))]
+        );
+        assert!(link_targets("image.png#frag").is_empty());
         assert!(is_followable_local("#section"));
+        assert!(is_followable_local("c#-notes.md"));
+        assert!(is_followable_local("issue#12.md"));
         assert!(is_followable_local("docs/x.md#section"));
         assert!(is_followable_local("x.MARKDOWN"));
         assert!(!is_followable_local("#"));
         assert!(!is_followable_local("https://e.com/x.md"));
         assert!(!is_followable_local("image.png#frag"));
+    }
+
+    /// Arguments for laying a document out the way the reader does.
+    pub(super) fn test_args() -> Args {
+        Args {
+            inputs: Vec::new(),
+            theme: "dark".into(),
+            width: None,
+            slides: false,
+            plain: false,
+            watch: false,
+            toc: false,
+            images: crate::image::ImageMode::Off,
+            image_protocol: crate::graphics::ProtocolChoice::HalfBlocks,
+            frontmatter: false,
+            spacing: crate::Spacing::Normal,
+            mouse_capture: false,
+            clipboard: crate::clipboard::ClipboardMode::Auto,
+        }
+    }
+
+    /// A tab built through the real pipeline: wikilinks, parse, layout.
+    pub(super) fn built(src: &str) -> Tab {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        build_tab(src, "t.md", &test_args(), 80, 0, &graphics)
+    }
+
+    /// The display line `#fragment` scrolls to, or `None`.
+    fn anchor_line(t: &Tab, fragment: &str) -> Option<usize> {
+        let i = find_heading(t.anchors.iter().map(|(a, _)| a.as_str()), fragment)?;
+        Some(t.anchors[i].1)
+    }
+
+    #[test]
+    fn anchors_see_inline_code_dashes_shortcodes_and_links() {
+        let src = "# Install `ink` CLI\n\n### `--width`\n\n## a -- b\n\n\
+                   ## :rocket: Launch\n\n## See [the docs](https://e.com) now\n\n\
+                   ## Dash — literal\n\n## Usage\n\n## Usage\n\n## Usage\n";
+        let t = built(src);
+        let lines: Vec<usize> = t.anchors.iter().map(|(_, l)| *l).collect();
+        assert_eq!(lines.len(), 9, "{:?}", t.anchors);
+        for (fragment, i) in [
+            ("install-ink-cli", 0),
+            ("--width", 1),
+            ("a----b", 2),
+            ("rocket-launch", 3),
+            ("see-the-docs-now", 4),
+            ("dash--literal", 5),
+            ("usage", 6),
+            ("usage-1", 7),
+            ("usage-2", 8),
+        ] {
+            assert_eq!(anchor_line(&t, fragment), Some(lines[i]), "#{fragment}");
+        }
+        // The old, display-text-derived slugs no longer match.
+        assert_eq!(anchor_line(&t, "install--cli"), None);
+        // The TOC still shows what it showed: no code, no empty entries.
+        let toc: Vec<&str> = t.toc.headings.iter().map(|h| h.text.as_str()).collect();
+        assert_eq!(toc[0], "Install  CLI");
+        assert!(!toc.contains(&""));
+        assert!(toc.contains(&"a – b"), "{toc:?}");
+    }
+
+    #[test]
+    fn anchor_text_undoes_smart_dashes_without_the_source() {
+        use comrak::{parse_document, Arena};
+        let arena = Arena::new();
+        let root = parse_document(&arena, "## a -- b --- c\n", &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        let headings = crate::layout::layout_document(
+            root,
+            &theme,
+            80,
+            crate::Spacing::Normal,
+            0,
+            None,
+            crate::image::ImageMode::Off,
+            None,
+        )
+        .headings;
+        assert_eq!(headings[0].anchor, "a -- b --- c");
+    }
+
+    #[test]
+    fn links_to_files_with_hash_in_the_name_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::write(base.join("c#-notes.md"), "# C sharp\n").unwrap();
+        std::fs::write(base.join("issue#12.md"), "# Twelve\n").unwrap();
+        std::fs::write(base.join("other.md"), "# Other\n\n## Intro\n").unwrap();
+        let read = |url| {
+            read_link_target(base, url)
+                .map(|(src, _, path, frag)| (src.lines().next().unwrap().to_string(), path, frag))
+        };
+        assert_eq!(
+            read("c#-notes.md"),
+            Some(("# C sharp".into(), "c#-notes.md", None))
+        );
+        assert_eq!(
+            read("issue#12.md"),
+            Some(("# Twelve".into(), "issue#12.md", None))
+        );
+        // `%23` is a `#` in the name.
+        assert_eq!(
+            read("issue%2312.md"),
+            Some(("# Twelve".into(), "issue%2312.md", None))
+        );
+        // A `#` after the file name is still a fragment.
+        assert_eq!(
+            read("other.md#intro"),
+            Some(("# Other".into(), "other.md", Some("intro")))
+        );
+        assert_eq!(
+            read("c#-notes.md#top"),
+            Some(("# C sharp".into(), "c#-notes.md", Some("top")))
+        );
+        assert_eq!(read("missing.md#x"), None);
+    }
+
+    #[test]
+    fn wikilink_sections_jump_to_the_heading_text() {
+        // `[[page#Section Name]]` → `page.md` + the heading text, matched by
+        // slugging it like a heading; `[[#Section]]` stays in the document.
+        let t = built("# Top\n\nSee [[#My Section]].\n\n## My Section\n\nbody\n");
+        let urls: Vec<String> = t
+            .styled_lines
+            .iter()
+            .flat_map(|l| &l.spans)
+            .filter_map(|s| s.style.link_url.clone())
+            .collect();
+        assert_eq!(urls, ["#My Section"]);
+        assert!(is_followable_local(&urls[0]));
+        let i = find_heading(
+            t.anchors.iter().map(|(a, _)| a.as_str()),
+            urls[0].trim_start_matches('#'),
+        );
+        assert_eq!(i, Some(1));
+        assert_eq!(
+            crate::wikilink::resolve_target("notes#Install `ink` CLI"),
+            "notes.md#Install `ink` CLI"
+        );
     }
 
     #[test]
@@ -2180,9 +2434,74 @@ mod section_tests {
     fn entry(name: &str, scroll: usize) -> NavEntry {
         NavEntry {
             filename: name.into(),
-            source: format!("# {name}"),
+            source: format!("# {name}").into(),
+            mtime: None,
             scroll_offset: scroll,
         }
+    }
+
+    #[test]
+    fn an_in_page_jump_records_a_pointer_not_a_copy() {
+        let t = built(DOC);
+        let mut nav = NavHistory::default();
+        nav.record(NavEntry::of(&t));
+        nav.record(NavEntry::of(&t));
+        assert!(nav.back.iter().all(|e| Arc::ptr_eq(&e.source, &t.source)));
+        // Back and forward hand the same allocation around too.
+        let back = nav.go_back(NavEntry::of(&t)).unwrap();
+        assert!(Arc::ptr_eq(&back.source, &t.source));
+        assert!(Arc::ptr_eq(&nav.forward[0].source, &t.source));
+    }
+
+    #[test]
+    fn history_is_capped_dropping_the_oldest() {
+        let mut nav = NavHistory::default();
+        for i in 0..NAV_HISTORY_CAP + 44 {
+            nav.record(entry("a.md", i));
+        }
+        assert_eq!(nav.back.len(), NAV_HISTORY_CAP);
+        assert_eq!(nav.back[0].scroll_offset, 44);
+        // Forward steps that refill the back stack respect the cap too.
+        let here = nav.go_back(entry("b.md", 0)).unwrap();
+        nav.go_forward(here).unwrap();
+        assert_eq!(nav.back.len(), NAV_HISTORY_CAP);
+    }
+
+    #[test]
+    fn going_back_rereads_a_file_only_when_it_changed() {
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+        let t1 = t0 + Duration::from_secs(5);
+        assert!(file_changed(Some(t0), Some(t1)), "edited since");
+        assert!(!file_changed(Some(t0), Some(t0)), "unchanged");
+        assert!(!file_changed(Some(t0), None), "deleted: keep the snapshot");
+        assert!(!file_changed(None, Some(t1)), "stdin / URL: no file");
+        assert!(!file_changed(None, None));
+    }
+
+    #[test]
+    fn local_files_carry_their_mtime_and_stdin_does_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.md");
+        std::fs::write(&path, "# Doc\n").unwrap();
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let file = build_tab(
+            "# Doc\n".to_string(),
+            path.to_str().unwrap(),
+            &test_args(),
+            80,
+            0,
+            &graphics,
+        );
+        assert!(file.mtime.is_some());
+        let stdin = build_tab(
+            "# Doc\n".to_string(),
+            "stdin",
+            &test_args(),
+            80,
+            0,
+            &graphics,
+        );
+        assert_eq!(stdin.mtime, None);
     }
 
     #[test]
@@ -2217,7 +2536,7 @@ mod section_tests {
         t.filename = "stdin".into();
         let e = NavEntry::of(&t);
         assert_eq!(e.filename, "stdin");
-        assert_eq!(e.source, DOC);
+        assert_eq!(&*e.source, DOC);
         assert_eq!(e.scroll_offset, 7);
     }
 }
