@@ -2,6 +2,9 @@
 name = "ink-md"
 version = "0.8.0"
 edition = "2021"
+# Highest rust-version declared by any resolved dependency (quantette, via
+# ratatui-image). CI's msrv job builds with exactly this toolchain.
+rust-version = "1.90"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
 description = "The most advanced terminal markdown reader"
 license-file = "LICENSE"
@@ -113,3 +116,16 @@ pkg-url = "{ repo }/releases/download/v{ version }/ink-macos-arm64"
 
 [package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
 pkg-url = "{ repo }/releases/download/v{ version }/ink-windows-amd64.exe"
+
+# Static musl builds and Windows ARM64 (first published after v0.8.0).
+[package.metadata.binstall.overrides.x86_64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-amd64-musl"
+
+[package.metadata.binstall.overrides.aarch64-unknown-linux-musl]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-arm64-musl"
+
+[package.metadata.binstall.overrides.armv7-unknown-linux-musleabihf]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-linux-armv7-musl"
+
+[package.metadata.binstall.overrides.aarch64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/ink-windows-arm64.exe"

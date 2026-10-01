@@ -1,0 +1,9 @@
+# Link the MSVC C runtime statically so ink.exe runs on a clean Windows install
+# without the Visual C++ Redistributable (VCRUNTIME140.dll). Kept here rather
+# than in release.yml so local Windows builds produce the same binary.
+# Note: a RUSTFLAGS environment variable replaces these flags entirely.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
+
+[target.aarch64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
