@@ -453,36 +453,56 @@ jobs:
 
   # Publish the crate so `cargo install ink-md` (and mise's cargo backend)
   # track releases instead of going stale (issue #4: crates.io sat at 0.2.1
-  # while binaries reached 0.6.x). Skips cleanly when the token secret is
-  # absent; never fails the release — the binaries have already published.
+  # while binaries reached 0.6.x). A failure here is loud on purpose: the
+  # binaries have already published, so fix the cause and re-run the job.
   crates:
     needs: release
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    # Tag pushes publish. A manual run (workflow_dispatch) only rehearses:
+    # it does the token exchange and a `cargo publish --dry-run`.
+    if: >-
+      always() &&
+      ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.release.result == 'success')
+       || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # OIDC token for crates.io Trusted Publishing
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # Trusted Publishing: crates.io trusts this repository's release.yml
+      # (configured on the crate), so there is no long-lived token to store
+      # or rotate. The action swaps the job's OIDC token for a short-lived
+      # crates.io token and revokes it when the job ends.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
       - name: Publish to crates.io
-        continue-on-error: true
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
-            echo "No CRATES_IO_TOKEN secret — skipping crates.io publish."
+          set -euo pipefail
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_EVENT_NAME" != "push" ]; then
+            echo "Manual run: rehearsing only."
+            cargo publish --dry-run --locked
             exit 0
           fi
-          cargo publish
+          # Re-running a release must not fail because the version is already up.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -A "ink-release (github.com/borghei/ink)" \
+            "https://crates.io/api/v1/crates/ink-md/${version}")
+          if [ "$code" = "200" ]; then
+            echo "ink-md ${version} is already on crates.io — nothing to publish."
+            exit 0
+          fi
+          cargo publish --locked
 
   # Bump the Homebrew tap formula in the same run. Chaining via `needs` (rather
   # than a `release: published` trigger on homebrew.yml) is deliberate: releases
   # created with the default GITHUB_TOKEN do not emit events that trigger other
   # workflows, so a `release`-triggered bump would silently never fire.
   #
-  # The bump is made non-blocking inside homebrew.yml (its step is
-  # continue-on-error): a missing/expired HOMEBREW_TAP_TOKEN fails the bump but
-  # not the release, since the binaries + checksums have already published.
-  # (`continue-on-error` is not valid on a reusable-workflow-call job, so the
-  # tolerance lives on the step instead.)
+  # The bump pushes with a deploy key (secret HOMEBREW_TAP_DEPLOY_KEY) and
+  # fails loudly if it cannot; re-run homebrew.yml by hand with the tag.
   homebrew:
     needs: release
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

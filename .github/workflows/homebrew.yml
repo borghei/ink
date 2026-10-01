@@ -26,20 +26,31 @@ jobs:
       # from third-party taps with an UntrustedTapError. A plain file edit
       # sidesteps `brew` entirely and never hits the trust check.
       - name: Bump tap formula
-        # Non-blocking: needs a valid HOMEBREW_TAP_TOKEN. If the token is
-        # missing/expired the bump fails here, but the calling release run
-        # stays green (the binaries + checksums have already published). Fix
-        # the token and re-run to bump the tap.
-        continue-on-error: true
+        # Pushes with a deploy key that can write to borghei/homebrew-tap and
+        # nothing else (secret HOMEBREW_TAP_DEPLOY_KEY; public half is a
+        # read-write deploy key on the tap). No personal access token, so there
+        # is nothing to expire. A failure here is real and fails the job: the
+        # binaries have already published, so fix the cause and re-run this
+        # workflow by hand with the tag (workflow_dispatch).
         env:
           TAG: ${{ inputs.tag }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -euo pipefail
           VERSION="${TAG#v}"
           echo "Bumping borghei/tap ink formula to ${VERSION}"
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/borghei/homebrew-tap.git" tap
+          if [ -z "$TAP_DEPLOY_KEY" ]; then
+            echo "::error::HOMEBREW_TAP_DEPLOY_KEY secret is not set; cannot bump the tap."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_deploy_key
+          chmod 600 ~/.ssh/tap_deploy_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_deploy_key -o IdentitiesOnly=yes"
+
+          git clone git@github.com:borghei/homebrew-tap.git tap
           F=tap/Formula/ink.rb
 
           # Bump the version field and the version embedded in every download URL.
@@ -59,6 +70,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if git diff --quiet; then
+            # Still prove the key can write, so a broken key is found now and
+            # not at the next release.
+            git push --dry-run origin HEAD
             echo "Formula already up to date — nothing to push."
             exit 0
           fi
