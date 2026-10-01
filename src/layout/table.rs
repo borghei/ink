@@ -531,6 +531,16 @@ fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
             _ => {}
         }
     }
+    if buf.contains('\n') {
+        // A break opens a new line only between content: a trailing or
+        // leading `<br>`, or `<br><br>`, must not add an empty row line
+        // (paragraphs drop a trailing break the same way).
+        buf = buf
+            .split('\n')
+            .filter(|seg| !seg.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
     buf
 }
 
@@ -542,6 +552,36 @@ mod tests {
     // input — the transposed layout aligns values on that guarantee. The
     // emoji inputs are the regression: per-char width accounting returned a
     // 41-column label for a 27-column slot.
+    /// The body cells of the first table in `src`.
+    fn body_cells(src: &str) -> Vec<Vec<String>> {
+        let arena = comrak::Arena::new();
+        let root = comrak::parse_document(&arena, src, &crate::parser::options());
+        let table = root
+            .descendants()
+            .find(|n| matches!(n.data.borrow().value, NodeValue::Table(_)))
+            .unwrap();
+        extract_table_data(table).1
+    }
+
+    #[test]
+    fn breaks_at_a_cell_edge_or_doubled_add_no_empty_lines() {
+        let head = "| a | b |\n|---|---|\n";
+        for (row, want) in [
+            ("| step one<br>step two<br> | ok |", "step one\nstep two"),
+            ("| <br>step one<br>step two | ok |", "step one\nstep two"),
+            ("| one<br><br>two | ok |", "one\ntwo"),
+            ("| one<br> <br/><BR>two<br><br> | ok |", "one\ntwo"),
+            ("| <br> | ok |", ""),
+            ("| one<br>two | ok |", "one\ntwo"),
+        ] {
+            let cells = body_cells(&format!("{head}{row}\n"));
+            assert_eq!(cells[0][0], want, "{row}");
+            // The row is exactly as tall as its content.
+            let lines = &wrap_row(&cells[0], &[20, 4])[0];
+            assert_eq!(lines.len(), want.split('\n').count().max(1), "{row}");
+        }
+    }
+
     #[test]
     fn fit_label_is_always_exact_width() {
         let inputs = [
