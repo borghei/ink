@@ -460,3 +460,107 @@ fn ascii_mode_reader_and_overlays_write_only_7_bit_bytes() {
     assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
     assert!(s.output.is_ascii(), "non-ASCII output: {text}");
 }
+
+type Marks = std::rc::Rc<std::cell::RefCell<Vec<usize>>>;
+
+/// Once the reader is up, types each step 400 ms apart, then quits (`q`,
+/// repeated until it takes). `marks` records how much output there was when
+/// each step went out, so a test can tell what was drawn before and after.
+fn type_steps(steps: Vec<Vec<u8>>, marks: Marks) -> impl FnMut(&[u8], Duration) -> Option<Vec<u8>> {
+    let mut up_at = None;
+    let mut sent = 0;
+    let mut last_q = Duration::ZERO;
+    move |out, t| {
+        if up_at.is_none() && contains(out, b"\x1b[?1049h") {
+            up_at = Some(t);
+        }
+        let due = up_at? + Duration::from_millis(700 + 400 * sent as u64);
+        if t < due {
+            return None;
+        }
+        if sent < steps.len() {
+            sent += 1;
+            marks.borrow_mut().push(out.len());
+            return Some(steps[sent - 1].clone());
+        }
+        if t > last_q + Duration::from_millis(500) {
+            last_q = t;
+            return Some(b"q".to_vec());
+        }
+        None
+    }
+}
+
+/// A document whose first line links to a heading far below the first
+/// screen. On the 100x30 test terminal the link text "go to target" is drawn
+/// on row 2, columns 15-26 (1-based).
+fn long_doc_with_anchor_link() -> tempfile::NamedTempFile {
+    let mut doc = String::from("Start here: [go to target](#target-heading) then more.\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+    }
+    doc.push_str("## Target heading\n\nXYZZY ARRIVED\n");
+    let file = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
+    std::fs::write(file.path(), doc).unwrap();
+    file
+}
+
+fn reader_args(path: &std::path::Path) -> Vec<String> {
+    [
+        "--color=never",
+        "--theme",
+        "dark",
+        "--image-protocol",
+        "halfblocks",
+        "--no-images",
+        path.to_str().unwrap(),
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[test]
+fn the_toc_takes_focus_filters_and_jumps() {
+    let doc = long_doc_with_anchor_link();
+    let marks = Marks::default();
+    let steps = vec![b"o".to_vec(), b"/targ".to_vec(), b"\r".to_vec()];
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(&args, &[], type_steps(steps, Marks::clone(&marks)));
+    let marks = marks.borrow();
+    assert_eq!(marks.len(), 3, "steps not all sent");
+    let before = &s.output[..marks[2]];
+    let after = &s.output[marks[2]..];
+    // Focused: the sidebar opened and its key reminder (the filtering one,
+    // after `/`) replaced the status bar.
+    let text = String::from_utf8_lossy(before);
+    assert!(text.contains("Contents"), "sidebar did not open");
+    assert!(text.contains("to filter"), "no TOC key reminder");
+    // The cursor is reverse video, which reads without colour.
+    assert!(contains(before, b"7m"), "no reverse-video cursor");
+    assert!(!contains(before, b"ARRIVED"));
+    // Enter jumped to the heading.
+    assert!(contains(after, b"ARRIVED"), "did not jump");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+}
+
+#[test]
+fn the_focused_toc_writes_only_7_bit_bytes_in_ascii_mode() {
+    let fixture = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/ascii.md");
+    let mut args = reader_args(std::path::Path::new(fixture));
+    args.insert(0, "--ascii".into());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    // Focus, fold the first heading, filter, clear the filter.
+    let steps = vec![
+        b"o".to_vec(),
+        b"h".to_vec(),
+        b"/a".to_vec(),
+        b"\x1b".to_vec(),
+    ];
+    let s = run_in_pty(&args, &[], type_steps(steps, Marks::default()));
+    let text = String::from_utf8_lossy(&s.output);
+    assert!(text.contains("Contents") && text.contains("fold"), "{text}");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    assert!(s.output.is_ascii(), "non-ASCII output: {text}");
+}

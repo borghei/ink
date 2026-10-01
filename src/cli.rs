@@ -794,6 +794,7 @@ fn print_keybindings() {
             NextTab => "next_tab",
             PrevTab => "prev_tab",
             ToggleToc => "toggle_toc",
+            TocFocus => "toc_focus",
             Search => "search",
             ThemePicker => "theme_picker",
             FollowLink => "follow_link",

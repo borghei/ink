@@ -373,6 +373,9 @@ fn run_inner(
     let mut flash: Option<(String, Instant)> = None;
     // Where the document was last drawn, for translating mouse coordinates.
     let mut doc_rect = Rect::new(0, 0, 0, 0);
+    // Where the TOC's heading list was last drawn (empty when hidden), for
+    // clicks and wheel scrolls over the sidebar.
+    let mut toc_rect = Rect::new(0, 0, 0, 0);
     // Bumped on every theme change so tabs know their cached layout is stale.
     let mut theme_gen: u32 = 0;
 
@@ -490,6 +493,10 @@ fn run_inner(
                             .saturating_sub(viewport_height as usize);
                         new_tab.scroll_offset = scroll.min(new_max);
                         new_tab.toc.visible = tabs[active_tab].toc.visible;
+                        new_tab
+                            .toc
+                            .inherit(std::mem::take(&mut tabs[active_tab].toc.nav));
+                        new_tab.toc.update_selection(new_tab.scroll_offset);
                         tabs[active_tab] = new_tab;
                         search.update_matches(&tabs[active_tab].lowered);
                         if file_missing {
@@ -531,6 +538,12 @@ fn run_inner(
                 flash = None;
                 dirty = true;
             }
+        }
+
+        // The heading list sits under the sidebar's title row.
+        let toc_rows = viewport_height.saturating_sub(1) as usize;
+        if tabs[active_tab].toc.visible {
+            tabs[active_tab].toc.follow(toc_rows);
         }
 
         let tab = &tabs[active_tab];
@@ -625,8 +638,9 @@ fn run_inner(
                 };
 
                 if let Some(toc_area) = toc_area {
-                    render::render_toc(frame, toc_area, &tab.toc.headings, tab.toc.selected, &t);
+                    render::render_toc(frame, toc_area, &tab.toc, &t);
                 }
+                toc_rect = toc_area.map_or(Rect::default(), render::toc_list_area);
 
                 // Remembered for the next mouse event: screen coordinates only
                 // mean something relative to where the document was drawn.
@@ -731,6 +745,13 @@ fn run_inner(
                     render::render_flash_bar(frame, bottom_bar_area, msg, &t);
                 } else if search.active {
                     render::render_search_bar(frame, bottom_bar_area, &search, &t);
+                } else if tab.toc.nav.focused {
+                    render::render_toc_bar(
+                        frame,
+                        bottom_bar_area,
+                        tab.toc.nav.filter.is_some(),
+                        &t,
+                    );
                 } else {
                     render::render_bottom_bar(
                         frame,
@@ -755,6 +776,12 @@ fn run_inner(
             input::InputMode::LinkHint
         } else if visual_mode {
             input::InputMode::Visual
+        } else if tabs[active_tab].toc.nav.focused && !help_open && !theme_picker_open {
+            if tabs[active_tab].toc.nav.filter.is_some() {
+                input::InputMode::TocFilter
+            } else {
+                input::InputMode::Toc
+            }
         } else if args.slides && !theme_picker_open && !help_open {
             input::InputMode::Slides
         } else {
@@ -763,6 +790,27 @@ fn run_inner(
         if let Some(action) = input::poll_action(Duration::from_millis(50), input_mode) {
             // Any recognized action changes state → redraw on the next iteration.
             dirty = true;
+
+            // The wheel scrolls what is under the pointer: the sidebar, or
+            // (as an ordinary scroll) the document.
+            let action = match action {
+                Action::WheelUp(col, row) | Action::WheelDown(col, row)
+                    if toc_rect.contains(Position::new(col, row))
+                        && !help_open
+                        && !theme_picker_open =>
+                {
+                    let delta = if matches!(action, Action::WheelUp(..)) {
+                        -3
+                    } else {
+                        3
+                    };
+                    tabs[active_tab].toc.scroll_by(delta, toc_rows);
+                    continue;
+                }
+                Action::WheelUp(..) => Action::ScrollUp(3),
+                Action::WheelDown(..) => Action::ScrollDown(3),
+                other => other,
+            };
 
             // Help overlay is modal: any key closes it.
             if help_open {
@@ -951,6 +999,16 @@ fn run_inner(
                 continue;
             }
 
+            // The focused sidebar takes its own keys; anything else (mouse,
+            // resize, wheel) falls through to the ordinary handling below.
+            if let Action::Toc(key) = action {
+                let tab = &mut tabs[active_tab];
+                if let Some(i) = tab.toc.handle(key, toc_rows) {
+                    jump_to_heading(tab, &mut nav, i, viewport_height as usize);
+                }
+                continue;
+            }
+
             // A confirmed search shows highlighted matches; the first Esc/q
             // dismisses them (vim/less convention) rather than quitting.
             if action == Action::ExitApp && !search.matches.is_empty() {
@@ -1065,6 +1123,25 @@ fn run_inner(
                 }
 
                 // TOC
+                Action::TocFocus => {
+                    let width = terminal.size()?.width;
+                    let tab = &mut tabs[active_tab];
+                    if tab.toc.headings.is_empty() {
+                        flash = Some(("no headings in this document".into(), Instant::now()));
+                    } else if width <= 40 {
+                        flash = Some((
+                            "window too narrow for the table of contents".into(),
+                            Instant::now(),
+                        ));
+                    } else {
+                        if !tab.toc.visible {
+                            tab.toc.toggle();
+                            rebuild_tab(tab, &args, width, theme_gen, graphics);
+                        }
+                        tab.toc.update_selection(tab.scroll_offset);
+                        tab.toc.focus();
+                    }
+                }
                 Action::ToggleToc => {
                     tabs[active_tab].toc.toggle();
                     rebuild_tab(
@@ -1283,7 +1360,16 @@ fn run_inner(
                 // Mouse selection. Only reachable when ink holds the mouse;
                 // with `mouse_capture = false` these events never arrive and
                 // the terminal's own selection keeps working.
+                // A click on a sidebar row jumps to that heading.
+                Action::MouseDown(col, row) if toc_rect.contains(Position::new(col, row)) => {
+                    let tab = &mut tabs[active_tab];
+                    tab.toc.leave();
+                    if let Some(i) = tab.toc.heading_at((row - toc_rect.y) as usize) {
+                        jump_to_heading(tab, &mut nav, i, viewport_height as usize);
+                    }
+                }
                 Action::MouseDown(col, row) => {
+                    tabs[active_tab].toc.leave();
                     if let Some(pos) = screen_to_doc(doc_rect, &tabs[active_tab], col, row) {
                         let clicks = match last_click {
                             Some((at, c, r, n))
@@ -1392,6 +1478,21 @@ fn screen_to_doc(area: Rect, tab: &Tab, col: u16, row: u16) -> Option<Pos> {
     // right half of a wide character selects that character.
     let col = selection::snap_col(&tab.plain[line], (col - area.x) as usize);
     Some(Pos::new(line, col))
+}
+
+/// Scroll to heading `i` of the TOC, framed the way `n`/`N` frame a heading,
+/// and record where the reader was so `[` comes back.
+fn jump_to_heading(tab: &mut Tab, nav: &mut NavHistory, i: usize, viewport: usize) {
+    let Some(h) = tab.toc.headings.get(i) else {
+        return;
+    };
+    let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
+    let line = h.line_index.saturating_sub(1).min(max_scroll);
+    if line != tab.scroll_offset {
+        nav.record(NavEntry::of(tab));
+        tab.scroll_offset = line;
+    }
+    tab.toc.update_selection(line);
 }
 
 /// The markdown source of the section the viewport currently starts in, plus a
@@ -1759,15 +1860,18 @@ fn rebuild_tab(
     let filename = tab.filename.clone();
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
+    let toc_nav = std::mem::take(&mut tab.toc.nav);
     let mtime = tab.mtime;
     let width = effective_width(term_width, toc_visible);
     *tab = build_tab(source, &filename, args, width, gen, graphics);
+    tab.toc.inherit(toc_nav);
     // Same source as before, so the same snapshot time.
     tab.mtime = mtime;
     // Clamp: the new layout may have far fewer lines (e.g. after widening) —
     // an unclamped stale offset blanked the viewport and panicked link-mode.
     tab.scroll_offset = scroll.min(tab.ratatui_lines.len().saturating_sub(1));
     tab.toc.visible = toc_visible;
+    tab.toc.update_selection(tab.scroll_offset);
 }
 
 /// Refresh a tab only if it was laid out for a different width or theme.

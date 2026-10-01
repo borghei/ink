@@ -73,10 +73,19 @@ pub enum Action {
     /// Inside the link-hint overlay: copy the URL instead of opening it.
     HintCopyToggle,
 
+    /// Move keyboard focus into the table of contents (opening it).
+    TocFocus,
+    /// A key for the focused table of contents.
+    Toc(crate::toc::TocKey),
+
     /// Mouse press / drag / release at a (column, row) on screen.
     MouseDown(u16, u16),
     MouseDrag(u16, u16),
     MouseUp(u16, u16),
+    /// Mouse wheel at a (column, row): the reader scrolls whatever is under
+    /// the pointer (the document, or the TOC sidebar).
+    WheelUp(u16, u16),
+    WheelDown(u16, u16),
 
     None,
 }
@@ -94,6 +103,10 @@ pub enum InputMode {
     Slides,
     /// Visual selection — motions move the cursor, `y` copies.
     Visual,
+    /// The table of contents has focus — motions move its cursor.
+    Toc,
+    /// Typing a filter into the focused table of contents.
+    TocFilter,
 }
 
 /// Process-wide resolved keymap. Initialized once at startup via `init_keymap`.
@@ -176,6 +189,7 @@ pub fn keymap_summary() -> Vec<(&'static str, Vec<String>)> {
         "next / prev heading",
         "search",
         "table of contents",
+        "focus contents",
         "follow link",
         "link hints",
         "select text",
@@ -207,6 +221,7 @@ fn action_label(a: &Action) -> &'static str {
         Action::NextHeading | Action::PrevHeading => "next / prev heading",
         Action::Search => "search",
         Action::ToggleToc => "table of contents",
+        Action::TocFocus => "focus contents",
         Action::FollowLink => "follow link",
         Action::LinkMode => "link hints",
         Action::SelectMode | Action::SelectLineMode => "select text",
@@ -374,6 +389,8 @@ fn map_event(event: Event, mode: InputMode) -> Action {
             InputMode::LinkHint => map_link_hint_key(key),
             InputMode::Slides => map_slides_key(key),
             InputMode::Visual => map_visual_key(key),
+            InputMode::Toc => map_toc_key(key),
+            InputMode::TocFilter => map_toc_filter_key(key),
             InputMode::Normal => map_key(key),
         },
         Event::Mouse(mouse) => map_mouse(mouse),
@@ -424,6 +441,74 @@ fn map_visual_key(key: KeyEvent) -> Action {
         KeyCode::Char('G') => Action::SelDocEnd,
         KeyCode::Char(' ') | KeyCode::PageDown => Action::SelPageDown,
         KeyCode::PageUp => Action::SelPageUp,
+        _ => Action::None,
+    }
+}
+
+/// Keys while the table of contents has focus.
+///
+/// Fixed, like visual mode: a small vim-shaped table plus arrows. The
+/// configured `toc_focus` key (and `toggle_toc`, which closes the sidebar)
+/// still work here so the key that came in also goes out.
+fn map_toc_key(key: KeyEvent) -> Action {
+    use crate::toc::TocKey as T;
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        let fixed = match key.code {
+            KeyCode::Char('c') => Some(T::Leave),
+            KeyCode::Char('d') | KeyCode::Char('f') => Some(T::PageDown),
+            KeyCode::Char('u') | KeyCode::Char('b') => Some(T::PageUp),
+            _ => None,
+        };
+        if let Some(k) = fixed {
+            return Action::Toc(k);
+        }
+    } else {
+        let fixed = match key.code {
+            KeyCode::Char('j') | KeyCode::Down => Some(T::Down),
+            KeyCode::Char('k') | KeyCode::Up => Some(T::Up),
+            KeyCode::Char('g') | KeyCode::Home => Some(T::First),
+            KeyCode::Char('G') | KeyCode::End => Some(T::Last),
+            KeyCode::PageDown | KeyCode::Char(' ') => Some(T::PageDown),
+            KeyCode::PageUp => Some(T::PageUp),
+            KeyCode::Enter => Some(T::Jump),
+            KeyCode::Esc | KeyCode::Char('q') => Some(T::Leave),
+            KeyCode::Char('/') => Some(T::StartFilter),
+            KeyCode::Char('h') | KeyCode::Left => Some(T::Collapse),
+            KeyCode::Char('l') | KeyCode::Right => Some(T::Expand),
+            _ => None,
+        };
+        if let Some(k) = fixed {
+            return Action::Toc(k);
+        }
+    }
+    let kb = normalize_event(key);
+    match KEYMAP.get().and_then(|km| km.singles.get(&kb)) {
+        Some(Action::TocFocus) => Action::Toc(T::Leave),
+        Some(Action::ToggleToc) => Action::ToggleToc,
+        Some(Action::Help) => Action::Help,
+        _ => Action::None,
+    }
+}
+
+/// Keys while typing a TOC filter: text goes into the filter, arrows move,
+/// Enter jumps, Esc clears.
+fn map_toc_filter_key(key: KeyEvent) -> Action {
+    use crate::toc::TocKey as T;
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        return match key.code {
+            KeyCode::Char('c') => Action::Toc(T::ClearFilter),
+            _ => Action::None,
+        };
+    }
+    match key.code {
+        KeyCode::Esc => Action::Toc(T::ClearFilter),
+        KeyCode::Enter => Action::Toc(T::Jump),
+        KeyCode::Backspace => Action::Toc(T::FilterBack),
+        KeyCode::Down => Action::Toc(T::Down),
+        KeyCode::Up => Action::Toc(T::Up),
+        KeyCode::PageDown => Action::Toc(T::PageDown),
+        KeyCode::PageUp => Action::Toc(T::PageUp),
+        KeyCode::Char(c) => Action::Toc(T::FilterChar(c)),
         _ => Action::None,
     }
 }
@@ -517,8 +602,8 @@ fn normalize_event(key: KeyEvent) -> (KeyCode, KeyModifiers) {
 fn map_mouse(mouse: MouseEvent) -> Action {
     use crossterm::event::MouseButton;
     match mouse.kind {
-        MouseEventKind::ScrollUp => Action::ScrollUp(3),
-        MouseEventKind::ScrollDown => Action::ScrollDown(3),
+        MouseEventKind::ScrollUp => Action::WheelUp(mouse.column, mouse.row),
+        MouseEventKind::ScrollDown => Action::WheelDown(mouse.column, mouse.row),
         MouseEventKind::Down(MouseButton::Left) => Action::MouseDown(mouse.column, mouse.row),
         MouseEventKind::Drag(MouseButton::Left) => Action::MouseDrag(mouse.column, mouse.row),
         MouseEventKind::Up(MouseButton::Left) => Action::MouseUp(mouse.column, mouse.row),
@@ -555,10 +640,94 @@ mod tests {
             InputMode::LinkHint,
             InputMode::Slides,
             InputMode::Visual,
+            InputMode::Toc,
+            InputMode::TocFilter,
         ] {
             let ev = Event::Key(key(KeyEventKind::Release));
             assert_eq!(map_event(ev, mode), Action::None);
         }
+    }
+
+    fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    #[test]
+    fn the_focused_toc_has_its_own_motions() {
+        use crate::toc::TocKey as T;
+        let none = KeyModifiers::NONE;
+        let cases = [
+            (KeyCode::Char('j'), none, T::Down),
+            (KeyCode::Up, none, T::Up),
+            (KeyCode::Char('G'), KeyModifiers::SHIFT, T::Last),
+            (KeyCode::Char('d'), KeyModifiers::CONTROL, T::PageDown),
+            (KeyCode::PageUp, none, T::PageUp),
+            (KeyCode::Enter, none, T::Jump),
+            (KeyCode::Esc, none, T::Leave),
+            (KeyCode::Char('/'), none, T::StartFilter),
+            (KeyCode::Char('h'), none, T::Collapse),
+            (KeyCode::Right, none, T::Expand),
+        ];
+        for (code, mods, want) in cases {
+            assert_eq!(
+                map_toc_key(press(code, mods)),
+                Action::Toc(want),
+                "{code:?}"
+            );
+        }
+        // While filtering, letters are text, not motions.
+        assert_eq!(
+            map_toc_filter_key(press(KeyCode::Char('j'), none)),
+            Action::Toc(T::FilterChar('j'))
+        );
+        assert_eq!(
+            map_toc_filter_key(press(KeyCode::Esc, none)),
+            Action::Toc(T::ClearFilter)
+        );
+        assert_eq!(
+            map_toc_filter_key(press(KeyCode::Enter, none)),
+            Action::Toc(T::Jump)
+        );
+    }
+
+    #[test]
+    fn toc_focus_is_bound_and_rebindable() {
+        use crate::input::keymap::parse_key;
+        for preset in [preset::DEFAULT, preset::EMACS] {
+            let (km, warnings) = build_keymap(preset, None);
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(
+                km.singles.get(&parse_key("o").unwrap()),
+                Some(&Action::TocFocus)
+            );
+        }
+        let overrides = HashMap::from([("toc_focus".to_string(), vec!["ctrl-o".to_string()])]);
+        let (km, warnings) = build_keymap(preset::DEFAULT, Some(&overrides));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            km.singles.get(&parse_key("ctrl-o").unwrap()),
+            Some(&Action::TocFocus)
+        );
+        assert_eq!(km.singles.get(&parse_key("o").unwrap()), None);
+    }
+
+    #[test]
+    fn the_wheel_reports_where_the_pointer_is() {
+        use crossterm::event::MouseEvent;
+        let wheel = |kind| MouseEvent {
+            kind,
+            column: 7,
+            row: 3,
+            modifiers: KeyModifiers::NONE,
+        };
+        assert_eq!(
+            map_mouse(wheel(MouseEventKind::ScrollUp)),
+            Action::WheelUp(7, 3)
+        );
+        assert_eq!(
+            map_mouse(wheel(MouseEventKind::ScrollDown)),
+            Action::WheelDown(7, 3)
+        );
     }
 
     /// Bytes as crossterm decodes them into key events (`ESC x` → Alt-x,

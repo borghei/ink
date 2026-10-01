@@ -115,6 +115,7 @@ pub fn action_from_id(id: &str) -> Option<Action> {
         "next_tab" => Action::NextTab,
         "prev_tab" => Action::PrevTab,
         "toggle_toc" => Action::ToggleToc,
+        "toc_focus" => Action::TocFocus,
         "search" => Action::Search,
         "theme_picker" => Action::ThemePicker,
         "follow_link" => Action::FollowLink,
