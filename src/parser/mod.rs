@@ -40,6 +40,9 @@ pub fn options() -> Options<'static> {
     opts.extension.header_ids = Some(String::new());
     opts.extension.math_dollars = true;
     opts.extension.shortcodes = true;
+    // `[[target]]` / `[[target|label]]`, parsed where inline markdown is
+    // (never inside code or raw HTML); see `crate::wikilink`.
+    opts.extension.wikilinks_title_after_pipe = true;
     opts.parse.smart = true;
     opts
 }

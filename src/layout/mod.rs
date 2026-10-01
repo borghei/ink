@@ -1438,6 +1438,18 @@ fn collect_inlines<'a>(
                 collect_inlines(child, ctx, spans, &style, depth + 1);
                 continue;
             }
+            NodeValue::WikiLink(wl) => {
+                let target = wl.url.trim();
+                let style = SpanStyle {
+                    fg: Some(ctx.theme.colors.link.clone()),
+                    underline: true,
+                    link_url: (!target.is_empty()).then(|| crate::wikilink::resolve_target(target)),
+                    ..parent_style.clone()
+                };
+                drop(data);
+                collect_inlines(child, ctx, spans, &style, depth + 1);
+                continue;
+            }
             NodeValue::Image(img) => {
                 let alt = collect_child_text(child);
                 let alt_display = if alt.is_empty() { img.url.clone() } else { alt };
