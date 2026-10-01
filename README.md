@@ -206,7 +206,7 @@ the reader and the file browser.
   `w`/`b` (word), `0`/`$` (line ends), `g`/`G` (document ends), `Ctrl+d`/`Ctrl+u` (half page).
   **`y`** copies and exits; `Esc` cancels.
 - **Drag with the mouse** to select, release to copy. Double-click takes the word, triple-click the
-  line.
+  line. A single click on a link follows it instead (see below).
 - **`c`** labels every code block on screen — press its letter to copy the block's *raw* source: no
   borders, no line numbers, no syntax-highlighting escapes.
 - **`Y`** copies the markdown source of the section you are reading (heading included, down to the
@@ -225,6 +225,8 @@ they select what you can see. Reach for `c` and `Y` when you want the source ins
 
 Press `f` to label every link on screen with a letter; the popup lists each link's text next to its URL, so you can tell which is which. Press that letter to open web and mail links in your browser, or to follow a relative `.md` link or `#heading` anchor right inside ink (`[` goes back).
 
+Clicking works too: a plain click on a link (press and release without moving) does exactly what its letter would. Dragging across a link still selects it. With `--no-mouse` ink leaves clicks to your terminal, which opens links its own way (usually Cmd- or Ctrl-click).
+
 ### Help overlay
 
 Press `?` any time for a popup listing every active keybinding — including your own overrides.
@@ -232,6 +234,8 @@ Press `?` any time for a popup listing every active keybinding — including you
 ### Table of contents
 
 Press `t` to toggle a sidebar showing every heading in the document. Tracks your position as you scroll.
+
+Press `o` to move into it (it opens if it was closed). `j`/`k` or the arrows move, `g`/`G` go to the first and last heading, `Ctrl+d`/`Ctrl+u` page, and `Enter` jumps there — `[` brings you back. `h`/`l` fold and unfold a section's subheadings in the sidebar, and `/` filters the list as you type (every word you type must appear, case doesn't matter). `Esc` clears the filter; `Esc` again, or `o`, goes back to the document without moving. With the mouse, click a heading to jump to it; the wheel over the sidebar scrolls the sidebar, not the page.
 
 ### 8 built-in themes
 
@@ -314,7 +318,9 @@ ink diff old.md new.md
 | `v` / `V` | Select text — character-wise / line-wise (`y` copies, `Esc` cancels) |
 | `c` | Copy a code block by letter |
 | `Y` | Copy the current section as markdown |
+| `e` | Edit the file in `$VISUAL` / `$EDITOR` (opens at the heading you are reading, reloads when you quit the editor) |
 | `t` | Toggle table of contents |
+| `o` | Focus the table of contents (`j`/`k` move, `Enter` jumps, `h`/`l` fold, `/` filters, `Esc` returns) |
 | `T` | Theme picker (choice is saved to config) |
 | `?` | Help overlay |
 | `Enter` | Follow first visible link |
@@ -334,6 +340,8 @@ preset = "emacs"   # default | vim | emacs
 [keybindings.bindings]
 # Per-action overrides, applied on top of the preset.
 toggle_toc = ["ctrl-t"]
+toc_focus = ["ctrl-o"]
+edit = ["alt-e"]
 ```
 
 The **emacs** preset binds `Ctrl+N`/`Ctrl+P` (line nav), `Ctrl+V`/`Alt+V` (page nav), `Ctrl+A`/`Ctrl+E` (home/end), `Ctrl+S` (search), `Ctrl+F`/`Ctrl+B` (next/prev heading), and `Ctrl+X Ctrl+C` (chord exit).

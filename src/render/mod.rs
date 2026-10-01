@@ -510,31 +510,83 @@ pub fn render_search_bar(frame: &mut Frame, area: Rect, search: &SearchState, t:
     frame.render_widget(Paragraph::new(vec![line]), area);
 }
 
+/// The part of the TOC sidebar that lists headings: under the title row,
+/// left of the divider. Mouse rows are measured from its top.
+pub fn toc_list_area(area: Rect) -> Rect {
+    toc_block(Style::default(), Style::default(), String::new(), None).inner(area)
+}
+
+fn toc_block(
+    border: Style,
+    title_style: Style,
+    title: String,
+    bg: Option<Color>,
+) -> Block<'static> {
+    let mut block = Block::default()
+        .borders(Borders::RIGHT)
+        .border_set(plain_border())
+        .border_style(border)
+        .title(title)
+        .title_style(title_style);
+    if let Some(bg) = bg {
+        block = block.style(Style::default().bg(bg));
+    }
+    block
+}
+
 /// Render the table of contents sidebar.
-pub fn render_toc(
-    frame: &mut Frame,
-    area: Rect,
-    entries: &[crate::toc::TocEntry],
-    selected: usize,
-    t: &theme::Theme,
-) {
+///
+/// Unfocused, it marks the heading the document is scrolled to. Focused
+/// (`o`), the cursor row is drawn in reverse video across the full width,
+/// every heading with subheadings shows a fold marker, and the title is
+/// inverted too — so the state reads without colour and in ASCII mode.
+pub fn render_toc(frame: &mut Frame, area: Rect, toc: &crate::toc::TocState, t: &theme::Theme) {
+    use crate::toc::Fold;
+    let g = crate::glyphs::current();
     let active_color = theme::hex_to_color(&t.colors.toc_active);
     let inactive_color = theme::hex_to_color(&t.colors.toc_inactive);
     let border_color = theme::hex_to_color(&t.colors.table_border);
     let toc_bg = t.colors.bg.as_ref().map(|bg| theme::hex_to_color(bg));
+    let focused = toc.nav.focused;
 
-    let lines: Vec<Line<'static>> = entries
+    let list = toc_list_area(area);
+    let rows = toc.rows();
+    let highlight = toc.anchor_row();
+    let lines: Vec<Line<'static>> = rows
         .iter()
         .enumerate()
-        .map(|(i, entry)| {
+        .skip(toc.nav.top)
+        .take(list.height as usize)
+        .map(|(row, &i)| {
+            let entry = &toc.headings[i];
             let indent = "  ".repeat((entry.level as usize).saturating_sub(1));
-            let marker = if i == selected {
-                format!("{} ", crate::glyphs::current().pointer)
+            let current = Some(row) == highlight;
+            let fold = toc.fold(i);
+            let text = if focused {
+                let marker = match (fold, g.ascii) {
+                    (Fold::Leaf, _) => "  ",
+                    (Fold::Open, false) => "▾ ",
+                    (Fold::Closed, false) => "▸ ",
+                    (Fold::Open, true) => "- ",
+                    (Fold::Closed, true) => "+ ",
+                };
+                format!("{indent}{marker}{}", entry.text)
             } else {
-                "  ".to_string()
+                let marker = if current {
+                    format!("{} ", g.pointer)
+                } else {
+                    "  ".to_string()
+                };
+                // Unfocused, only a folded subtree is marked: the sidebar
+                // otherwise looks exactly as it always has.
+                let more = if fold == Fold::Closed {
+                    format!(" {}", g.ellipsis)
+                } else {
+                    String::new()
+                };
+                format!("{indent}{marker}{}{more}", entry.text)
             };
-            let text = format!("{indent}{marker}{}", entry.text);
-            let color = if i == selected {
+            let color = if current {
                 active_color
             } else {
                 inactive_color
@@ -543,28 +595,88 @@ pub fn render_toc(
             if let Some(bg) = toc_bg {
                 style = style.bg(bg);
             }
-            if i == selected {
+            if current {
                 style = style.add_modifier(Modifier::BOLD);
+            }
+            if current && focused {
+                // A full-width bar, so the cursor is unmistakable.
+                let width = unicode_width::UnicodeWidthStr::width(text.as_str());
+                let pad = (list.width as usize).saturating_sub(width);
+                let text = format!("{text}{}", " ".repeat(pad));
+                return Line::from(Span::styled(text, style.add_modifier(Modifier::REVERSED)));
             }
             Line::from(Span::styled(text, style))
         })
         .collect();
+    let lines = if lines.is_empty() && toc.nav.filter.is_some() {
+        vec![Line::from(Span::styled(
+            "  no matching headings",
+            Style::default().fg(inactive_color),
+        ))]
+    } else {
+        lines
+    };
 
-    let mut block = Block::default()
-        .borders(Borders::RIGHT)
-        .border_set(plain_border())
-        .border_style(Style::default().fg(border_color))
-        .title(" Contents ")
-        .title_style(
-            Style::default()
-                .fg(active_color)
-                .add_modifier(Modifier::BOLD),
-        );
-    if let Some(bg) = toc_bg {
-        block = block.style(Style::default().bg(bg));
+    let mut title_style = Style::default()
+        .fg(active_color)
+        .add_modifier(Modifier::BOLD);
+    let mut border_style = Style::default().fg(border_color);
+    let title = match &toc.nav.filter {
+        Some(q) => format!(" /{q}{} ", g.block),
+        None => " Contents ".to_string(),
+    };
+    if focused {
+        title_style = title_style.add_modifier(Modifier::REVERSED);
+        border_style = Style::default().fg(active_color);
     }
-
+    let block = toc_block(border_style, title_style, title, toc_bg);
     frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// The key reminder that replaces the bottom bar while the table of contents
+/// has focus.
+pub fn render_toc_bar(frame: &mut Frame, area: Rect, filtering: bool, t: &theme::Theme) {
+    let bg = theme::hex_to_color(&t.colors.status_bar_bg);
+    let fg = theme::hex_to_color(&t.colors.status_bar_fg);
+    let dim_fg = theme::hex_to_color(&t.colors.link_url);
+    let dot = crate::glyphs::current().dot;
+    let keys: &[(&str, &str)] = if filtering {
+        &[
+            ("type", "to filter"),
+            ("up/down", "move"),
+            ("Enter", "jump"),
+            ("Esc", "clear"),
+        ]
+    } else {
+        &[
+            ("j/k", "move"),
+            ("Enter", "jump"),
+            ("h/l", "fold"),
+            ("/", "filter"),
+            ("Esc", "back"),
+        ]
+    };
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    for (i, (key, desc)) in keys.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                format!(" {dot} "),
+                Style::default().fg(dim_fg).bg(bg),
+            ));
+        }
+        spans.push(Span::styled(
+            format!(" {key} "),
+            Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            desc.to_string(),
+            Style::default().fg(dim_fg).bg(bg),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(vec![Line::from(spans)]).style(Style::default().bg(bg)),
+        area,
+    );
 }
 
 /// Render the help overlay: a centered popup of keybindings.

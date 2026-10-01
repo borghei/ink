@@ -55,8 +55,10 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Keyboard link opening: press f to label on-screen links, then a letter to open web/mail links or follow a relative .md link
 - Help overlay: press ? for a popup of the active keybindings
 - Table of contents sidebar showing heading structure, tracks scroll position
+- Interactive TOC: o focuses it (opening it if closed); j/k/arrows move, g/G first/last, Ctrl+d/Ctrl+u page, Enter jumps (recorded in back/forward history), h/l fold subheadings, / filters headings as you type, Esc returns; click a heading to jump, the wheel over the sidebar scrolls it
 - Navigation history with back/forward ([ ] keys or Alt+Arrow)
-- Mouse wheel scrolling, plus drag-to-select (can be disabled via behavior.mouse_capture so the terminal handles clicks/selection instead)
+- e opens the current local file in $VISUAL / $EDITOR (fallback vi; notepad on Windows) at the line of the heading being read (+N for vi/vim/nvim/nano/emacs/kak/micro, --goto file:N for VS Code/Codium/Cursor, file:N for subl/zed/hx), then reloads it and keeps the position; stdin and URL documents cannot be edited
+- Mouse wheel scrolling, click a link to follow it (same path as f: browser for web/mail, in-app for .md and #anchor), plus drag-to-select (can be disabled via behavior.mouse_capture so the terminal handles clicks/selection instead)
 - Event-driven redraw (no CPU when idle) and virtualized rendering for large documents
 - Responsive to terminal resizing; shows a message instead of breaking on very small terminals
 

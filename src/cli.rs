@@ -809,6 +809,7 @@ fn print_keybindings() {
             NextTab => "next_tab",
             PrevTab => "prev_tab",
             ToggleToc => "toggle_toc",
+            TocFocus => "toc_focus",
             Search => "search",
             ThemePicker => "theme_picker",
             FollowLink => "follow_link",
@@ -820,6 +821,7 @@ fn print_keybindings() {
             SelectLineMode => "select_line_mode",
             CopyCode => "copy_code",
             CopySection => "copy_section",
+            Edit => "edit",
             _ => "?",
         }
         .to_string()
