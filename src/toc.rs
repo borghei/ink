@@ -138,13 +138,16 @@ impl TocState {
     /// `n`/`N` and TOC jumps put it, under its blank spacing line, and the
     /// sidebar used to mark the heading before it.
     pub fn update_selection(&mut self, current_line: usize) {
-        for (i, entry) in self.headings.iter().enumerate().rev() {
-            if entry.line_index <= current_line + 1 {
-                self.selected = i;
-                return;
-            }
-        }
-        self.selected = 0;
+        self.selected = self.current_heading(current_line).unwrap_or(0);
+    }
+
+    /// The heading a viewport whose top is `line` is in: the last one at or
+    /// above it, one on its second row included (see
+    /// [`Self::update_selection`]). `None` above the first heading.
+    pub fn current_heading(&self, line: usize) -> Option<usize> {
+        self.headings
+            .iter()
+            .rposition(|entry| entry.line_index <= line + 1)
     }
 
     /// Does heading `i` have subheadings?

@@ -580,22 +580,16 @@ fn run_inner(
                         dirty = true;
                     }
                     Ok(new_source) => {
-                        let scroll = tabs[active_tab].scroll_offset;
-                        let term_w =
-                            effective_width(terminal.size()?.width, tabs[active_tab].toc.visible);
-                        let mut new_tab =
-                            build_tab(new_source, input, &args, term_w, theme_gen, graphics);
-                        let new_max = new_tab
-                            .ratatui_lines
-                            .len()
-                            .saturating_sub(viewport_height as usize);
-                        new_tab.scroll_offset = scroll.min(new_max);
-                        new_tab.toc.visible = tabs[active_tab].toc.visible;
-                        new_tab
-                            .toc
-                            .inherit(std::mem::take(&mut tabs[active_tab].toc.nav));
-                        new_tab.toc.update_selection(new_tab.scroll_offset);
-                        tabs[active_tab] = new_tab;
+                        reload_tab(
+                            &mut tabs[active_tab],
+                            new_source.into(),
+                            Anchor::KeepOffset,
+                            &args,
+                            terminal.size()?.width,
+                            viewport_height as usize,
+                            theme_gen,
+                            graphics,
+                        );
                         search.update_matches(&tabs[active_tab].lowered);
                         if file_missing {
                             file_missing = false;
@@ -622,6 +616,7 @@ fn run_inner(
                     &mut tabs[active_tab],
                     &args,
                     terminal.size()?.width,
+                    viewport_height as usize,
                     theme_gen,
                     graphics,
                 );
@@ -1000,6 +995,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             &args,
                             terminal.size()?.width,
+                            viewport_height as usize,
                             theme_gen,
                             graphics,
                         );
@@ -1016,6 +1012,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             &args,
                             terminal.size()?.width,
+                            viewport_height as usize,
                             theme_gen,
                             graphics,
                         );
@@ -1212,6 +1209,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             &args,
                             terminal.size()?.width,
+                            viewport_height as usize,
                             theme_gen,
                             graphics,
                         );
@@ -1225,6 +1223,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             &args,
                             terminal.size()?.width,
+                            viewport_height as usize,
                             theme_gen,
                             graphics,
                         );
@@ -1246,7 +1245,15 @@ fn run_inner(
                     } else {
                         if !tab.toc.visible {
                             tab.toc.toggle();
-                            rebuild_tab(tab, &args, width, theme_gen, graphics);
+                            rebuild_tab(
+                                tab,
+                                &args,
+                                width,
+                                viewport_height as usize,
+                                theme_gen,
+                                graphics,
+                            );
+                            search.update_matches(&tab.lowered);
                         }
                         tab.toc.update_selection(tab.scroll_offset);
                         tab.toc.focus();
@@ -1258,9 +1265,11 @@ fn run_inner(
                         &mut tabs[active_tab],
                         &args,
                         terminal.size()?.width,
+                        viewport_height as usize,
                         theme_gen,
                         graphics,
                     );
+                    search.update_matches(&tabs[active_tab].lowered);
                 }
 
                 // Help overlay
@@ -1333,6 +1342,7 @@ fn run_inner(
                         &mut tabs[active_tab],
                         &args,
                         terminal.size()?.width,
+                        viewport_height as usize,
                         theme_gen,
                         graphics,
                     );
@@ -1348,6 +1358,7 @@ fn run_inner(
                         &mut tabs[active_tab],
                         &args,
                         terminal.size()?.width,
+                        viewport_height as usize,
                         theme_gen,
                         graphics,
                     );
@@ -1647,12 +1658,8 @@ fn not_editable(tab: &Tab) -> Option<String> {
 /// The heading the viewport is in: the last one at or above its top (one
 /// on the second row counts, as for the TOC), with its index.
 fn viewport_heading(tab: &Tab) -> Option<(usize, &crate::toc::TocEntry)> {
-    tab.toc
-        .headings
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, h)| h.line_index <= tab.scroll_offset + 1)
+    let i = tab.toc.current_heading(tab.scroll_offset)?;
+    Some((i, &tab.toc.headings[i]))
 }
 
 /// The 1-based line of the file to open the editor at, for the top of the
@@ -1789,23 +1796,66 @@ fn reload_after_edit(
 ) -> Result<(), String> {
     let src = std::fs::read_to_string(&tab.filename)
         .map_err(|e| format!("cannot reload {}: {e}", short_name(&tab.filename)))?;
-    let anchor = viewport_heading(tab).map(|(i, h)| {
-        let nth = tab.toc.headings[..i]
-            .iter()
-            .filter(|o| o.text == h.text)
-            .count();
-        (
-            h.text.clone(),
-            nth,
-            tab.scroll_offset as isize - h.line_index as isize,
-        )
-    });
+    reload_tab(
+        tab,
+        src.into(),
+        Anchor::Heading,
+        args,
+        term_width,
+        viewport,
+        gen,
+        graphics,
+    );
+    Ok(())
+}
+
+/// Where [`reload_tab`] puts the reader in the new layout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Anchor {
+    /// The same line offset (`--watch`, a re-layout of the same source).
+    KeepOffset,
+    /// The same heading (by text and occurrence) at the same distance below
+    /// it, else the same offset (after `e`: lines may have been added above).
+    Heading,
+}
+
+/// Lay `tab` out again from `source`: the one way a tab is rebuilt, for a
+/// re-layout (`rebuild_tab`), `--watch` and a reload after `e`. Keeps the
+/// sidebar's visibility and interaction state, places the reader by
+/// `anchor`, clamps the offset like every scroll does (the last screen
+/// full: `len - viewport`, not below 0), and re-selects the current heading.
+/// The caller refreshes search matches, which live outside the tab.
+#[allow(clippy::too_many_arguments)]
+fn reload_tab(
+    tab: &mut Tab,
+    source: Arc<str>,
+    anchor: Anchor,
+    args: &Args,
+    term_width: u16,
+    viewport: usize,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) {
+    let heading = (anchor == Anchor::Heading)
+        .then(|| viewport_heading(tab))
+        .flatten()
+        .map(|(i, h)| {
+            let nth = tab.toc.headings[..i]
+                .iter()
+                .filter(|o| o.text == h.text)
+                .count();
+            (
+                h.text.clone(),
+                nth,
+                tab.scroll_offset as isize - h.line_index as isize,
+            )
+        });
     let scroll = tab.scroll_offset;
     let toc_visible = tab.toc.visible;
     let toc_nav = std::mem::take(&mut tab.toc.nav);
     let filename = tab.filename.clone();
     *tab = build_tab(
-        src,
+        source,
         &filename,
         args,
         effective_width(term_width, toc_visible),
@@ -1814,8 +1864,7 @@ fn reload_after_edit(
     );
     tab.toc.visible = toc_visible;
     tab.toc.inherit(toc_nav);
-    let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
-    let same_heading = anchor.and_then(|(text, nth, delta)| {
+    let same_heading = heading.and_then(|(text, nth, delta)| {
         let h = tab
             .toc
             .headings
@@ -1824,9 +1873,9 @@ fn reload_after_edit(
             .nth(nth)?;
         Some((h.line_index as isize + delta).max(0) as usize)
     });
+    let max_scroll = tab.ratatui_lines.len().saturating_sub(viewport);
     tab.scroll_offset = same_heading.unwrap_or(scroll).min(max_scroll);
     tab.toc.update_selection(tab.scroll_offset);
-    Ok(())
 }
 
 /// The link under a document position, if any: the `link_url` of the span
@@ -2244,25 +2293,27 @@ fn rebuild_tab(
     tab: &mut Tab,
     args: &Args,
     term_width: u16,
+    viewport: usize,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
-    let source = Arc::clone(&tab.source);
-    let filename = tab.filename.clone();
-    let scroll = tab.scroll_offset;
-    let toc_visible = tab.toc.visible;
-    let toc_nav = std::mem::take(&mut tab.toc.nav);
     let mtime = tab.mtime;
-    let width = effective_width(term_width, toc_visible);
-    *tab = build_tab(source, &filename, args, width, gen, graphics);
-    tab.toc.inherit(toc_nav);
+    let source = Arc::clone(&tab.source);
+    // Clamped: the new layout may have far fewer lines (e.g. after widening)
+    // — an unclamped stale offset blanked the viewport and panicked
+    // link-mode.
+    reload_tab(
+        tab,
+        source,
+        Anchor::KeepOffset,
+        args,
+        term_width,
+        viewport,
+        gen,
+        graphics,
+    );
     // Same source as before, so the same snapshot time.
     tab.mtime = mtime;
-    // Clamp: the new layout may have far fewer lines (e.g. after widening) —
-    // an unclamped stale offset blanked the viewport and panicked link-mode.
-    tab.scroll_offset = scroll.min(tab.ratatui_lines.len().saturating_sub(1));
-    tab.toc.visible = toc_visible;
-    tab.toc.update_selection(tab.scroll_offset);
 }
 
 /// Refresh a tab only if it was laid out for a different width or theme.
@@ -2270,11 +2321,12 @@ fn ensure_tab_current(
     tab: &mut Tab,
     args: &Args,
     term_width: u16,
+    viewport: usize,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
     if tab.built_width != effective_width(term_width, tab.toc.visible) || tab.built_gen != gen {
-        rebuild_tab(tab, args, term_width, gen, graphics);
+        rebuild_tab(tab, args, term_width, viewport, gen, graphics);
     }
 }
 
@@ -3024,6 +3076,89 @@ mod section_tests {
         assert!(not_editable(&t).is_some());
         t.mtime = Some(SystemTime::now());
         assert_eq!(not_editable(&t), None);
+    }
+
+    // The three ways a tab is rebuilt (re-layout, `--watch`, reload after
+    // `e`) share `reload_tab`: the same state carried over and one clamp
+    // rule. `rebuild_tab` used to clamp to `len - 1`, leaving a mostly
+    // empty screen where every scroll stops at `len - viewport`.
+    #[test]
+    fn every_reload_keeps_the_sidebar_and_clamps_to_a_full_last_screen() {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let args = test_args();
+        let doc: String = (0..30)
+            .map(|i| format!("## H{i}\n\nbody {i}\n\n"))
+            .collect();
+        let short: String = (0..5).map(|i| format!("## H{i}\n\nbody {i}\n\n")).collect();
+        let viewport = 10;
+        for anchor in [Anchor::KeepOffset, Anchor::Heading] {
+            let mut t = build_tab(doc.as_str(), "t.md", &args, 80, 0, &graphics);
+            t.toc.visible = true;
+            t.toc.focus();
+            t.scroll_offset = 100;
+            reload_tab(
+                &mut t,
+                short.as_str().into(),
+                anchor,
+                &args,
+                120,
+                viewport,
+                0,
+                &graphics,
+            );
+            assert!(t.toc.visible && t.toc.nav.focused, "{anchor:?}");
+            assert_eq!(t.built_width, effective_width(120, true), "{anchor:?}");
+            let len = t.ratatui_lines.len();
+            assert!(len > viewport);
+            assert_eq!(t.scroll_offset, len - viewport, "{anchor:?}");
+            assert_eq!(
+                t.toc.selected,
+                t.toc.current_heading(t.scroll_offset).unwrap()
+            );
+        }
+        // A re-layout of the same source keeps its snapshot time and clamps
+        // the same way.
+        let mut t = build_tab(doc.as_str(), "t.md", &args, 80, 0, &graphics);
+        let mtime = Some(SystemTime::UNIX_EPOCH);
+        t.mtime = mtime;
+        t.scroll_offset = usize::MAX / 2;
+        rebuild_tab(&mut t, &args, 200, viewport, 0, &graphics);
+        assert_eq!(t.mtime, mtime);
+        assert_eq!(t.scroll_offset, t.ratatui_lines.len() - viewport);
+        // Keep-offset ignores headings moving; re-anchoring follows them.
+        let shifted = format!("# New\n\nadded\n\n{doc}");
+        let at_h20 = |t: Tab| scrolled_to(t, "H20");
+        let mut keep = at_h20(build_tab(doc.as_str(), "t.md", &args, 80, 0, &graphics));
+        let before = keep.scroll_offset;
+        reload_tab(
+            &mut keep,
+            shifted.as_str().into(),
+            Anchor::KeepOffset,
+            &args,
+            80,
+            viewport,
+            0,
+            &graphics,
+        );
+        assert_eq!(keep.scroll_offset, before);
+        let mut follow = at_h20(build_tab(doc.as_str(), "t.md", &args, 80, 0, &graphics));
+        reload_tab(
+            &mut follow,
+            shifted.as_str().into(),
+            Anchor::Heading,
+            &args,
+            80,
+            viewport,
+            0,
+            &graphics,
+        );
+        let h20 = follow
+            .toc
+            .headings
+            .iter()
+            .find(|h| h.text == "H20")
+            .unwrap();
+        assert_eq!(follow.scroll_offset, h20.line_index - 1);
     }
 
     #[test]
