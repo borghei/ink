@@ -1,7 +1,10 @@
 //! Frontmatter: a YAML (`---`), TOML (`+++`) or JSON (`{`) metadata block at
 //! the very start of a document.
 //!
-//! By default it is stripped before parsing. With `--frontmatter` it is
+//! By default YAML and TOML frontmatter is stripped before parsing; a
+//! leading JSON object never is, since a document that opens with `{` (or
+//! *is* a JSON object) is far more often content than metadata. With
+//! `--frontmatter` YAML and TOML — and JSON followed by markdown — are
 //! replaced by a fenced block with the info string [`FENCE_INFO`], which the
 //! layout draws as a key/value box (see `layout::frontmatter`) instead of
 //! letting comrak read the metadata as markdown (a rule plus a setext
@@ -50,24 +53,31 @@ pub struct Frontmatter<'s> {
     pub rest: &'s str,
 }
 
-/// Find frontmatter at byte 0 of `source`.
+/// Find YAML or TOML frontmatter at byte 0 of `source` (never JSON: see
+/// [`split_shown`]).
 ///
 /// YAML and TOML are recognized only when the very first line is exactly the
 /// opening delimiter (`---` / `+++`; trailing whitespace ok), a later line is
 /// exactly a closing delimiter (`---` or `...` / `+++`), and at least one line
-/// in between looks like a key (`key:` / `key =`). JSON is recognized when
-/// the first line is exactly `{`, the object closes (braces counted outside
-/// strings) at the end of a line, and a line inside starts with `"key":`.
-/// Anything else — e.g. a document that merely opens with a thematic break,
-/// or an unterminated block — is not frontmatter.
+/// in between looks like a key (`key:` / `key =`). Anything else — e.g. a
+/// document that merely opens with a thematic break, or an unterminated
+/// block — is not frontmatter.
 pub fn split(source: &str) -> Option<Frontmatter<'_>> {
     split_delimited(source, "---", &["---", "..."], ':', Format::Yaml)
         .or_else(|| split_delimited(source, "+++", &["+++"], '=', Format::Toml))
-        .or_else(|| split_json(source))
 }
 
-/// Strip frontmatter from markdown source.
-/// Returns (frontmatter, remaining_content).
+/// Frontmatter to show with `--frontmatter`: [`split`], or a JSON object.
+/// JSON is recognized when the first line is exactly `{`, the object closes
+/// (braces counted outside strings) at the end of a line, a line inside
+/// starts with `"key":`, and non-blank markdown follows it — a file that is
+/// only a JSON object is a document, not metadata.
+pub fn split_shown(source: &str) -> Option<Frontmatter<'_>> {
+    split(source).or_else(|| split_json(source))
+}
+
+/// Strip YAML/TOML frontmatter from markdown source (JSON is never
+/// stripped). Returns (frontmatter, remaining_content).
 pub fn strip_frontmatter(source: &str) -> (Option<String>, String) {
     match split(source) {
         Some(fm) => (Some(fm.body.trim().to_string()), fm.rest.to_string()),
@@ -75,16 +85,21 @@ pub fn strip_frontmatter(source: &str) -> (Option<String>, String) {
     }
 }
 
-/// The markdown to parse for `source`: frontmatter stripped, or — when
-/// `show` — replaced by a fenced [`FENCE_INFO`] block the layout draws as a
-/// metadata box. Without frontmatter, `source` unchanged.
+/// The markdown to parse for `source`: YAML/TOML frontmatter stripped, or —
+/// when `show` — frontmatter (JSON included, see [`split_shown`]) replaced
+/// by a fenced [`FENCE_INFO`] block the layout draws as a metadata box.
+/// Without frontmatter, `source` unchanged. Hiding removes whole lines at
+/// the head only; a leading JSON object is left in place.
 pub fn prepare(source: &str, show: bool) -> String {
-    let Some(fm) = split(source) else {
+    if !show {
+        return match split(source) {
+            Some(fm) => fm.rest.to_string(),
+            None => source.to_string(),
+        };
+    }
+    let Some(fm) = split_shown(source) else {
         return source.to_string();
     };
-    if !show {
-        return fm.rest.to_string();
-    }
     // A fence longer than any backtick run inside, so no line of the
     // metadata can close it early.
     let longest = fm.body.split(|c| c != '`').map(str::len).max().unwrap_or(0);
@@ -176,10 +191,11 @@ fn split_json(source: &str) -> Option<Frontmatter<'_>> {
                                 .find('"')
                                 .is_some_and(|q| l[1 + q + 1..].trim_start().starts_with(':'))
                     });
-                    return has_key.then_some(Frontmatter {
+                    let rest = &source[line_end..];
+                    return (has_key && !rest.trim().is_empty()).then_some(Frontmatter {
                         format: Format::Json,
                         body,
-                        rest: &source[line_end..],
+                        rest,
                     });
                 }
             }
@@ -229,24 +245,42 @@ fn unquote(v: &str) -> String {
     v.to_string()
 }
 
-/// `[a, "b", c]` → `a, b, c` (one level; nested brackets kept raw).
+/// `[a, "b", c]` → `a, b, c` (one level; nested brackets kept raw). Only
+/// when the `[` that opens the value is closed by its very last `]`:
+/// `[text](url) and [more]` or `[draft] notes [v2]` are plain scalars.
 fn flow_list(v: &str) -> Option<String> {
-    let inner = v.trim().strip_prefix('[')?.strip_suffix(']')?;
-    let mut items = Vec::new();
-    let (mut depth, mut start, mut quote) = (0usize, 0usize, None::<char>);
+    let v = v.trim();
+    let inner = v.strip_prefix('[')?.strip_suffix(']')?;
+    // Item boundaries (top-level commas) and the outer pair, in one scan.
+    // A quote only opens a string at the start of an item, as in YAML and
+    // TOML, so the apostrophe in `[don't, x]` is just a character.
+    let mut cuts = Vec::new();
+    let (mut depth, mut quote, mut item_start) = (0usize, None::<char>, true);
     for (i, c) in inner.char_indices() {
         match (quote, c) {
             (Some(q), c) if c == q => quote = None,
             (Some(_), _) => {}
-            (None, '"' | '\'') => quote = Some(c),
+            (None, '"' | '\'') if item_start => quote = Some(c),
             (None, '[' | '{') => depth += 1,
-            (None, ']' | '}') => depth = depth.saturating_sub(1),
+            // Closing the outer `[` before the end: not one list.
+            (None, ']' | '}') => depth = depth.checked_sub(1)?,
             (None, ',') if depth == 0 => {
-                items.push(unquote(&inner[start..i]));
-                start = i + 1;
+                cuts.push(i);
+                item_start = true;
+                continue;
             }
             _ => {}
         }
+        item_start = item_start && c.is_whitespace();
+    }
+    if quote.is_some() || depth != 0 {
+        return None;
+    }
+    let mut items = Vec::new();
+    let mut start = 0;
+    for i in cuts {
+        items.push(unquote(&inner[start..i]));
+        start = i + 1;
     }
     let last = unquote(&inner[start..]);
     if !last.is_empty() || !items.is_empty() {
@@ -659,7 +693,8 @@ mod tests {
     #[test]
     fn json_frontmatter() {
         let source = "{\n  \"title\": \"Hi {there}\",\n  \"tags\": [\"a\", \"b\"]\n}\n# Content\n";
-        let fm = split(source).unwrap();
+        assert!(split(source).is_none(), "JSON is never hidden");
+        let fm = split_shown(source).unwrap();
         assert_eq!(fm.format, Format::Json);
         assert_eq!(fm.rest, "# Content\n");
         assert_eq!(
@@ -680,9 +715,24 @@ mod tests {
             "{\n\"a\": \"open string\n}\n",   // string runs off the line
             "{ \"a\": 1 }\n",                 // opener not alone on its line
             "{\n\"a\": [1, 2}\n]\n",          // mismatched
+            "{\n\"a\": 1\n}\n",               // nothing after: a JSON file
+            "{\n\"a\": 1\n}\n  \n\n",         // only blank lines after
         ] {
-            assert!(split(source).is_none(), "{source:?}");
+            assert!(split_shown(source).is_none(), "{source:?}");
         }
+    }
+
+    // Regression: a document that is a JSON object (or opens with a bare
+    // JSON sample) was stripped as frontmatter and printed nothing.
+    #[test]
+    fn json_is_never_stripped_by_default() {
+        for source in ["{\n  \"a\": 1\n}\n", "{\n  \"a\": 1\n}\n# Doc\n"] {
+            assert_eq!(prepare(source, false), source);
+            assert_eq!(strip_frontmatter(source), (None, source.to_string()));
+        }
+        // Shown: only when markdown follows the object.
+        assert_eq!(prepare("{\n  \"a\": 1\n}\n", true), "{\n  \"a\": 1\n}\n");
+        assert!(prepare("{\n  \"a\": 1\n}\n# Doc\n", true).starts_with("```ink-frontmatter json\n"));
     }
 
     #[test]
@@ -697,6 +747,41 @@ mod tests {
         assert_eq!(get("desc"), ["folded text"]);
         assert_eq!(get("url"), ["https://x.y/#frag"]);
         assert_eq!(get("note"), ["plain"]);
+    }
+
+    // Regression: any value starting with `[` and ending with `]` lost its
+    // outer brackets (`[text](url) and [more]` → `text](url) and [more`).
+    #[test]
+    fn only_one_outer_bracket_pair_is_a_flow_list() {
+        for (value, shown) in [
+            ("[a, b]", "a, b"),
+            ("[\"a, b\", c]", "a, b, c"),
+            ("[[1,2],[3]]", "[1,2], [3]"),
+            ("[]", ""),
+            ("[text](url) and [more]", "[text](url) and [more]"),
+            ("[draft] notes [v2]", "[draft] notes [v2]"),
+            ("[a] [b]", "[a] [b]"),
+            ("[\"]\", x]", "], x"),
+            ("[\"open, x]", "[\"open, x]"),
+        ] {
+            let body = format!("k: {value}\n");
+            assert_eq!(
+                entries(Format::Yaml, &body),
+                [("k".to_string(), vec![shown.to_string()])],
+                "yaml {value:?}"
+            );
+            let body = format!("k = {value}\n");
+            assert_eq!(
+                entries(Format::Toml, &body),
+                [("k".to_string(), vec![shown.to_string()])],
+                "toml {value:?}"
+            );
+        }
+        // YAML: a quote mid-word is a character, not a string.
+        assert_eq!(
+            entries(Format::Yaml, "k: [don't, x]\n"),
+            [("k".to_string(), vec!["don't, x".to_string()])]
+        );
     }
 
     #[test]
@@ -750,11 +835,11 @@ mod tests {
             }
         }
         let deep = format!(
-            "{{\n\"a\": {}{}\n}}\n",
+            "{{\n\"a\": {}{}\n}}\nBody\n",
             "[".repeat(10000),
             "]".repeat(10000)
         );
-        let fm = split(&deep).unwrap();
+        let fm = split_shown(&deep).unwrap();
         let _ = entries(fm.format, fm.body);
     }
 }

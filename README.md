@@ -144,7 +144,7 @@ ink --plain README.md
 
 Headings, bold, italic, strikethrough, links, blockquotes, lists, task lists, tables, footnotes, horizontal rules — all rendered with proper styling and colors.
 
-Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. Superscript `x^2^` (or `x<sup>2</sup>`) and subscript `H<sub>2</sub>O` come out as `x²` and `H₂O` (as `^(…)`/`_(…)` when a character has no Unicode form). Single and double tildes, `~x~` and `~~x~~`, strike through as on GitHub. `||spoilers||` stay hidden until you select or copy them, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
+Tables follow their column alignment (`:--`, `:-:`, `--:`), wide CJK and emoji cells included. HTML superscript `x<sup>2</sup>` and subscript `H<sub>2</sub>O` come out as `x²` and `H₂O` (`x^(2)` and `H_(2)O` with `--ascii`); when a character has no Unicode form, or the tag holds links or other markup (a `<sub>` caption), its content is shown as written. Carets and double bars in prose (`2^10`, `a||b`) are shown as written: `^x^` and `||x||` are not GitHub markdown. Single and double tildes, `~x~` and `~~x~~`, strike through as on GitHub, and definition lists (`Term` then `: definition`) get a bold term with its definitions indented underneath.
 
 ### Syntax-highlighted code blocks
 
@@ -170,7 +170,7 @@ Flowcharts (every node shape, link style and direction, with subgraphs drawn as 
 
 ### Frontmatter
 
-YAML (`---`), TOML (`+++`) and JSON (`{`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown.
+YAML (`---`) and TOML (`+++`) frontmatter is hidden by default. With `--frontmatter` (or `frontmatter = true`) it shows as a small key/value box at the top of the document — lists comma-joined, nested values as written — instead of being read as markdown. A leading JSON object (`{` on the first line) is never hidden: with `--frontmatter` it gets the same box when markdown follows it, and otherwise it is shown as document text.
 
 ### Wikilinks
 
@@ -263,7 +263,7 @@ ink --slides deck.md
 
 Point `ink --plain` at a long document on an interactive terminal and it pages the output through `$PAGER` (default `less -R`) — a drop-in markdown replacement for `cat`/`less`. Piped or redirected output prints straight through, so it stays friendly for scripts, fzf previews, and git. Use `--no-pager` to always print directly. When stdout is not a terminal, `ink file.md` behaves like `ink --plain file.md`, as `bat` and `glow` do.
 
-`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted. It always prints plain output.
+`--line-range` works like `bat`'s: `ink --line-range 40:80 README.md` renders only those lines of the markdown *source* (1-based, inclusive; also `40:`, `:80`, a single line, or several `--line-range`s). A range that cuts through a fenced code block keeps the block intact and highlighted, inside a blockquote too. It always prints plain output.
 
 Color follows `--color <auto|always|never>` (default `auto`). In `auto` mode, `--plain` and `ink diff` emit color and OSC 8 hyperlinks only when stdout is a terminal, so redirects, pipes, and `git` textconv get clean text. Precedence: an explicit `--color` wins; then `NO_COLOR` turns color off; then `CLICOLOR_FORCE=1` or `FORCE_COLOR` turns it on; then `TERM=dumb` turns it off; then the terminal check. Tools that display ANSI from a pipe need `--color=always`:
 

@@ -582,7 +582,7 @@ fn plain_keeps_256_colours_on_xterm_256color() {
 /// `tests/fixtures/ascii.md` is pure ASCII and covers headings (levels 1-3),
 /// nested lists, an ordered list, a task list, a table that wraps, a fenced
 /// code block, nested blockquotes, admonitions and callouts with titles,
-/// super/subscripts, a spoiler, a definition list, a rule and (shown with
+/// super/subscripts, a definition list, a rule and (shown with
 /// `--frontmatter`) YAML frontmatter, and inline and display math. In
 /// ASCII mode
 /// every byte ink prints for it must be 7-bit. Nothing is exempt for this
@@ -627,7 +627,8 @@ fn ascii_mode_extension_fallbacks() {
         "| (*) A custom title",
         "| (i) An Obsidian callout",
         "| Callout body.",
-        "Water is H_(2)O, e = mc^(2), struck, struck and ||a spoiler||.",
+        "Water is H_(2)O, e = mc^(2), struck, struck and 2^10 (a||b).",
+        "Caption: small print here.",
         "  Term\n    > Its definition.",
         // Math: the cleaned LaTeX source, never Unicode.
         "Math x^2 + \\alpha costs $5 and $10.",
