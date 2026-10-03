@@ -469,6 +469,29 @@ fn sequence_and_pie_wrap_when_narrow_and_keep_their_form_when_not() {
     );
 }
 
+// Issue #30: a label wider than 12 columns ("Documentation") pushed its bar
+// one column right of the others.
+#[test]
+fn pie_bars_share_a_start_column_whatever_the_label_length() {
+    let pie = "pie\n    title Weekly Time Allocation\n    \"Coding\" : 40\n    \"Code Review\" : 15\n    \"Meetings\" : 15\n    \"Planning\" : 10\n    \"Documentation\" : 10\n    \"Learning\" : 10";
+    for w in [40, 60, 150] {
+        let out = render(pie, w);
+        let starts: Vec<usize> = out
+            .lines()
+            .filter(|l| l.contains('█'))
+            .map(|l| text::width(&l[..l.find('█').unwrap()]))
+            .collect();
+        assert_eq!(starts.len(), 6, "{out}");
+        assert!(starts.iter().all(|&s| s == starts[0]), "width {w}:\n{out}");
+        assert!(out.contains("Documentation"), "width {w}:\n{out}");
+    }
+    // Too narrow for the full label: cut with an ellipsis, still aligned.
+    let out = render(pie, 24);
+    for line in out.lines() {
+        assert!(text::width(line) <= 24, "{line}");
+    }
+}
+
 #[test]
 fn corpus_is_big_enough() {
     assert!(corpus().len() >= 20, "{} diagrams", corpus().len());

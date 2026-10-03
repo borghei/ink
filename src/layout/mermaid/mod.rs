@@ -807,9 +807,22 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
         width,
     ));
 
-    // Render as horizontal bar chart
+    // Render as horizontal bar chart. The label column is as wide as the
+    // widest label (at least 12), so every bar starts in the same column; a
+    // fixed `{:>12}` let longer labels push their bar right. Labels are cut
+    // only when the chart is too narrow to hold them beside a 10-cell bar.
+    // "│  " + label + " " + bar + " 100.0%"
+    const FIXED: usize = 3 + 1 + 7;
+    let widest = slices
+        .iter()
+        .map(|(l, _)| text::width(l))
+        .max()
+        .unwrap_or(0);
+    let label_w = widest.max(12).min(width.saturating_sub(FIXED + 10)).max(1);
     // 30 cells at the usual 56-column chart width; less when narrower.
-    let max_bar = 30usize.min(width.saturating_sub(26)).max(1);
+    let max_bar = 30usize
+        .min(width.saturating_sub(FIXED + label_w + 1))
+        .max(1);
     for (i, (label, value)) in slices.iter().enumerate() {
         let pct = if total > 0.0 {
             value / total * 100.0
@@ -829,7 +842,11 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
             },
         });
         line.push(StyledSpan {
-            text: format!("{:>12} ", label),
+            text: {
+                let label = text::truncate(label, label_w);
+                let pad = label_w.saturating_sub(text::width(&label));
+                format!("{}{label} ", " ".repeat(pad))
+            },
             style: SpanStyle {
                 fg: Some(color.clone()),
                 bold: true,
