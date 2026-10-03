@@ -437,19 +437,22 @@ pub fn sgr_params((r, g, b): (u8, u8, u8), fg: bool, level: ColorLevel) -> Strin
     match level {
         ColorLevel::TrueColor => format!("{};2;{r};{g};{b}", if fg { 38 } else { 48 }),
         ColorLevel::Ansi256 => format!("{};5;{}", if fg { 38 } else { 48 }, rgb_to_256(r, g, b)),
-        ColorLevel::Ansi16 => {
-            let i = rgb_to_ansi16(r, g, b) as u16;
-            // 30–37 / 40–47 for the normal eight, 90–97 / 100–107 bright.
-            let base = match (fg, i < 8) {
-                (true, true) => 30,
-                (true, false) => 90 - 8,
-                (false, true) => 40,
-                (false, false) => 100 - 8,
-            };
-            (base + i).to_string()
-        }
+        ColorLevel::Ansi16 => ansi16_sgr(rgb_to_ansi16(r, g, b), fg).to_string(),
         ColorLevel::None => String::new(),
     }
+}
+
+/// The SGR parameter for ANSI colour `idx` (0–15) as foreground or
+/// background: 30–37 / 40–47 for the normal eight, 90–97 / 100–107 bright.
+pub fn ansi16_sgr(idx: u8, fg: bool) -> u16 {
+    let i = (idx & 15) as u16;
+    let base = match (fg, i < 8) {
+        (true, true) => 30,
+        (true, false) => 90 - 8,
+        (false, true) => 40,
+        (false, false) => 100 - 8,
+    };
+    base + i
 }
 
 /// Map an RGB triple to the nearest xterm-256 palette index.

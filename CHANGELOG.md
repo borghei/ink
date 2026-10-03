@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.11.0 — 2026-10-03
+
+### Added
+- **`terminal` theme: use your terminal's colours.** A new built-in theme drawn only with the terminal's 16 palette colours and its default foreground, with no background of its own and code highlighted from the palette as well — so ink matches your terminal scheme on light and dark backgrounds without switching themes. Custom themes can do the same: any color may be `ansi:<name>` (`ansi:blue`, `ansi:bright-black`, `ansi:0`–`ansi:15`) or `default`, and `code_theme = "ansi"` highlights code with the palette. (#29)
+
+### Fixed
+- **Pie chart labels longer than 12 columns no longer push their bar out of line.** The label column now fits the widest label, measured in display columns, and long labels are cut with `…` only when the chart is too narrow. (#30)
+
 ## 0.10.0 — 2026-10-01
 
 ### Added

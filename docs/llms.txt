@@ -16,7 +16,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 - Interactive TUI with multi-tab support, in-document search (n/N to cycle matches), keyboard link opening (press f), a help overlay (?), and a table of contents sidebar
 - Text selection and clipboard copy: v/V for character- and line-wise visual selection (y copies), mouse drag with double-click word and triple-click line, c to copy a code block's raw source, Y to copy the current section's markdown; delivered over OSC 52 (works across SSH/tmux) and a native helper (pbcopy/wl-copy/xclip/xsel/clip.exe)
 - File browser mode for exploring directories of markdown files
-- 8 built-in color themes with auto dark/light detection, live theme picker that saves to config, plus custom TOML themes
+- 9 built-in color themes (including terminal, which follows your terminal's palette) with auto dark/light detection, live theme picker that saves to config, plus custom TOML themes
 - Presentation mode (split on --- separators), navigate with arrows/space
 - Watch mode for live-reloading on file changes
 - Pager mode: `ink --plain` on a TTY pages long output through $PAGER (like bat); --line-range START:END renders only those source lines
@@ -39,7 +39,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh    # macOS / Linux (picks glibc or static musl build)
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex         # Windows PowerShell (x64 / ARM64)
 cargo install ink-md                                                             # from source (Rust 1.90+)
-INK_VERSION=v0.10.0 sh install.sh                                                # pin a version
+INK_VERSION=v0.11.0 sh install.sh                                                # pin a version
 
 Prebuilt: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (any distro), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives include the man page and completions. Verify with SHA256SUMS or `gh attestation verify <file> --repo borghei/ink`.
 

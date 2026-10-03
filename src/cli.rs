@@ -674,7 +674,7 @@ fn config_init(force: bool) -> Result<()> {
 pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # https://github.com/borghei/ink
 
-# Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized
+# Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized, terminal
 # theme = "catppuccin"
 
 # Max rendering width in columns (or use --width on the CLI)

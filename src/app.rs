@@ -182,6 +182,7 @@ const THEME_LIST: &[&str] = &[
     "tokyo-night",
     "gruvbox",
     "solarized",
+    "terminal",
 ];
 
 /// How the document viewer exited.

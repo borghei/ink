@@ -341,3 +341,55 @@ pub fn solarized() -> Theme {
         },
     }
 }
+
+/// Follows the terminal's own colour scheme: every colour is one of the 16
+/// palette slots or the terminal default, there is no background, and code
+/// is highlighted with the palette too (`code_theme = "ansi"`). One theme for
+/// light and dark terminals alike, like `bat --theme=ansi`.
+pub fn terminal() -> Theme {
+    let c = |s: &str| s.to_string();
+    Theme {
+        name: c("terminal"),
+        code_theme: c(crate::highlight::ANSI_CODE_THEME),
+        colors: ThemeColors {
+            bg: None,
+            fg: c("default"),
+            heading1: c("ansi:blue"),
+            heading2: c("ansi:cyan"),
+            heading3: c("ansi:magenta"),
+            heading4: c("ansi:green"),
+            heading5: c("ansi:yellow"),
+            heading6: c("ansi:red"),
+            bold: c("default"),
+            italic: c("default"),
+            strikethrough: c("ansi:bright-black"),
+            code_fg: c("ansi:yellow"),
+            code_bg: c("default"),
+            code_block_bg: c("default"),
+            link: c("ansi:blue"),
+            link_url: c("ansi:bright-black"),
+            blockquote_bar: c("ansi:bright-black"),
+            blockquote_text: c("default"),
+            list_bullet: c("ansi:cyan"),
+            list_number: c("ansi:cyan"),
+            table_border: c("ansi:bright-black"),
+            table_header: c("ansi:cyan"),
+            hr: c("ansi:bright-black"),
+            task_done: c("ansi:green"),
+            task_pending: c("ansi:bright-black"),
+            search_match: c("ansi:yellow"),
+            search_current: c("ansi:red"),
+            selection_bg: Some(c("ansi:blue")),
+            selection_fg: Some(c("ansi:bright-white")),
+            status_bar_bg: c("default"),
+            status_bar_fg: c("default"),
+            toc_active: c("ansi:blue"),
+            toc_inactive: c("ansi:bright-black"),
+            admonition_note: c("ansi:blue"),
+            admonition_warning: c("ansi:yellow"),
+            admonition_tip: c("ansi:green"),
+            admonition_important: c("ansi:magenta"),
+            admonition_caution: c("ansi:red"),
+        },
+    }
+}

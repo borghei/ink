@@ -4,7 +4,7 @@
 #   irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 #
 # Environment:
-#   $env:INK_VERSION = "v0.10.0"        install a specific release (default: latest)
+#   $env:INK_VERSION = "v0.11.0"        install a specific release (default: latest)
 #   $env:INK_INSTALL_DIR = "C:\tools"  install somewhere else
 #                                      (default: %LOCALAPPDATA%\Programs\ink)
 #
