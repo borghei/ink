@@ -558,11 +558,9 @@ fn collect_cell_text<'a>(node: &'a AstNode<'a>) -> String {
                 crate::glyphs::current().ascii,
             )),
             NodeValue::Text(t) => buf.push_str(t),
-            NodeValue::Code(c) => {
-                buf.push('`');
-                buf.push_str(&c.literal);
-                buf.push('`');
-            }
+            // Cells are plain text (bold and italic lose their markers too), so
+            // inline code shows its content, not the markdown backticks.
+            NodeValue::Code(c) => buf.push_str(&c.literal),
             NodeValue::SoftBreak => buf.push(' '),
             // A hard break makes the cell multi-line (`wrap_text` splits on it).
             NodeValue::LineBreak => buf.push('\n'),
@@ -600,6 +598,12 @@ mod tests {
             .find(|n| matches!(n.data.borrow().value, NodeValue::Table(_)))
             .unwrap();
         extract_table_data(table).1
+    }
+
+    #[test]
+    fn inline_code_in_a_cell_drops_its_backticks() {
+        let cells = body_cells("| a | b |\n|---|---|\n| `GET /sync` | x `y` z |\n");
+        assert_eq!(cells[0], vec!["GET /sync".to_string(), "x y z".to_string()]);
     }
 
     #[test]

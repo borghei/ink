@@ -17,14 +17,12 @@ pub fn parse(source: &str) -> ParsedDocument {
 }
 
 /// Parsed markdown document with extracted metadata.
-#[allow(dead_code)]
 pub struct ParsedDocument {
     pub source: String,
     pub headings: Vec<Heading>,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Heading {
     pub level: u8,
     pub text: String,

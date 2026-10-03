@@ -46,7 +46,6 @@ pub fn available_themes() -> Vec<String> {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Theme {
     pub name: String,
     pub colors: ThemeColors,
@@ -65,7 +64,6 @@ pub struct ThemeColors {
     pub heading5: String,
     pub heading6: String,
     pub bold: String,
-    #[allow(dead_code)]
     pub italic: String,
     pub strikethrough: String,
     pub code_fg: String,

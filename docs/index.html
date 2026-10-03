@@ -2,407 +2,1066 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ink — terminal markdown reader</title>
-  <meta name="description" content="A terminal markdown reader that actually looks good. Syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, presentation mode, and a bat-style pager. Fast, safe with untrusted files, and built in Rust.">
-  <meta name="keywords" content="markdown, terminal, reader, cli, tui, rust, syntax highlighting, mermaid, themes, pager, presentation, glow alternative">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ink: a terminal markdown reader</title>
+  <meta name="description" content="ink renders markdown in your terminal: code, tables, images, mermaid diagrams and math, in a fast reader with search, tabs and a table of contents. A single Rust binary for macOS, Linux and Windows.">
   <meta name="author" content="Amin Borghei">
+  <meta name="theme-color" content="#121110">
+  <link rel="canonical" href="https://borghei.github.io/ink/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
 
-  <!-- Open Graph -->
-  <meta property="og:title" content="ink — terminal markdown reader">
-  <meta property="og:description" content="A terminal markdown reader that actually looks good. Syntax highlighting, inline images, mermaid diagrams, themes, tabs, search, and more.">
+  <meta property="og:title" content="ink: a terminal markdown reader">
+  <meta property="og:description" content="Code, tables, images, diagrams and math, rendered in your terminal. One binary, no dependencies.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://borghei.github.io/ink/">
-  <meta property="og:image" content="https://raw.githubusercontent.com/borghei/ink/main/docs/assets/og-image.png">
-
-  <!-- Twitter Card -->
+  <meta property="og:image" content="https://borghei.github.io/ink/assets/og-image.png">
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="ink — terminal markdown reader">
-  <meta name="twitter:description" content="A terminal markdown reader that actually looks good.">
+  <meta name="twitter:title" content="ink: a terminal markdown reader">
+  <meta name="twitter:description" content="Code, tables, images, diagrams and math, rendered in your terminal.">
+  <meta name="twitter:image" content="https://borghei.github.io/ink/assets/og-image.png">
 
-  <!-- Structured Data for LLMs and Search -->
   <script type="application/ld+json">
   {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
     "name": "ink",
-    "description": "A terminal markdown reader that actually looks good. Renders markdown with syntax highlighting, inline images, mermaid diagrams, themes, multi-tab support, search, table of contents, presentation mode, math and emoji, and a bat-style pager. Sanitizes untrusted files and blocks remote image fetches by default. Built in Rust as a single binary with no runtime dependencies.",
+    "softwareVersion": "0.11.1",
+    "description": "A terminal markdown reader. Renders markdown with syntax highlighting, inline images, mermaid diagrams, math, themes, tabs, search, a table of contents, presentation mode and a bat-style pager. Sanitizes untrusted files and blocks remote image fetches by default. A single Rust binary with no runtime dependencies.",
     "applicationCategory": "DeveloperApplication",
     "operatingSystem": "macOS, Linux, Windows",
-    "url": "https://github.com/borghei/ink",
-    "author": {
-      "@type": "Person",
-      "name": "Amin Borghei",
-      "url": "https://github.com/borghei"
-    },
+    "url": "https://borghei.github.io/ink/",
+    "downloadUrl": "https://github.com/borghei/ink/releases",
+    "author": { "@type": "Person", "name": "Amin Borghei", "url": "https://github.com/borghei" },
     "license": "https://github.com/borghei/ink/blob/main/LICENSE",
     "programmingLanguage": "Rust",
-    "offers": {
-      "@type": "Offer",
-      "price": "0",
-      "priceCurrency": "USD"
-    }
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
   }
   </script>
 
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
 
+  <style>
     :root {
-      --bg: #0a0a0a;
-      --surface: #141414;
-      --border: #222;
-      --text: #e0e0e0;
-      --text-dim: #888;
-      --accent: #7eb8da;
-      --accent2: #c4a7e7;
+      color-scheme: dark;
+      --bg: #121110;
+      --bg-raised: #191816;
+      --bg-sunk: #0d0c0b;
+      --line: #2a2825;
+      --line-strong: #3a3733;
+      --text: #ecebe6;
+      --text-2: #b4b1a8;
+      --text-3: #8a877e;
+      --accent: #e2614a;
+      --accent-soft: rgba(226, 97, 74, 0.14);
+      --serif: "Instrument Serif", ui-serif, Georgia, serif;
+      --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+      --radius-lg: 14px;
+      --radius: 10px;
+      --radius-sm: 6px;
+      --shadow: 0 1px 0 rgba(255, 244, 230, 0.04) inset, 0 30px 80px -20px rgba(6, 4, 2, 0.75), 0 12px 24px -12px rgba(6, 4, 2, 0.6);
+      --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+      --max: 1200px;
+      --gutter: clamp(16px, 4vw, 40px);
     }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
 
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 0;
       background: var(--bg);
       color: var(--text);
-      line-height: 1.6;
+      font: 400 16px/1.6 var(--sans);
       -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
+      touch-action: manipulation;
+      overflow-x: hidden;
     }
 
-    .container {
-      max-width: 800px;
-      margin: 0 auto;
-      padding: 0 24px;
+    /* Paper grain over everything, never in the way. */
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 50;
+      opacity: 0.05;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
     }
 
-    /* Hero */
-    .hero {
-      text-align: center;
-      padding: 80px 0 40px;
+    img, video { display: block; max-width: 100%; height: auto; }
+    a { color: inherit; }
+    code, kbd, pre { font-family: var(--mono); }
+    ::selection { background: var(--accent); color: #fff; }
+
+    :focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 4px;
     }
 
-    .hero h1 {
-      font-size: 48px;
-      font-weight: 700;
-      letter-spacing: -1px;
-      margin-bottom: 12px;
-    }
-
-    .hero h1 span {
-      background: linear-gradient(135deg, var(--accent), var(--accent2));
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .hero p {
-      font-size: 20px;
-      color: var(--text-dim);
-      max-width: 500px;
-      margin: 0 auto 32px;
-    }
-
-    .hero-buttons {
-      display: flex;
-      gap: 12px;
-      justify-content: center;
-      flex-wrap: wrap;
-    }
-
-    .btn {
-      display: inline-block;
-      padding: 12px 28px;
-      border-radius: 8px;
-      font-size: 15px;
+    .skip {
+      position: absolute;
+      left: 16px;
+      top: -48px;
+      z-index: 100;
+      padding: 10px 14px;
+      background: var(--text);
+      color: var(--bg);
+      border-radius: var(--radius-sm);
       font-weight: 500;
       text-decoration: none;
-      transition: all 0.15s;
+      transition: transform 0.2s var(--ease);
+    }
+    .skip:focus { transform: translateY(64px); }
+
+    .wrap {
+      width: 100%;
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 var(--gutter);
     }
 
-    .btn-primary {
-      background: var(--accent);
-      color: #0a0a0a;
+    /* ---------- Nav ---------- */
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 40;
+      background: rgba(18, 17, 16, 0.78);
+      backdrop-filter: blur(12px) saturate(1.2);
+      -webkit-backdrop-filter: blur(12px) saturate(1.2);
+      border-bottom: 1px solid transparent;
+      transition: border-color 0.3s var(--ease);
     }
-
-    .btn-primary:hover {
-      opacity: 0.9;
-      transform: translateY(-1px);
+    .nav.scrolled { border-bottom-color: var(--line); }
+    .nav .wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      height: 64px;
     }
-
-    .btn-secondary {
-      background: var(--surface);
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      text-decoration: none;
+      font-family: var(--serif);
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -0.01em;
+    }
+    .brand svg { width: 26px; height: 26px; }
+    .nav ul {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .nav li a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 12px;
+      border-radius: var(--radius-sm);
+      color: var(--text-2);
+      text-decoration: none;
+      font-size: 14.5px;
+      font-weight: 500;
+      transition: color 0.2s var(--ease), background-color 0.2s var(--ease);
+    }
+    .nav li a:hover { color: var(--text); background: var(--bg-raised); }
+    .nav .gh {
+      gap: 8px;
       color: var(--text);
-      border: 1px solid var(--border);
+      border: 1px solid var(--line-strong);
+    }
+    .nav .gh small {
+      font: 500 12px var(--mono);
+      color: var(--text-3);
+    }
+    @media (max-width: 640px) {
+      .nav .hide-sm { display: none; }
     }
 
-    .btn-secondary:hover {
-      border-color: #444;
-      transform: translateY(-1px);
+    /* ---------- Hero ---------- */
+    .hero {
+      position: relative;
+      overflow-x: clip;
+      isolation: isolate;
+      padding: clamp(48px, 8vw, 104px) 0 clamp(56px, 8vw, 112px);
+    }
+    .hero::after {
+      /* A warm spill of light behind the terminal, off-center on purpose. */
+      content: "";
+      position: absolute;
+      right: -10%;
+      top: 8%;
+      width: 70%;
+      height: 80%;
+      background: radial-gradient(closest-side, rgba(226, 97, 74, 0.13), transparent 70%);
+      pointer-events: none;
+      z-index: -1;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 11fr) minmax(0, 13fr);
+      gap: clamp(32px, 5vw, 64px);
+      align-items: center;
+    }
+    @media (max-width: 960px) {
+      .hero-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+    .eyebrow {
+      display: inline-flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 22px;
+      font: 500 13px var(--mono);
+      color: var(--text-3);
+    }
+    .eyebrow a {
+      color: var(--accent);
+      text-decoration: none;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--accent-soft);
+      transition: background-color 0.2s var(--ease);
+    }
+    .eyebrow a:hover { background: rgba(226, 97, 74, 0.24); }
+    h1 {
+      margin: 0 0 22px;
+      font: 400 clamp(44px, 5.4vw, 74px)/0.98 var(--serif);
+      letter-spacing: -0.02em;
+      text-wrap: balance;
+    }
+    h1 em { color: var(--accent); }
+    .lede {
+      margin: 0 0 32px;
+      max-width: 34em;
+      font-size: clamp(17px, 1.5vw, 19px);
+      color: var(--text-2);
+      text-wrap: pretty;
     }
 
-    /* Demo GIF */
-    .demo {
-      margin: 48px 0;
-      text-align: center;
-    }
-
-    .demo img {
-      max-width: 100%;
-      border-radius: 12px;
-      border: 1px solid var(--border);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
-    }
-
-    /* Install */
+    /* Install widget */
     .install {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 24px 28px;
-      margin: 48px 0;
-      text-align: center;
+      max-width: 520px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--bg-sunk);
+      overflow: hidden;
+    }
+    .tabs {
+      display: flex;
+      gap: 2px;
+      padding: 6px 6px 0;
+      border-bottom: 1px solid var(--line);
+      overflow-x: auto;
+      scrollbar-width: none;
+    }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tabs button {
+      flex: none;
+      appearance: none;
+      border: 0;
+      background: none;
+      color: var(--text-3);
+      font: 500 13px var(--sans);
+      padding: 9px 12px 10px;
+      min-height: 36px;
+      border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+      cursor: pointer;
+      position: relative;
+      transition: color 0.2s var(--ease);
+    }
+    .tabs button:hover { color: var(--text); }
+    .tabs button[aria-selected="true"] { color: var(--text); }
+    .tabs button[aria-selected="true"]::after {
+      content: "";
+      position: absolute;
+      left: 12px;
+      right: 12px;
+      bottom: -1px;
+      height: 2px;
+      background: var(--accent);
+      border-radius: 2px;
+    }
+    .cmd {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 10px 14px 16px;
+    }
+    .cmd[hidden] { display: none; }
+    .cmd code {
+      flex: 1;
+      min-width: 0;
+      overflow-x: auto;
+      white-space: nowrap;
+      font-size: 14px;
+      color: var(--text);
+      scrollbar-width: thin;
+    }
+    .cmd code::before {
+      content: "$ ";
+      color: var(--text-3);
+    }
+    .cmd code.ps::before { content: "> "; }
+    .copy {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-sm);
+      background: var(--bg-raised);
+      color: var(--text-2);
+      font: 500 12.5px var(--sans);
+      cursor: pointer;
+      transition: color 0.2s var(--ease), border-color 0.2s var(--ease), transform 0.12s var(--ease);
+    }
+    .copy:hover { color: var(--text); border-color: var(--text-3); }
+    .copy:active { transform: scale(0.97); }
+    .copy svg { width: 14px; height: 14px; }
+    .install-more {
+      margin: 14px 0 0;
+      font-size: 14px;
+      color: var(--text-3);
+    }
+    .install-more a {
+      color: var(--text-2);
+      text-underline-offset: 3px;
+      text-decoration-color: var(--line-strong);
+      transition: color 0.2s var(--ease), text-decoration-color 0.2s var(--ease);
+    }
+    .install-more a:hover { color: var(--text); text-decoration-color: var(--accent); }
+
+    /* Terminal frame */
+    .term {
+      position: relative;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-lg);
+      background: #1e1e2e;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .term-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 36px;
+      padding: 0 14px;
+      background: #191826;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      font: 12px var(--mono);
+      color: #8b8aa6;
+    }
+    .term-bar i {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: #3a3950;
+    }
+    .term-bar span { margin-left: 10px; }
+    .term video, .term img { width: 100%; }
+    .hero .term { margin-right: calc(var(--gutter) * -0.5); }
+    @media (max-width: 960px) { .hero .term { margin-right: 0; } }
+    .pause {
+      position: absolute;
+      right: 12px;
+      bottom: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 50%;
+      background: rgba(13, 12, 11, 0.7);
+      color: var(--text);
+      cursor: pointer;
+      opacity: 0.75;
+      transition: opacity 0.2s var(--ease), transform 0.12s var(--ease);
+    }
+    .pause:hover { opacity: 1; }
+    .pause:active { transform: scale(0.94); }
+    .pause svg { width: 14px; height: 14px; }
+
+    /* Facts strip */
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      margin: 0;
+    }
+    .facts div {
+      padding: 22px 20px 24px;
+      border-left: 1px solid var(--line);
+    }
+    .facts div:first-child { border-left: 0; padding-left: 0; }
+    .facts dt {
+      font: 400 34px/1 var(--serif);
+      margin-bottom: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .facts dd { margin: 0; font-size: 14px; color: var(--text-3); }
+    @media (max-width: 760px) {
+      .facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .facts div:nth-child(3) { border-left: 0; padding-left: 0; }
+      .facts div:nth-child(n+3) { border-top: 1px solid var(--line); }
     }
 
-    .install code {
-      font-family: 'SF Mono', 'Fira Code', monospace;
-      font-size: 16px;
+    /* ---------- Feature rows ---------- */
+    section { scroll-margin-top: 80px; }
+    .section { padding: clamp(72px, 10vw, 136px) 0 0; }
+    .kicker {
+      margin: 0 0 14px;
+      font: 500 13px var(--mono);
       color: var(--accent);
     }
-
-    .install p {
-      color: var(--text-dim);
-      font-size: 13px;
-      margin-top: 8px;
+    h2 {
+      margin: 0 0 18px;
+      font: 400 clamp(36px, 4.4vw, 56px)/1.02 var(--serif);
+      letter-spacing: -0.015em;
+      text-wrap: balance;
     }
-
-    /* Features */
-    .features {
-      padding: 40px 0;
+    h3 { margin: 0 0 6px; font-size: 16px; font-weight: 600; letter-spacing: -0.005em; }
+    .copytext p {
+      margin: 0 0 16px;
+      max-width: 33em;
+      color: var(--text-2);
+      font-size: 17px;
+      text-wrap: pretty;
     }
-
-    .features h2 {
-      font-size: 28px;
-      font-weight: 600;
-      margin-bottom: 32px;
-      text-align: center;
+    .copytext p.kicker { margin: 0 0 14px; font: 500 13px var(--mono); color: var(--accent); }
+    .lede code, .copytext code, .rest code, .docs code {
+      white-space: nowrap;
+      font-size: 0.88em;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--bg-raised);
+      border: 1px solid var(--line);
+      color: var(--text);
     }
-
-    .feature-grid {
+    .row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-      gap: 16px;
+      grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
+      gap: clamp(32px, 6vw, 88px);
+      align-items: center;
     }
-
-    .feature {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
+    .row.flip { grid-template-columns: minmax(0, 7fr) minmax(0, 5fr); }
+    .row.flip .copytext { order: 2; }
+    @media (max-width: 960px) {
+      .row, .row.flip { grid-template-columns: minmax(0, 1fr); }
+      .row.flip .copytext { order: 0; }
     }
-
-    .feature h3 {
+    .points {
+      list-style: none;
+      margin: 24px 0 0;
+      padding: 0;
+      display: grid;
+      gap: 10px;
+    }
+    .points li {
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr);
+      gap: 12px;
+      align-items: baseline;
       font-size: 15px;
-      font-weight: 600;
-      margin-bottom: 6px;
+      color: var(--text-2);
     }
+    .points kbd, .keys kbd {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 26px;
+      height: 26px;
+      padding: 0 7px;
+      font-size: 13px;
+      color: var(--text);
+      background: var(--bg-raised);
+      border: 1px solid var(--line-strong);
+      border-bottom-width: 2px;
+      border-radius: 5px;
+    }
+    .points li > span:first-child { display: flex; gap: 4px; }
 
-    .feature p {
+    .shots { position: relative; }
+    .shots .term + .term {
+      position: absolute;
+      width: 58%;
+      right: -4%;
+      bottom: -14%;
+    }
+    @media (max-width: 960px) {
+      .shots .term + .term { position: relative; width: 100%; right: 0; bottom: 0; margin-top: 16px; }
+    }
+    .pair {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .pair figure { margin: 0; }
+    .pair figcaption {
+      margin-top: 8px;
+      font: 12.5px var(--mono);
+      color: var(--text-3);
+    }
+    .pair .term { border-radius: var(--radius); }
+    .light-term { background: #eff1f5; }
+    .light-term .term-bar { background: #e6e9ef; border-bottom-color: rgba(0, 0, 0, 0.06); color: #6c6f85; }
+    .light-term .term-bar i { background: #ccd0da; }
+
+    /* Shell transcript for the pager section */
+    .shell {
+      margin: 0;
+      padding: 22px 24px;
       font-size: 14px;
-      color: var(--text-dim);
-      line-height: 1.5;
+      line-height: 1.75;
+      color: #cdd6f4;
+      overflow-x: auto;
+      white-space: pre;
+    }
+    .shell .c { color: #7f849c; }
+    .shell .p { color: #a6e3a1; }
+    .shell .f { color: #89b4fa; }
+
+    /* ---------- Everything else ---------- */
+    .rest {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0;
+      margin: 40px 0 0;
+      border-top: 1px solid var(--line);
+    }
+    .rest div {
+      padding: 26px 28px 30px 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .rest div:not(:nth-child(3n+1)) { padding-left: 28px; border-left: 1px solid var(--line); }
+    .rest dt { font-weight: 600; margin-bottom: 6px; }
+    .rest dd { margin: 0; color: var(--text-3); font-size: 15px; text-wrap: pretty; }
+    @media (max-width: 900px) {
+      .rest { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .rest div:not(:nth-child(3n+1)) { padding-left: 0; border-left: 0; }
+      .rest div:nth-child(2n) { padding-left: 24px; border-left: 1px solid var(--line); }
+    }
+    @media (max-width: 560px) {
+      .rest { grid-template-columns: minmax(0, 1fr); }
+      .rest div:nth-child(2n) { padding-left: 0; border-left: 0; }
+      .rest div { padding-right: 0; }
     }
 
-    /* Comparison */
-    .comparison {
-      padding: 40px 0;
+    /* ---------- Keys ---------- */
+    .keys {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 26px;
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+      font-size: 14.5px;
+      color: var(--text-2);
     }
+    .keys li { display: inline-flex; align-items: center; gap: 10px; }
 
-    .comparison h2 {
-      font-size: 28px;
-      font-weight: 600;
-      margin-bottom: 24px;
-      text-align: center;
+    /* ---------- Comparison ---------- */
+    .table-wrap {
+      margin-top: 36px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
     }
-
     table {
       width: 100%;
+      min-width: 560px;
       border-collapse: collapse;
-      font-size: 14px;
+      font-size: 15px;
     }
-
-    th, td {
-      padding: 10px 14px;
-      text-align: left;
-      border-bottom: 1px solid var(--border);
+    caption { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    th, td { padding: 12px 18px; text-align: left; border-bottom: 1px solid var(--line); }
+    tbody tr:last-child th, tbody tr:last-child td { border-bottom: 0; }
+    thead th {
+      font: 500 13px var(--mono);
+      color: var(--text-3);
+      background: var(--bg-sunk);
     }
+    thead th.us { color: var(--accent); }
+    tbody th { font-weight: 400; color: var(--text-2); }
+    td { font-variant-numeric: tabular-nums; color: var(--text-3); }
+    td.us { color: var(--text); background: rgba(226, 97, 74, 0.05); font-weight: 500; }
+    td .y::before { content: "✓ "; color: var(--accent); }
+    td.us .y::before { content: "✓ "; }
+    td .n { color: #5d5a54; }
 
-    th {
-      color: var(--text-dim);
-      font-weight: 500;
-      font-size: 13px;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+    /* ---------- Docs ---------- */
+    .docs {
+      list-style: none;
+      margin: 36px 0 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0 48px;
+      border-top: 1px solid var(--line);
     }
-
-    td:first-child {
-      color: var(--text-dim);
-    }
-
-    .yes { color: var(--accent); }
-    .no { color: #555; }
-
-    /* Footer */
-    footer {
-      text-align: center;
-      padding: 48px 0;
-      color: var(--text-dim);
-      font-size: 14px;
-    }
-
-    footer a {
-      color: var(--accent);
+    @media (max-width: 760px) { .docs { grid-template-columns: minmax(0, 1fr); } }
+    .docs a {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 4px 16px;
+      padding: 20px 0;
+      border-bottom: 1px solid var(--line);
       text-decoration: none;
     }
-
-    footer a:hover { text-decoration: underline; }
-
-    @media (max-width: 600px) {
-      .hero { padding: 48px 0 24px; }
-      .hero h1 { font-size: 36px; }
-      .hero p { font-size: 17px; }
+    .docs strong { font-weight: 600; font-size: 17px; }
+    .docs span { grid-column: 1; color: var(--text-3); font-size: 15px; }
+    .docs svg {
+      grid-row: 1 / span 2;
+      grid-column: 2;
+      align-self: center;
+      width: 18px;
+      height: 18px;
+      color: var(--text-3);
+      transition: transform 0.25s var(--ease), color 0.25s var(--ease);
     }
+    .docs a:hover strong { color: var(--accent); }
+    .docs a:hover svg { transform: translateX(4px); color: var(--accent); }
+
+    /* ---------- Closing ---------- */
+    .closing {
+      margin-top: clamp(80px, 10vw, 136px);
+      padding: clamp(48px, 7vw, 88px) 0 clamp(56px, 8vw, 96px);
+      border-top: 1px solid var(--line);
+      background: radial-gradient(60% 120% at 15% 0%, rgba(226, 97, 74, 0.08), transparent 70%);
+    }
+    .closing h2 { max-width: 14em; }
+    .closing .install { margin-top: 28px; }
+
+    footer {
+      padding: 28px 0 40px;
+      border-top: 1px solid var(--line);
+      color: var(--text-3);
+      font-size: 14px;
+    }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 12px 28px; justify-content: space-between; }
+    footer ul { display: flex; flex-wrap: wrap; gap: 6px 20px; list-style: none; margin: 0; padding: 0; }
+    footer a { color: var(--text-2); text-decoration: none; transition: color 0.2s var(--ease); }
+    footer a:hover { color: var(--text); }
+
+    /* ---------- Reveal ---------- */
+    .reveal { opacity: 0; transform: translateY(18px); transition: opacity 0.7s var(--ease), transform 0.7s var(--ease); }
+    .reveal.in { opacity: 1; transform: none; }
+    .no-js .reveal { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce), print {
+      .reveal { opacity: 1; transform: none; transition: none; }
+    }
+
+    .sr { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
   </style>
 </head>
-<body>
+<body class="no-js">
+<a class="skip" href="#main">Skip to content</a>
 
-<div class="container">
-  <section class="hero">
-    <h1><span>ink</span></h1>
-    <p>A terminal markdown reader that actually looks good.</p>
-    <div class="hero-buttons">
-      <a href="https://github.com/borghei/ink" class="btn btn-primary">GitHub</a>
-      <a href="https://github.com/borghei/ink#install" class="btn btn-secondary">Install</a>
-    </div>
-  </section>
+<header class="nav" id="nav">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="ink home">
+      <svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 8c-8 11.5-15 20-15 28.5a15 15 0 0 0 30 0C47 28 40 19.5 32 8z" fill="#e2614a"/></svg>
+      ink
+    </a>
+    <nav aria-label="Main">
+      <ul>
+        <li class="hide-sm"><a href="#features">Features</a></li>
+        <li class="hide-sm"><a href="#docs">Docs</a></li>
+        <li class="hide-sm"><a href="https://github.com/borghei/ink/blob/main/CHANGELOG.md">Changelog</a></li>
+        <li><a class="gh" href="https://github.com/borghei/ink">GitHub <small>v0.11.1</small></a></li>
+      </ul>
+    </nav>
+  </div>
+</header>
 
-  <section class="demo">
-    <img src="https://raw.githubusercontent.com/borghei/ink/main/docs/assets/demo.gif" alt="ink terminal markdown reader demo">
-  </section>
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap hero-grid">
+      <div>
+        <p class="eyebrow">
+          <a href="https://github.com/borghei/ink/releases/tag/v0.11.0">New in 0.11: the terminal theme</a>
+          <span>macOS · Linux · Windows</span>
+        </p>
+        <h1 id="hero-title">Markdown, properly <em>typeset</em> in your terminal.</h1>
+        <p class="lede">ink renders code, tables, images, diagrams and math in a fast reader with search, tabs and a table of contents. It pages like <code>bat</code> when you pipe it. One binary, no dependencies.</p>
 
-  <section class="install">
-    <code>cargo install ink-md</code>
-    <p>Requires Rust. Or install with <code>brew install borghei/tap/ink</code>, the one-line <a href="https://github.com/borghei/ink#install" style="color: var(--accent);">install script</a>, or grab a binary from the <a href="https://github.com/borghei/ink/releases" style="color: var(--accent);">releases page</a>.</p>
-  </section>
+        <div class="install" data-install>
+          <div class="tabs" role="tablist" aria-label="Install method">
+            <button role="tab" id="t-sh" aria-controls="p-sh" aria-selected="true">Script</button>
+            <button role="tab" id="t-brew" aria-controls="p-brew" aria-selected="false" tabindex="-1">Homebrew</button>
+            <button role="tab" id="t-cargo" aria-controls="p-cargo" aria-selected="false" tabindex="-1">Cargo</button>
+            <button role="tab" id="t-win" aria-controls="p-win" aria-selected="false" tabindex="-1">Windows</button>
+          </div>
+          <div class="cmd" role="tabpanel" id="p-sh" aria-labelledby="t-sh">
+            <code>curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh</code>
+            <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+          </div>
+          <div class="cmd" role="tabpanel" id="p-brew" aria-labelledby="t-brew" hidden>
+            <code>brew tap borghei/tap &amp;&amp; brew trust borghei/tap &amp;&amp; brew install ink</code>
+            <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+          </div>
+          <div class="cmd" role="tabpanel" id="p-cargo" aria-labelledby="t-cargo" hidden>
+            <code>cargo install ink-md</code>
+            <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+          </div>
+          <div class="cmd" role="tabpanel" id="p-win" aria-labelledby="t-win" hidden>
+            <code class="ps">irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex</code>
+            <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+          </div>
+        </div>
+        <p class="install-more">Scoop, conda, mise, .deb, .rpm and prebuilt binaries: <a href="https://github.com/borghei/ink/blob/main/docs/install.md">every way to install</a>.</p>
+      </div>
 
-  <section class="features">
-    <h2>What it does</h2>
-    <div class="feature-grid">
-      <div class="feature">
-        <h3>Syntax highlighting</h3>
-        <p>Language-aware code block highlighting for every major language.</p>
-      </div>
-      <div class="feature">
-        <h3>Inline images</h3>
-        <p>Real pixels via Kitty / iTerm2 / Sixel where supported, Unicode half-blocks everywhere else.</p>
-      </div>
-      <div class="feature">
-        <h3>Mermaid diagrams</h3>
-        <p>Flowcharts, state, class and ER diagrams laid out as boxes and arrows, plus sequence, pie, Gantt and mindmaps.</p>
-      </div>
-      <div class="feature">
-        <h3>9 themes</h3>
-        <p>Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, Solarized, and Terminal, which follows your terminal's own palette. Or make your own.</p>
-      </div>
-      <div class="feature">
-        <h3>File browser</h3>
-        <p>Run <code>ink .</code> to browse and open markdown files in any directory.</p>
-      </div>
-      <div class="feature">
-        <h3>Multi-tab</h3>
-        <p>Open several files at once and switch between them with Tab.</p>
-      </div>
-      <div class="feature">
-        <h3>Search</h3>
-        <p>Full-text search with highlighted matches; cycle results with <code>n</code>/<code>N</code>.</p>
-      </div>
-      <div class="feature">
-        <h3>Table of contents</h3>
-        <p>Sidebar showing every heading. Press <code>o</code> to move through it, filter, fold, and jump.</p>
-      </div>
-      <div class="feature">
-        <h3>Select &amp; copy</h3>
-        <p><code>v</code>/<code>V</code> or a mouse drag selects text, <code>y</code> copies it. <code>c</code> copies a code block's raw source, <code>Y</code> the current section.</p>
-      </div>
-      <div class="feature">
-        <h3>Open links by keyboard</h3>
-        <p>Press <code>f</code> to label links, each listed with its text and URL, then a letter to open or follow them. Or just click one.</p>
-      </div>
-      <div class="feature">
-        <h3>Math &amp; emoji</h3>
-        <p>Renders <code>$math$</code> as Unicode text (Greek, fractions, roots, matrices) and resolves <code>:emoji:</code> shortcodes.</p>
-      </div>
-      <div class="feature">
-        <h3>Admonitions</h3>
-        <p>GitHub-style NOTE, TIP, WARNING, IMPORTANT, and CAUTION blocks.</p>
-      </div>
-      <div class="feature">
-        <h3>Wikilinks</h3>
-        <p><code>[[page]]</code> and <code>[[page|text]]</code> syntax for Obsidian vaults and wikis.</p>
-      </div>
-      <div class="feature">
-        <h3>Presentation mode</h3>
-        <p>Turn any markdown file into slides with <code>--slides</code>.</p>
-      </div>
-      <div class="feature">
-        <h3>Works as a pager</h3>
-        <p><code>ink --plain</code> pages long docs through <code>$PAGER</code>, like <code>bat</code>, and writes clean text when piped.</p>
-      </div>
-      <div class="feature">
-        <h3>Safe with untrusted files</h3>
-        <p>Strips terminal escape sequences and never phones home for remote images by default.</p>
-      </div>
-      <div class="feature">
-        <h3>Fast on big documents</h3>
-        <p>Virtualized rendering and zero idle CPU. 5,000-line files scroll without lag.</p>
-      </div>
-      <div class="feature">
-        <h3>Single binary</h3>
-        <p>Built in Rust. No runtime dependencies. Fast startup.</p>
+      <div class="term">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>ink showcase.md</span></div>
+        <video id="demo" autoplay muted loop playsinline preload="metadata" poster="assets/shot-reader.png" width="1200" height="720" aria-label="ink opening a markdown file, scrolling, showing the table of contents, searching and switching themes">
+          <source src="assets/demo.mp4" type="video/mp4">
+          <img src="assets/demo.gif" alt="ink opening a markdown file, scrolling, showing the table of contents, searching and switching themes" width="1200" height="720">
+        </video>
+        <button class="pause" type="button" id="pause" aria-label="Pause demo" aria-pressed="false">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>
+        </button>
       </div>
     </div>
   </section>
 
-  <section class="comparison">
-    <h2>How it compares</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>Feature</th>
-          <th>ink</th>
-          <th>glow</th>
-          <th>mdcat</th>
-          <th>frogmouth</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td>Interactive TUI</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td></tr>
-        <tr><td>Multi-tab</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Search</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Table of contents</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="yes">Yes</td></tr>
-        <tr><td>Inline images</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td><td class="no">No</td></tr>
-        <tr><td>Mermaid diagrams</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Wikilinks</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>File browser</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="yes">Yes</td></tr>
-        <tr><td>Themes</td><td class="yes">8</td><td class="no">2</td><td class="no">0</td><td class="no">0</td></tr>
-        <tr><td>Watch mode</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Presentation mode</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Pager mode</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td></tr>
-        <tr><td>Completions + man page</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="yes">Yes</td><td class="no">No</td></tr>
-        <tr><td>Math + emoji</td><td class="yes">Yes</td><td class="no">No</td><td class="no">No</td><td class="no">No</td></tr>
-      </tbody>
-    </table>
+  <div class="wrap">
+    <dl class="facts">
+      <div><dt>1</dt><dd>binary, nothing else to install</dd></div>
+      <div><dt>9</dt><dd>themes, plus any you write</dd></div>
+      <div><dt>9</dt><dd>prebuilt targets, Raspberry Pi included</dd></div>
+      <div><dt>0</dt><dd>network calls unless you ask</dd></div>
+    </dl>
+  </div>
+
+  <section class="section" id="features" aria-labelledby="f-diagrams">
+    <div class="wrap row">
+      <div class="copytext reveal">
+        <p class="kicker">Diagrams and math</p>
+        <h2 id="f-diagrams">Boxes, arrows and equations, drawn in text.</h2>
+        <p>Mermaid flowcharts, state, class and ER diagrams come out as real boxes and routed arrows, sized to your window. Gantt charts get a time axis, mindmaps a tree.</p>
+        <p>LaTeX turns into Unicode you can read: <code>\sqrt{b^2-4ac}</code> is <code>√(b² - 4ac)</code>. No browser, no plugins, no external tools.</p>
+      </div>
+      <div class="term reveal">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>mermaid flowchart</span></div>
+        <img src="assets/shot-mermaid.png" alt="A mermaid flowchart rendered by ink as boxes connected with arrows" width="1200" height="720" loading="lazy" decoding="async">
+      </div>
+    </div>
   </section>
 
-  <footer>
-    <p>Made by <a href="https://github.com/borghei">borghei</a> — who got tired of reading raw markdown like a caveman · <a href="https://github.com/borghei/ink">Source</a></p>
-  </footer>
-</div>
+  <section class="section" aria-labelledby="f-reading">
+    <div class="wrap row flip">
+      <div class="copytext reveal">
+        <p class="kicker">Built for long documents</p>
+        <h2 id="f-reading">Find your place, keep your place.</h2>
+        <p>A table of contents follows you as you scroll. Search highlights as you type. Every link on screen gets a letter, so you never reach for the mouse.</p>
+        <ul class="points">
+          <li><span><kbd>t</kbd><kbd>o</kbd></span><span>Show the contents, then filter, fold and jump</span></li>
+          <li><span><kbd>/</kbd><kbd>n</kbd></span><span>Search and step through matches</span></li>
+          <li><span><kbd>f</kbd></span><span>Open or follow any link by its letter</span></li>
+          <li><span><kbd>c</kbd><kbd>Y</kbd></span><span>Copy a code block or a whole section as markdown</span></li>
+          <li><span><kbd>e</kbd></span><span>Edit in <code>$EDITOR</code> at the section you're reading</span></li>
+        </ul>
+      </div>
+      <div class="term reveal">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>table of contents</span></div>
+        <img src="assets/shot-toc.png" alt="ink with the table of contents sidebar open next to the document" width="1200" height="720" loading="lazy" decoding="async">
+      </div>
+    </div>
+  </section>
 
+  <section class="section" aria-labelledby="f-themes">
+    <div class="wrap row">
+      <div class="copytext reveal">
+        <p class="kicker">Themes</p>
+        <h2 id="f-themes">Your colors, or nine of ours.</h2>
+        <p>Press <code>T</code> and every theme previews live. The new <code>terminal</code> theme borrows your terminal's own palette, so the same setting fits light and dark setups.</p>
+        <p>Writing your own takes one TOML file. Colors can be hex, palette slots like <code>ansi:blue</code>, or <code>default</code>.</p>
+      </div>
+      <div class="reveal">
+        <div class="term">
+          <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>theme picker</span></div>
+          <img src="assets/shot-themes.png" alt="The ink theme picker listing the nine built-in themes over a rendered document" width="1200" height="720" loading="lazy" decoding="async">
+        </div>
+        <div class="pair">
+          <figure>
+            <div class="term light-term">
+              <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+              <img src="assets/shot-terminal-light.png" alt="The terminal theme on a light terminal color scheme" width="1200" height="720" loading="lazy" decoding="async">
+            </div>
+            <figcaption>--theme terminal, light scheme</figcaption>
+          </figure>
+          <figure>
+            <div class="term">
+              <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+              <img src="assets/shot-terminal-dark.png" alt="The terminal theme on a dark terminal color scheme" width="1200" height="720" loading="lazy" decoding="async">
+            </div>
+            <figcaption>same setting, dark scheme</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="f-pager">
+    <div class="wrap row flip">
+      <div class="copytext reveal">
+        <p class="kicker">Pager mode</p>
+        <h2 id="f-pager">A pager when you pipe it.</h2>
+        <p><code>ink --plain</code> pages long files like <code>bat</code> and prints clean text into pipes, so it drops into fzf previews, git diffs and scripts.</p>
+        <p>Pull out just the lines you need with <code>--line-range</code>. Code blocks cut in half stay highlighted.</p>
+      </div>
+      <div class="term reveal">
+        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>zsh</span></div>
+<pre class="shell"><span class="c"># preview markdown in fzf</span>
+<span class="p">$</span> fzf --preview <span class="f">'ink --plain --color=always {}'</span>
+
+<span class="c"># readable markdown in git diffs</span>
+<span class="p">$</span> git config --global diff.markdown.textconv <span class="f">"ink --plain"</span>
+
+<span class="c"># just lines 40 to 80 of the source</span>
+<span class="p">$</span> ink --line-range 40:80 README.md
+
+<span class="c"># read a README straight from the web</span>
+<span class="p">$</span> ink https://raw.githubusercontent.com/borghei/ink/main/README.md</pre>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="f-rest">
+    <div class="wrap">
+      <p class="kicker">And the rest</p>
+      <h2 id="f-rest">The details you'd expect, and some you wouldn't.</h2>
+      <dl class="rest">
+        <div class="reveal"><dt>Inline images</dt><dd>Real pixels on Kitty, iTerm2, WezTerm, Ghostty and Sixel. Half-blocks everywhere else. SVG too.</dd></div>
+        <div class="reveal"><dt>Select and copy</dt><dd>Keyboard or mouse selection that knows where a code block ends. Works over SSH and tmux.</dd></div>
+        <div class="reveal"><dt>Admonitions</dt><dd>GitHub <code>[!NOTE]</code> blocks with icons, custom titles and Obsidian callouts.</dd></div>
+        <div class="reveal"><dt>Tabs and a file browser</dt><dd>Open several files at once, or run <code>ink .</code> and pick from a filterable list.</dd></div>
+        <div class="reveal"><dt>Watch mode</dt><dd>Re-renders within 100 ms of a save and keeps your scroll position.</dd></div>
+        <div class="reveal"><dt>Slides</dt><dd><code>ink --slides deck.md</code> splits on <code>---</code>. Arrow keys to move.</dd></div>
+        <div class="reveal"><dt>Frontmatter and wikilinks</dt><dd>YAML and TOML hidden or shown as a box. <code>[[page]]</code> links for Obsidian vaults.</dd></div>
+        <div class="reveal"><dt>Your keys</dt><dd>Vim-flavored by default, an emacs preset, and per-action overrides with chords.</dd></div>
+        <div class="reveal"><dt>Safe by default</dt><dd>Escape sequences are stripped and remote images stay off, so an untrusted file can't phone home.</dd></div>
+      </dl>
+
+      <ul class="keys" aria-label="Common keys">
+        <li><kbd>j</kbd><kbd>k</kbd> scroll</li>
+        <li><kbd>Space</kbd> page</li>
+        <li><kbd>/</kbd> search</li>
+        <li><kbd>t</kbd> contents</li>
+        <li><kbd>f</kbd> links</li>
+        <li><kbd>T</kbd> themes</li>
+        <li><kbd>?</kbd> every key</li>
+        <li><kbd>q</kbd> quit</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="section" id="compare" aria-labelledby="f-compare">
+    <div class="wrap">
+      <p class="kicker">Compared</p>
+      <h2 id="f-compare">How ink stacks up.</h2>
+      <div class="table-wrap reveal">
+        <table>
+          <caption>Feature comparison of ink, glow, mdcat and frogmouth</caption>
+          <thead>
+            <tr><th scope="col">Feature</th><th scope="col" class="us">ink</th><th scope="col">glow</th><th scope="col">mdcat</th><th scope="col">frogmouth</th></tr>
+          </thead>
+          <tbody>
+            <tr><th scope="row">Interactive reader</th><td class="us"><span class="y">Yes</span></td><td><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="y">Yes</span></td></tr>
+            <tr><th scope="row">Search in a document</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Table of contents</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="y">Yes</span></td></tr>
+            <tr><th scope="row">Tabs</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Inline images</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="y">Yes</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Mermaid diagrams</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Math and emoji</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Watch mode</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Presentation mode</th><td class="us"><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Pager mode</th><td class="us"><span class="y">Yes</span></td><td><span class="y">Yes</span></td><td><span class="n">No</span></td><td><span class="n">No</span></td></tr>
+            <tr><th scope="row">Built-in themes</th><td class="us">9</td><td>2</td><td>0</td><td>0</td></tr>
+            <tr><th scope="row">Single binary</th><td class="us"><span class="y">Yes</span></td><td><span class="y">Yes</span></td><td><span class="y">Yes</span></td><td><span class="n">No</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="docs" aria-labelledby="f-docs">
+    <div class="wrap">
+      <p class="kicker">Documentation</p>
+      <h2 id="f-docs">Read the manual.</h2>
+      <ul class="docs">
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/install.md"><strong>Install</strong><span>Every install route, binaries, verifying downloads</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/features.md"><strong>Features</strong><span>Everything ink renders and every reader feature</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/themes.md"><strong>Themes and color</strong><span>Built-in themes, the terminal theme, custom themes</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/configuration.md"><strong>Configuration</strong><span>Settings, keybindings, vim and emacs presets</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/cli.md"><strong>Command line</strong><span>Flags, subcommands, pager use, recipes</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+        <li><a href="https://github.com/borghei/ink/blob/main/docs/troubleshooting.md"><strong>Troubleshooting</strong><span><code>ink doctor</code>, images, colors, clipboard, security</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="closing" aria-labelledby="f-close">
+    <div class="wrap">
+      <h2 id="f-close">Stop reading raw markdown like a caveman.</h2>
+      <div class="install" data-install>
+        <div class="tabs" role="tablist" aria-label="Install method">
+          <button role="tab" id="t2-sh" aria-controls="p2-sh" aria-selected="true">Script</button>
+          <button role="tab" id="t2-brew" aria-controls="p2-brew" aria-selected="false" tabindex="-1">Homebrew</button>
+          <button role="tab" id="t2-cargo" aria-controls="p2-cargo" aria-selected="false" tabindex="-1">Cargo</button>
+          <button role="tab" id="t2-win" aria-controls="p2-win" aria-selected="false" tabindex="-1">Windows</button>
+        </div>
+        <div class="cmd" role="tabpanel" id="p2-sh" aria-labelledby="t2-sh">
+          <code>curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh</code>
+          <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+        </div>
+        <div class="cmd" role="tabpanel" id="p2-brew" aria-labelledby="t2-brew" hidden>
+          <code>brew tap borghei/tap &amp;&amp; brew trust borghei/tap &amp;&amp; brew install ink</code>
+          <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+        </div>
+        <div class="cmd" role="tabpanel" id="p2-cargo" aria-labelledby="t2-cargo" hidden>
+          <code>cargo install ink-md</code>
+          <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+        </div>
+        <div class="cmd" role="tabpanel" id="p2-win" aria-labelledby="t2-win" hidden>
+          <code class="ps">irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex</code>
+          <button class="copy" type="button"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg><span>Copy</span></button>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>Made by <a href="https://github.com/borghei">borghei</a>. Free to use, not for sale.</p>
+    <ul>
+      <li><a href="https://github.com/borghei/ink">GitHub</a></li>
+      <li><a href="https://github.com/borghei/ink/releases">Releases</a></li>
+      <li><a href="https://crates.io/crates/ink-md">crates.io</a></li>
+      <li><a href="https://github.com/borghei/ink/blob/main/CHANGELOG.md">Changelog</a></li>
+      <li><a href="https://github.com/borghei/ink/blob/main/LICENSE">License</a></li>
+      <li><a href="llms.txt">llms.txt</a></li>
+    </ul>
+  </div>
+</footer>
+
+<p class="sr" aria-live="polite" id="live"></p>
+
+<script>
+  document.body.classList.remove('no-js');
+
+  // Install tabs: WAI-ARIA tabs pattern, arrow keys move between tabs.
+  document.querySelectorAll('[data-install]').forEach(function (box) {
+    var tabs = Array.prototype.slice.call(box.querySelectorAll('[role="tab"]'));
+    function select(tab, focus) {
+      tabs.forEach(function (t) {
+        var on = t === tab;
+        t.setAttribute('aria-selected', on);
+        t.tabIndex = on ? 0 : -1;
+        document.getElementById(t.getAttribute('aria-controls')).hidden = !on;
+      });
+      if (focus) tab.focus();
+    }
+    tabs.forEach(function (tab, i) {
+      tab.addEventListener('click', function () { select(tab, false); });
+      tab.addEventListener('keydown', function (e) {
+        var next = null;
+        if (e.key === 'ArrowRight') next = tabs[(i + 1) % tabs.length];
+        if (e.key === 'ArrowLeft') next = tabs[(i - 1 + tabs.length) % tabs.length];
+        if (e.key === 'Home') next = tabs[0];
+        if (e.key === 'End') next = tabs[tabs.length - 1];
+        if (next) { e.preventDefault(); select(next, true); }
+      });
+    });
+  });
+
+  // Copy buttons.
+  var live = document.getElementById('live');
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var text = btn.parentNode.querySelector('code').textContent;
+      var label = btn.querySelector('span');
+      function done(ok) {
+        label.textContent = ok ? 'Copied' : 'Press Ctrl+C';
+        live.textContent = ok ? 'Install command copied' : 'Copy failed. Select the command and copy it.';
+        setTimeout(function () { label.textContent = 'Copy'; }, 1800);
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(false); });
+      } else {
+        var range = document.createRange();
+        range.selectNodeContents(btn.parentNode.querySelector('code'));
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+        done(document.execCommand && document.execCommand('copy'));
+      }
+    });
+  });
+
+  // Demo video: pause control, and no autoplay for reduced motion.
+  var video = document.getElementById('demo');
+  var pause = document.getElementById('pause');
+  var playIcon = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l10.5-6.5a1 1 0 0 0 0-1.72L9.5 4.64A1 1 0 0 0 8 5.5z"/></svg>';
+  var pauseIcon = pause.innerHTML;
+  function setPaused(paused) {
+    pause.innerHTML = paused ? playIcon : pauseIcon;
+    pause.setAttribute('aria-label', paused ? 'Play demo' : 'Pause demo');
+    pause.setAttribute('aria-pressed', paused);
+  }
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    video.removeAttribute('autoplay');
+    video.pause();
+    setPaused(true);
+  }
+  pause.addEventListener('click', function () {
+    if (video.paused) { video.play(); setPaused(false); } else { video.pause(); setPaused(true); }
+  });
+
+  // Nav border once the page scrolls.
+  var nav = document.getElementById('nav');
+  function onScroll() { nav.classList.toggle('scrolled', window.scrollY > 8); }
+  window.addEventListener('scroll', onScroll, { passive: true });
+  onScroll();
+
+  // Reveal sections as they enter, staggered within a group.
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (!entry.isIntersecting) return;
+        var el = entry.target;
+        var siblings = Array.prototype.slice.call(el.parentNode.children).filter(function (c) { return c.classList.contains('reveal'); });
+        el.style.transitionDelay = Math.min(siblings.indexOf(el), 5) * 60 + 'ms';
+        el.classList.add('in');
+        io.unobserve(el);
+      });
+    }, { rootMargin: '0px 0px -8% 0px' });
+    document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+  } else {
+    document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
+  }
+  // Printing never scrolls, so show everything first.
+  window.addEventListener('beforeprint', function () {
+    document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
+  });
+</script>
 </body>
 </html>

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.1 — 2026-10-04
+
+### Fixed
+- **Inline code in table cells no longer shows its backticks.** `` `GET /sync` `` in a cell printed with the markdown backticks around it; it now shows just the code, as inline code does everywhere else.
+
+### Changed
+- **Shorter README, fuller docs.** The README is now a quick tour: the main features, install, a quick start and links. The detail moved to focused pages under `docs/`: install, features, themes and color, configuration and keybindings, command line, and troubleshooting. The themes page adds a complete custom-theme template, and the configuration page lists every keybinding action name.
+- **New website.** [borghei.github.io/ink](https://borghei.github.io/ink/) is redesigned around fresh recordings of the current release: a demo you can pause, install commands with copy buttons, screenshots of diagrams, the table of contents, the theme picker and the terminal theme on light and dark terminals, and links into the docs. It also gets a favicon, a 404 page and a new social preview image.
+
 ## 0.11.0 — 2026-10-03
 
 ### Added
