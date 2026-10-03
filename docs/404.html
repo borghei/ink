@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Page not found: ink</title>
+  <meta name="robots" content="noindex">
+  <link rel="icon" href="/ink/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500&family=Geist+Mono&family=Instrument+Serif&display=swap" rel="stylesheet">
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      min-height: 100dvh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      box-sizing: border-box;
+      background: #121110;
+      color: #ecebe6;
+      font: 400 17px/1.6 "Geist", ui-sans-serif, system-ui, sans-serif;
+    }
+    main { max-width: 34rem; }
+    pre {
+      margin: 0 0 28px;
+      font: 14px/1.7 "Geist Mono", ui-monospace, monospace;
+      color: #8a877e;
+      white-space: pre-wrap;
+    }
+    pre b { color: #e2614a; font-weight: 400; }
+    h1 { margin: 0 0 12px; font: 400 clamp(40px, 8vw, 64px)/1 "Instrument Serif", Georgia, serif; letter-spacing: -0.02em; }
+    p { margin: 0 0 24px; color: #b4b1a8; }
+    a {
+      display: inline-flex;
+      align-items: center;
+      min-height: 40px;
+      padding: 0 16px;
+      border: 1px solid #3a3733;
+      border-radius: 8px;
+      color: #ecebe6;
+      text-decoration: none;
+      font-weight: 500;
+      transition: border-color 0.2s, background-color 0.2s;
+    }
+    a:hover { border-color: #8a877e; background: #191816; }
+    a:focus-visible { outline: 2px solid #e2614a; outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <main>
+    <pre>$ ink this-page.md
+<b>error:</b> no such file</pre>
+    <h1>This page doesn't exist.</h1>
+    <p>The link may be old, or the docs moved. Everything lives on the home page or in the docs on GitHub.</p>
+    <a href="/ink/">Back to ink</a>
+  </main>
+</body>
+</html>

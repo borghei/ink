@@ -164,6 +164,6 @@ preset = "emacs"        # default | vim | emacs
 - Website: https://borghei.github.io/ink/
 - Author: Amin Borghei <borghei.mohammadamin@gmail.com>
 - Crates.io: https://crates.io/crates/ink-md (install with `cargo install ink-md`, Rust 1.90+)
-- Install script (macOS/Linux): `curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh` (picks the glibc or static musl build; pin with INK_VERSION=v0.8.0, target dir INK_INSTALL_DIR)
+- Install script (macOS/Linux): `curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh` (picks the glibc or static musl build; pin with INK_VERSION=v0.11.1, target dir INK_INSTALL_DIR)
 - Install script (Windows): `irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex` (x64/ARM64, installs to %LOCALAPPDATA%\Programs\ink)
 - Prebuilt binaries: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (Alpine, older glibc, Raspberry Pi), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives with man page and completions

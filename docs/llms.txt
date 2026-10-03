@@ -39,7 +39,7 @@ ink is a command-line tool that renders markdown files in the terminal with rich
 curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh    # macOS / Linux (picks glibc or static musl build)
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex         # Windows PowerShell (x64 / ARM64)
 cargo install ink-md                                                             # from source (Rust 1.90+)
-INK_VERSION=v0.11.0 sh install.sh                                                # pin a version
+INK_VERSION=v0.11.1 sh install.sh                                                # pin a version
 
 Prebuilt: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (any distro), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives include the man page and completions. Verify with SHA256SUMS or `gh attestation verify <file> --repo borghei/ink`.
 
@@ -57,6 +57,16 @@ ink stats file.md        # word count, reading time
 ink diff a.md b.md       # compare two files (Myers diff)
 ink completions zsh      # shell completions
 ink man                  # man page
+
+## Docs
+
+- Install: https://github.com/borghei/ink/blob/main/docs/install.md
+- Features: https://github.com/borghei/ink/blob/main/docs/features.md
+- Themes and color: https://github.com/borghei/ink/blob/main/docs/themes.md
+- Configuration and keybindings: https://github.com/borghei/ink/blob/main/docs/configuration.md
+- Command line: https://github.com/borghei/ink/blob/main/docs/cli.md
+- Troubleshooting: https://github.com/borghei/ink/blob/main/docs/troubleshooting.md
+- Full feature dump for LLMs: https://borghei.github.io/ink/llms-full.txt
 
 ## Links
 
