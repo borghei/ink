@@ -87,7 +87,6 @@ pub fn filter_matches(text: &str, query: &str) -> bool {
 }
 
 impl TocState {
-    #[allow(dead_code)]
     pub fn new(headings: &[Heading], line_mapping: &[(usize, usize)]) -> Self {
         let entries = headings
             .iter()

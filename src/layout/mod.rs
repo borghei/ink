@@ -38,7 +38,6 @@ impl StyledLine {
         self.spans.push(span);
     }
 
-    #[allow(dead_code)]
     pub fn plain(text: &str) -> Self {
         Self {
             spans: vec![StyledSpan {
@@ -52,7 +51,6 @@ impl StyledLine {
         Self { spans: Vec::new() }
     }
 
-    #[allow(dead_code)]
     pub fn width(&self) -> usize {
         self.spans.iter().map(|s| s.text.width()).sum()
     }

@@ -4,7 +4,6 @@ use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct Config {
     pub theme: Option<String>,
     pub width: Option<u16>,
@@ -16,7 +15,6 @@ pub struct Config {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct BehaviorConfig {
     /// When true, closing a file via q/Esc returns to the browser instead of exiting.
     pub browser_loop: Option<bool>,
@@ -32,7 +30,6 @@ pub struct BehaviorConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 pub struct KeybindingsConfig {
     /// Built-in preset name: "default" | "vim" | "emacs".
     pub preset: Option<String>,
