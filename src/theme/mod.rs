@@ -14,6 +14,7 @@ pub const BUILTIN_THEMES: &[&str] = &[
     "tokyo-night",
     "gruvbox",
     "solarized",
+    "terminal",
 ];
 
 /// All available theme names: built-ins plus any `*.toml` in the user themes
@@ -151,6 +152,7 @@ pub fn resolve_theme(name: &str) -> Theme {
         "tokyo-night" => builtin::tokyo_night(),
         "gruvbox" => builtin::gruvbox(),
         "solarized" => builtin::solarized(),
+        "terminal" => builtin::terminal(),
         _ => {
             // Try loading from the user config directory. Note the warning is
             // emitted on every path out of here, including "this platform has
@@ -174,8 +176,80 @@ pub fn resolve_theme(name: &str) -> Theme {
     }
 }
 
-/// Parse a hex color string to RGB. Returns (200,200,200) for invalid input.
-pub fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
+/// A theme colour as written: a 24-bit hex value, one of the terminal's 16
+/// palette slots, or the terminal's own default foreground/background.
+///
+/// Palette slots and `default` let a theme follow the user's terminal scheme
+/// instead of fixing exact colours (the `terminal` theme is built from
+/// nothing else). They are spelled `ansi:red`, `ansi:bright-blue`, `ansi:0`
+/// to `ansi:15`, and `default`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSpec {
+    Rgb(u8, u8, u8),
+    /// ANSI palette index 0–15.
+    Ansi(u8),
+    /// The terminal's default colour (SGR 39 / 49).
+    Default,
+}
+
+const ANSI_NAMES: [&str; 8] = [
+    "black", "red", "green", "yellow", "blue", "magenta", "cyan", "white",
+];
+
+/// Parse a theme colour. Anything that is not a palette name or `default`
+/// is read as hex, so invalid input degrades exactly as it always has.
+pub fn parse_color(s: &str) -> ColorSpec {
+    let s = s.trim();
+    if s.eq_ignore_ascii_case("default") {
+        return ColorSpec::Default;
+    }
+    if let Some(name) = s
+        .get(..5)
+        .filter(|p| p.eq_ignore_ascii_case("ansi:"))
+        .map(|_| s[5..].to_ascii_lowercase())
+    {
+        if let Ok(i) = name.parse::<u8>() {
+            if i < 16 {
+                return ColorSpec::Ansi(i);
+            }
+        }
+        let (base, bright) = match name.strip_prefix("bright-") {
+            Some(rest) => (rest, true),
+            None => (name.as_str(), false),
+        };
+        if let Some(i) = ANSI_NAMES.iter().position(|n| *n == base) {
+            return ColorSpec::Ansi(i as u8 + if bright { 8 } else { 0 });
+        }
+    }
+    let (r, g, b) = parse_hex(s);
+    ColorSpec::Rgb(r, g, b)
+}
+
+/// Parse a theme colour to RGB. Palette slots map to xterm's default values
+/// (the terminal's actual palette is unknown); `default` and invalid input
+/// give (200,200,200).
+pub fn hex_to_rgb(color: &str) -> (u8, u8, u8) {
+    match parse_color(color) {
+        ColorSpec::Rgb(r, g, b) => (r, g, b),
+        ColorSpec::Ansi(i) => caps::XTERM_16[i as usize],
+        ColorSpec::Default => (200, 200, 200),
+    }
+}
+
+/// The SGR escape selecting `color` as foreground (`fg`) or background at
+/// `level`. Palette slots and `default` are emitted as themselves at every
+/// level, so the terminal's scheme applies.
+pub fn sgr_color(color: &str, fg: bool, level: caps::ColorLevel) -> String {
+    let params = match (parse_color(color), level) {
+        (_, caps::ColorLevel::None) => String::new(),
+        (ColorSpec::Rgb(r, g, b), _) => caps::sgr_params((r, g, b), fg, level),
+        (ColorSpec::Ansi(i), _) => caps::ansi16_sgr(i, fg).to_string(),
+        (ColorSpec::Default, _) => if fg { "39" } else { "49" }.to_string(),
+    };
+    format!("\x1b[{params}m")
+}
+
+fn parse_hex(hex: &str) -> (u8, u8, u8) {
     let hex = hex.trim_start_matches('#');
     // Byte length alone is not enough to make the slices below safe: a 6-byte
     // string can be two multi-byte characters, and slicing would split one.
@@ -193,9 +267,14 @@ pub fn hex_to_rgb(hex: &str) -> (u8, u8, u8) {
 /// terminal's default colour ([`Color::Reset`](ratatui::style::Color::Reset))
 /// when colour is off (`--color=never`, `NO_COLOR`), where the reader relies
 /// on bold, underline and reverse video instead.
-pub fn hex_to_color(hex: &str) -> ratatui::style::Color {
-    let (r, g, b) = hex_to_rgb(hex);
-    caps::rgb_at_level(r, g, b, caps::tui_level())
+pub fn hex_to_color(color: &str) -> ratatui::style::Color {
+    let level = caps::tui_level();
+    match parse_color(color) {
+        ColorSpec::Rgb(r, g, b) => caps::rgb_at_level(r, g, b, level),
+        ColorSpec::Ansi(_) if level == caps::ColorLevel::None => ratatui::style::Color::Reset,
+        ColorSpec::Ansi(i) => caps::ansi16_color(i),
+        ColorSpec::Default => ratatui::style::Color::Reset,
+    }
 }
 
 /// Is the reader drawing without colour? Highlights that would otherwise be
@@ -267,6 +346,61 @@ mod hex_tests {
     fn parses_valid_hex() {
         assert_eq!(hex_to_rgb("#ff0000"), (255, 0, 0));
         assert_eq!(hex_to_rgb("00ff80"), (0, 255, 128));
+    }
+
+    #[test]
+    fn palette_names_and_default_parse() {
+        assert_eq!(parse_color("default"), ColorSpec::Default);
+        assert_eq!(parse_color("ansi:red"), ColorSpec::Ansi(1));
+        assert_eq!(parse_color("ANSI:Bright-Blue"), ColorSpec::Ansi(12));
+        assert_eq!(parse_color("ansi:bright-black"), ColorSpec::Ansi(8));
+        assert_eq!(parse_color("ansi:15"), ColorSpec::Ansi(15));
+        // Out of range or unknown names fall through to hex, i.e. the old
+        // invalid-colour fallback.
+        assert_eq!(parse_color("ansi:16"), ColorSpec::Rgb(200, 200, 200));
+        assert_eq!(parse_color("ansi:orange"), ColorSpec::Rgb(200, 200, 200));
+        assert_eq!(parse_color("ansi:é"), ColorSpec::Rgb(200, 200, 200));
+        assert_eq!(parse_color("#ff0000"), ColorSpec::Rgb(255, 0, 0));
+    }
+
+    // Palette colours are emitted as palette escapes at every depth, so the
+    // terminal's scheme applies; with colour off nothing is emitted.
+    #[test]
+    fn palette_colours_survive_every_depth() {
+        use caps::ColorLevel::*;
+        for level in [TrueColor, Ansi256, Ansi16] {
+            assert_eq!(sgr_color("ansi:red", true, level), "\x1b[31m");
+            assert_eq!(sgr_color("ansi:bright-cyan", false, level), "\x1b[106m");
+            assert_eq!(sgr_color("default", true, level), "\x1b[39m");
+            assert_eq!(sgr_color("default", false, level), "\x1b[49m");
+        }
+        assert_eq!(sgr_color("#ff0000", true, TrueColor), "\x1b[38;2;255;0;0m");
+        assert_eq!(sgr_color("ansi:red", true, None), "\x1b[m");
+    }
+
+    #[test]
+    fn terminal_theme_uses_only_palette_colours() {
+        let t = resolve_theme("terminal");
+        assert_eq!(t.name, "terminal");
+        assert!(t.colors.bg.is_none());
+        let c = &t.colors;
+        for color in [
+            &c.fg,
+            &c.heading1,
+            &c.heading6,
+            &c.code_fg,
+            &c.code_bg,
+            &c.link,
+            &c.table_border,
+            &c.status_bar_bg,
+            &c.status_bar_fg,
+            &c.search_match,
+        ] {
+            assert!(!matches!(parse_color(color), ColorSpec::Rgb(..)), "{color}");
+        }
+        assert!(crate::highlight::theme_set()
+            .themes
+            .contains_key(&t.code_theme));
     }
 
     /// Regression: the length guard counts bytes, so a 6-byte string of

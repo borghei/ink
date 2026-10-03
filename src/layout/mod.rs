@@ -828,6 +828,15 @@ fn image_backdrop(theme: &Theme) -> (u8, u8, u8) {
     if let Some(bg) = &theme.colors.bg {
         return crate::theme::hex_to_rgb(bg);
     }
+    // A `default` foreground says nothing about the theme's darkness; ask
+    // the terminal instead.
+    if crate::theme::parse_color(&theme.colors.fg) == crate::theme::ColorSpec::Default {
+        return if crate::theme::detect::is_dark_background() {
+            (0, 0, 0)
+        } else {
+            (255, 255, 255)
+        };
+    }
     let (r, g, b) = crate::theme::hex_to_rgb(&theme.colors.fg);
     let luminance = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
     // Light foreground → dark theme → composite over black; else white.
@@ -1107,10 +1116,10 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
                     content.push(StyledSpan {
                         text: trimmed.to_string(),
                         style: SpanStyle {
-                            fg: Some(format!(
-                                "#{:02x}{:02x}{:02x}",
-                                style.foreground.r, style.foreground.g, style.foreground.b
-                            )),
+                            fg: Some(
+                                crate::highlight::token_color(style.foreground)
+                                    .unwrap_or_else(|| ctx.theme.colors.fg.clone()),
+                            ),
                             ..Default::default()
                         },
                     });

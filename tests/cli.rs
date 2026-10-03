@@ -161,6 +161,27 @@ fn known_theme_is_quiet() {
         .stderr(predicate::str::contains("falling back").not());
 }
 
+// Issue #29: the `terminal` theme draws only with the terminal's own palette
+// (SGR 30–37/90–97 and 39), never a fixed 24-bit or 256-colour value —
+// including inside highlighted code blocks.
+#[test]
+fn terminal_theme_emits_only_palette_colours() {
+    ink()
+        .args([
+            "--plain", "--color", "always", "--theme", "terminal", "--width", "80",
+        ])
+        .arg("tests/fixtures/test.md")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("falling back").not())
+        .stdout(
+            predicate::str::contains("\x1b[34m")
+                .and(predicate::str::contains("\x1b[38;2;").not())
+                .and(predicate::str::contains("\x1b[38;5;").not())
+                .and(predicate::str::contains("\x1b[48;").not()),
+        );
+}
+
 #[test]
 fn doctor_reports_without_a_tty() {
     // In a test harness stdout is a pipe: the protocol query must be skipped

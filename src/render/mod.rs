@@ -129,7 +129,9 @@ fn progress_line(
     let progress = (scroll_offset as f64 / (total_lines - viewport_height) as f64).min(1.0);
     let filled = ((progress * width as f64) as usize).max(1);
     let empty = width.saturating_sub(filled);
-    let rest = if accent == bg && glyphs.progress == glyphs.progress_rest {
+    // A `default` bar background (Reset) cannot hide the remainder either:
+    // drawn in Reset it shows in the terminal's foreground.
+    let rest = if (accent == bg || bg == Color::Reset) && glyphs.progress == glyphs.progress_rest {
         " "
     } else {
         glyphs.progress_rest
@@ -1013,6 +1015,12 @@ mod tests {
         // 16 colours that differ keep the hidden remainder glyph.
         let rest = drawn_bar(50, Color::Cyan, Color::Black, g);
         assert_eq!(rest, "▔".repeat(20));
+        // A `default` bar background (the terminal theme) cannot hide the
+        // remainder by colour, so it is blank even though the accent differs.
+        assert_eq!(
+            drawn_bar(50, Color::Cyan, Color::Reset, g),
+            format!("{}{}", "▔".repeat(10), " ".repeat(10))
+        );
         // ASCII glyphs already differ: `=` filled, `-` remainder.
         let ascii = drawn_bar(50, a, b, &crate::glyphs::ASCII);
         assert_eq!(ascii, format!("{}{}", "=".repeat(10), "-".repeat(10)));

@@ -29,7 +29,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh
 The installer picks the right binary for your OS, CPU and libc (static musl build on Alpine, Raspberry Pi and older-glibc systems), checks it against `SHA256SUMS` and installs to `/usr/local/bin` (using `sudo` only if it has to). Pin a version with `INK_VERSION=v0.8.0` or change the target with `INK_INSTALL_DIR="$HOME/.local/bin"`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.10.0 INK_INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.11.0 INK_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 ### Quick install (Windows PowerShell)
@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_V
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 ```
 
-Installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.10.0"` first to pin a version.
+Installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.11.0"` first to pin a version.
 
 ### Homebrew (macOS / Linux)
 
@@ -237,9 +237,11 @@ Press `t` to toggle a sidebar showing every heading in the document. Tracks your
 
 Press `o` to move into it (it opens if it was closed). `j`/`k` or the arrows move, `g`/`G` go to the first and last heading, `Ctrl+d`/`Ctrl+u` page, and `Enter` jumps there — `[` brings you back. `h`/`l` fold and unfold a section's subheadings in the sidebar, and `/` filters the list as you type (every word you type must appear, case doesn't matter). `Esc` clears the filter; `Esc` again, or `o`, goes back to the document without moving. With the mouse, click a heading to jump to it; the wheel over the sidebar scrolls the sidebar, not the page.
 
-### 8 built-in themes
+### 9 built-in themes
 
-Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, and Solarized. Press `T` to open the theme picker and preview each one live.
+Dark, Light, Dracula, Catppuccin, Nord, Tokyo Night, Gruvbox, Solarized, and Terminal. Press `T` to open the theme picker and preview each one live.
+
+`terminal` uses your terminal's own colour scheme instead of fixed colours — the 16 palette colours and the default foreground, no background of its own, and code highlighted with the palette too (like `bat --theme=ansi`). It looks right on light and dark terminals without switching themes.
 
 With no theme set, ink asks the terminal for its background colour (an OSC 11 query, answered by nearly every modern terminal and passed through by tmux) and picks Light or Dark to match, falling back to `COLORFGBG` and then Dark. An explicit `--theme` or `theme =` in the config always wins, and never triggers the query.
 
@@ -357,7 +359,7 @@ ink reads `$XDG_CONFIG_HOME/ink/config.toml` when `XDG_CONFIG_HOME` is set, othe
 Create the file:
 
 ```toml
-# Default theme (dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized)
+# Default theme (dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized, terminal)
 theme = "catppuccin"
 
 # Max rendering width in columns
@@ -402,6 +404,8 @@ ink --theme mytheme README.md
 ```
 
 Every color is customizable — headings, code, links, blockquotes, admonitions, status bar, and more. Check any built-in theme in `src/theme/builtin.rs` for the full list of color keys.
+
+A color is a hex value (`"#7aa2f7"`), one of your terminal's palette colours (`"ansi:blue"`, `"ansi:bright-black"`, or `"ansi:0"` through `"ansi:15"`), or `"default"` for the terminal's own foreground/background. Set `code_theme = "ansi"` to highlight code with the palette.
 
 ## Shell integration
 
