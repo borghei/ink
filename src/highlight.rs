@@ -82,10 +82,11 @@ fn ansi_theme() -> Theme {
             false,
         ),
         (
-            "entity.name.function, support.function, meta.function-call",
+            "entity.name.function, support.function, variable.function",
             ansi(4),
             false,
         ),
+        ("variable.parameter", ansi(6), false),
         ("entity.name.tag", ansi(4), false),
         ("entity.other.attribute-name", ansi(3), false),
         ("variable.language, support.constant", ansi(1), false),
