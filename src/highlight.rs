@@ -63,11 +63,21 @@ fn ansi_theme() -> Theme {
     // (scopes, palette slot, italic)
     let rules: &[(&str, Color, bool)] = &[
         ("comment, punctuation.definition.comment", ansi(8), true),
+        (
+            "meta.structure.dictionary.key, meta.structure.dictionary.key string, meta.structure.dictionary.key punctuation.definition.string, meta.mapping.key, meta.mapping.key string, meta.mapping.key punctuation.definition.string, support.type.property-name",
+            ansi(4),
+            false,
+        ),
         ("string, punctuation.definition.string", ansi(2), false),
         ("constant.character.escape", ansi(6), false),
         (
             "constant.numeric, constant.language, constant.character",
             ansi(3),
+            false,
+        ),
+        (
+            "constant.other.color, punctuation.definition.constant.css",
+            ansi(5),
             false,
         ),
         (
@@ -89,8 +99,21 @@ fn ansi_theme() -> Theme {
         ("variable.parameter", ansi(6), false),
         ("entity.name.tag", ansi(4), false),
         ("entity.other.attribute-name", ansi(3), false),
+        ("support.constant.property-value", ansi(3), false),
         ("variable.language, support.constant", ansi(1), false),
         ("markup.heading", ansi(4), false),
+        ("meta.diff.header.from-file", ansi(1), false),
+        ("meta.diff.header.to-file", ansi(2), false),
+        (
+            "punctuation.definition.from-file, punctuation.definition.to-file, punctuation.definition.inserted, punctuation.definition.deleted",
+            ansi(5),
+            false,
+        ),
+        (
+            "meta.diff.range, punctuation.definition.range.diff",
+            ansi(6),
+            false,
+        ),
         ("markup.inserted", ansi(2), false),
         ("markup.deleted", ansi(1), false),
         ("invalid", ansi(1), false),
