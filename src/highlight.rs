@@ -92,7 +92,7 @@ fn ansi_theme() -> Theme {
             false,
         ),
         (
-            "entity.name.function, support.function, variable.function",
+            "entity.name.function, support.function, variable.function, support.macro, entity.name.function.macro, entity.name.macro, punctuation.definition.macro",
             ansi(4),
             false,
         ),
