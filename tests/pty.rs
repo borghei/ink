@@ -562,23 +562,31 @@ fn reader_args(path: &std::path::Path) -> Vec<String> {
 }
 
 #[test]
-fn full_width_is_opt_in_on_a_wide_terminal() {
+fn explicit_width_is_honored_on_a_wide_terminal() {
     let doc = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
     std::fs::write(doc.path(), "x".repeat(600)).unwrap();
-    for full_width in [false, true] {
+    for (width, expected) in [
+        (None, 120),
+        (Some("full"), 196),
+        (Some("120"), 120),
+        (Some("140"), 140),
+        (Some("1000"), 196),
+    ] {
         let mut args = reader_args(doc.path());
-        if full_width {
-            args.extend(["-w".into(), "full".into()]);
+        if let Some(width) = width {
+            args.extend(["-w".into(), width.into()]);
         }
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         let s = run_in_pty_ctl(&args, &[], 200, control_steps(Vec::new(), Marks::default()));
         assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
-        if full_width {
-            assert!(contains(&s.output, "x".repeat(196).as_bytes()));
-        } else {
-            assert!(contains(&s.output, "x".repeat(120).as_bytes()));
-            assert!(!contains(&s.output, "x".repeat(121).as_bytes()));
-        }
+        assert!(
+            contains(&s.output, "x".repeat(expected).as_bytes()),
+            "{width:?}"
+        );
+        assert!(
+            !contains(&s.output, "x".repeat(expected + 1).as_bytes()),
+            "{width:?}"
+        );
     }
 }
 

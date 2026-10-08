@@ -2380,8 +2380,7 @@ fn build_tab(
     let max_content_width = if args.full_width {
         available_width
     } else {
-        let hard_cap = available_width.min(120);
-        args.width.unwrap_or(hard_cap).clamp(8, hard_cap)
+        args.width.unwrap_or(120).clamp(8, available_width)
     };
     let center_margin = if term_width > max_content_width + 4 {
         ((term_width - max_content_width) / 2) as usize
@@ -3112,9 +3111,14 @@ mod section_tests {
     fn requested_width_is_centered_and_clamped_to_the_document_pane() {
         let graphics = crate::graphics::Graphics::halfblocks();
         let source = "word ".repeat(300);
-        for (requested, terminal_width, margin, content_width) in
-            [(60, 200, 70, 60), (160, 240, 60, 120), (1000, 200, 40, 120)]
-        {
+        for (requested, terminal_width, margin, content_width) in [
+            (60, 200, 70, 60),
+            (120, 200, 40, 120),
+            (140, 200, 30, 140),
+            (160, 240, 40, 160),
+            (1000, 200, 2, 196),
+            (140, 80, 2, 76),
+        ] {
             let mut args = test_args();
             args.width = Some(requested);
             let tab = build_tab(source.as_str(), "t.md", &args, terminal_width, 0, &graphics);
