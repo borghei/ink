@@ -12,6 +12,7 @@ fn test_args() -> Args {
         inputs: vec![],
         theme: "dark".to_string(),
         width: Some(80),
+        full_width: false,
         slides: false,
         plain: true,
         watch: false,

@@ -2376,8 +2376,13 @@ fn build_tab(
     // Content must fit within the terminal even after the left margin, so cap
     // it at term_width - 4 (a requested --width wider than the terminal would
     // otherwise overflow and be clipped at the right edge).
-    let hard_cap = term_width.saturating_sub(4).clamp(8, 120);
-    let max_content_width = args.width.unwrap_or(hard_cap).clamp(8, hard_cap);
+    let available_width = term_width.saturating_sub(4).max(8);
+    let max_content_width = if args.full_width {
+        available_width
+    } else {
+        let hard_cap = available_width.min(120);
+        args.width.unwrap_or(hard_cap).clamp(8, hard_cap)
+    };
     let center_margin = if term_width > max_content_width + 4 {
         ((term_width - max_content_width) / 2) as usize
     } else {
@@ -2843,6 +2848,7 @@ mod section_tests {
             inputs: Vec::new(),
             theme: "dark".into(),
             width: None,
+            full_width: false,
             slides: false,
             plain: false,
             watch: false,
@@ -3077,6 +3083,57 @@ mod section_tests {
         assert!(not_editable(&t).is_some());
         t.mtime = Some(SystemTime::now());
         assert_eq!(not_editable(&t), None);
+    }
+
+    #[test]
+    fn full_width_uses_the_document_pane_with_small_margins() {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let source = "word ".repeat(300);
+        for terminal_width in [80, 200, 320] {
+            for toc_visible in [false, true] {
+                let mut args = test_args();
+                args.full_width = true;
+                args.width = Some(60); // A configured width must not limit full-width mode.
+                args.toc = toc_visible;
+                let pane_width = effective_width(terminal_width, toc_visible);
+                let tab = build_tab(source.as_str(), "t.md", &args, pane_width, 0, &graphics);
+                let lines: Vec<_> = tab.plain.iter().filter(|line| !line.is_empty()).collect();
+                assert!(lines.iter().all(|line| line.starts_with("  word")));
+                assert!(lines
+                    .iter()
+                    .all(|line| line.len() <= pane_width as usize - 2));
+                // Word wrapping may leave up to four unused columns.
+                assert!(lines[0].len() >= pane_width as usize - 6);
+            }
+        }
+    }
+
+    #[test]
+    fn requested_width_is_centered_and_clamped_to_the_document_pane() {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let source = "word ".repeat(300);
+        for (requested, terminal_width, margin, content_width) in
+            [(60, 200, 70, 60), (160, 240, 60, 120), (1000, 200, 40, 120)]
+        {
+            let mut args = test_args();
+            args.width = Some(requested);
+            let tab = build_tab(source.as_str(), "t.md", &args, terminal_width, 0, &graphics);
+            let first = tab.plain.iter().find(|line| !line.is_empty()).unwrap();
+            assert_eq!(first.len() - first.trim_start().len(), margin);
+            assert!(first.trim_start().len() <= content_width);
+            assert!(first.trim_start().len() >= content_width - 4);
+        }
+    }
+
+    #[test]
+    fn automatic_width_keeps_the_existing_reading_width() {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let source = "word ".repeat(300);
+        let tab = build_tab(source.as_str(), "t.md", &test_args(), 200, 0, &graphics);
+        let first = tab.plain.iter().find(|line| !line.is_empty()).unwrap();
+        assert_eq!(first.len() - first.trim_start().len(), 40);
+        assert!(first.trim_start().len() <= 120);
+        assert!(first.trim_start().len() >= 116);
     }
 
     // The three ways a tab is rebuilt (re-layout, `--watch`, reload after

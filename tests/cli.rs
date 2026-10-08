@@ -362,6 +362,22 @@ fn documented_flag_values_still_work() {
 }
 
 #[test]
+fn full_width_keeps_the_existing_plain_output_width() {
+    let source = "word ".repeat(100);
+    let render = |width| {
+        ink()
+            .args(["--plain", "--color=never", "--theme=dark", "-w", width])
+            .write_stdin(source.as_str())
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone()
+    };
+    assert_eq!(render("full"), render("80"));
+}
+
+#[test]
 fn config_syntax_error_warns_and_ink_still_runs() {
     let dir = xdg_with_config("theme = \"nord\"\nwidth = \n");
     ink()
