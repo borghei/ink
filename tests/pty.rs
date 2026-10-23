@@ -712,6 +712,36 @@ fn a_click_off_any_link_does_nothing() {
     assert!(!contains(&after, b"\x1b]52;"));
 }
 
+// Issue #35: a link inside a table cell had no destination, so the `f`
+// overlay never offered it.
+#[test]
+fn the_link_hint_overlay_lists_a_link_inside_a_table() {
+    let doc = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
+    std::fs::write(
+        doc.path(),
+        "| Doc | What |\n|-----|------|\n\
+         | [Install](https://e.com/table-only-target) | Every install route |\n",
+    )
+    .unwrap();
+    let marks = Marks::default();
+    let args = reader_args(doc.path());
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let s = run_in_pty(
+        &args,
+        &[],
+        type_steps(vec![b"f".to_vec()], Marks::clone(&marks)),
+    );
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let at = *marks.borrow().first().expect("f not sent");
+    assert!(!contains(&s.output[..at], b"table-only-target"));
+    let after = String::from_utf8_lossy(&s.output[at..]);
+    assert!(after.contains("Follow link"), "no hint overlay: {after}");
+    assert!(
+        after.contains("https://e.com/table-only-target"),
+        "table link missing from the overlay: {after}"
+    );
+}
+
 /// Index of the first `needle` at or after `from`.
 fn find_from(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     hay.get(from..)?

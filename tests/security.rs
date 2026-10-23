@@ -72,6 +72,40 @@ fn javascript_and_file_urls_not_emitted_as_links() {
     assert!(!out.contains("file:///etc/passwd"));
 }
 
+/// Every OSC 8 destination opened in `out`, in order.
+fn osc8_urls(out: &str) -> Vec<String> {
+    out.split("\x1b]8;;")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("\x1b\\").map(|(url, _)| url.to_string()))
+        .filter(|url| !url.is_empty())
+        .collect()
+}
+
+// Issue #35: links in table cells now carry their destination, so they must
+// pass the same sanitizer as paragraph links — same URLs out, no escapes in.
+#[test]
+fn table_cell_links_are_sanitized_like_paragraph_links() {
+    for link in [
+        "[js](javascript:alert(1))",
+        "[file](file:///etc/passwd)",
+        "[esc](<https://e.com/a\x1b]8;;https://evil\x1b\\b>)",
+        "[bell](<https://e.com/\x07x>)",
+        "text \x1b[31mred\x1b[0m and \u{9b}31m",
+        "[ok](https://example.com/a)",
+    ] {
+        let para = render_plain(&format!("{link}\n"), &args()).unwrap();
+        let table = render_plain(&format!("| h |\n|---|\n| {link} |\n"), &args()).unwrap();
+        assert_only_ink_escapes(&table);
+        assert!(
+            !table.contains("javascript:") && !table.contains("evil"),
+            "{link}"
+        );
+        assert_eq!(osc8_urls(&table), osc8_urls(&para), "{link}");
+    }
+    let ok = render_plain("| h |\n|---|\n| [ok](https://example.com/a) |\n", &args()).unwrap();
+    assert_eq!(osc8_urls(&ok), ["https://example.com/a"]);
+}
+
 #[test]
 fn c1_control_bytes_stripped() {
     let source = "text \u{9b}31m more\n"; // C1 CSI

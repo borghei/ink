@@ -356,7 +356,7 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         }
         NodeValue::Table(..) => {
             drop(data);
-            table::layout_table(node, ctx.theme, ctx.width, ctx.margin, lines);
+            table::layout_table(node, ctx, lines);
         }
         NodeValue::SoftBreak | NodeValue::LineBreak => {
             drop(data);
@@ -2489,6 +2489,36 @@ fn layout_src(src: &str, width: u16, images: ImageMode) -> LayoutResult {
     let root = parse_document(&arena, src, &crate::parser::options());
     let theme = crate::theme::resolve_theme("dark");
     layout_document(root, &theme, width, Spacing::Normal, 0, None, images, None)
+}
+
+/// Run `f` with the context `layout_src` lays out in (dark theme, width 60,
+/// images off), for unit tests of the per-block layout helpers.
+#[cfg(test)]
+fn with_test_ctx<R>(f: impl FnOnce(&LayoutContext) -> R) -> R {
+    let theme = crate::theme::resolve_theme("dark");
+    let headings = std::cell::RefCell::new(Vec::new());
+    let image_specs = std::cell::RefCell::new(Vec::new());
+    let code_blocks = std::cell::RefCell::new(Vec::new());
+    let ctx = LayoutContext {
+        theme: &theme,
+        width: 60,
+        indent: 0,
+        list_depth: 0,
+        block_depth: 0,
+        spacing: Spacing::Normal,
+        margin: 0,
+        syntax_set: crate::highlight::syntax_set(),
+        theme_set: crate::highlight::theme_set(),
+        base_dir: None,
+        images: ImageMode::Off,
+        graphics_font: None,
+        headings: &headings,
+        image_specs: &image_specs,
+        code_blocks: &code_blocks,
+        record_headings: true,
+        source: None,
+    };
+    f(&ctx)
 }
 
 /// Display lines as plain strings, trailing whitespace trimmed.
