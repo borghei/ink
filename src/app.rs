@@ -1399,7 +1399,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             entry,
                             &args,
-                            effective_width(terminal.size()?.width, args.toc),
+                            terminal.size()?.width,
                             theme_gen,
                             graphics,
                         );
@@ -1411,7 +1411,7 @@ fn run_inner(
                             &mut tabs[active_tab],
                             entry,
                             &args,
-                            effective_width(terminal.size()?.width, args.toc),
+                            terminal.size()?.width,
                             theme_gen,
                             graphics,
                         );
@@ -2081,13 +2081,13 @@ fn open_link(
         return Some(format!("cannot open {shown}"));
     };
     nav.record(NavEntry::of(&tabs[active_tab]));
-    let width = effective_width(size.map(|s| s.width).unwrap_or(80), args.toc);
     let tab = &mut tabs[active_tab];
-    *tab = build_tab(
+    replace_tab_keeping_toc(
+        tab,
         src,
         target.to_str().unwrap_or(path),
         args,
-        width,
+        size.map(|s| s.width).unwrap_or(80),
         gen,
         graphics,
     );
@@ -2234,7 +2234,7 @@ fn restore_nav_entry(
     tab: &mut Tab,
     mut entry: NavEntry,
     args: &Args,
-    width: u16,
+    term_width: u16,
     gen: u32,
     graphics: &crate::graphics::Graphics,
 ) {
@@ -2252,11 +2252,12 @@ fn restore_nav_entry(
     }
     let same_source = Arc::ptr_eq(&tab.source, &entry.source) || tab.source == entry.source;
     if tab.filename != entry.filename || !same_source {
-        *tab = build_tab(
+        replace_tab_keeping_toc(
+            tab,
             Arc::clone(&entry.source),
             &entry.filename,
             args,
-            width,
+            term_width,
             gen,
             graphics,
         );
@@ -2265,6 +2266,30 @@ fn restore_nav_entry(
     tab.scroll_offset = entry
         .scroll_offset
         .min(tab.ratatui_lines.len().saturating_sub(1));
+}
+
+/// Load another document into `tab`. The TOC stays open or closed as the
+/// reader left it (`--toc` only sets the starting state), and the text is
+/// laid out for the pane that leaves.
+fn replace_tab_keeping_toc(
+    tab: &mut Tab,
+    source: impl Into<Arc<str>>,
+    filename: &str,
+    args: &Args,
+    term_width: u16,
+    gen: u32,
+    graphics: &crate::graphics::Graphics,
+) {
+    let toc_visible = tab.toc.visible;
+    *tab = build_tab(
+        source,
+        filename,
+        args,
+        effective_width(term_width, toc_visible),
+        gen,
+        graphics,
+    );
+    tab.toc.visible = toc_visible;
 }
 
 /// Whether the TOC sidebar is drawn at this terminal width: it must be
@@ -3138,6 +3163,39 @@ mod section_tests {
         assert_eq!(first.len() - first.trim_start().len(), 40);
         assert!(first.trim_start().len() <= 120);
         assert!(first.trim_start().len() >= 116);
+    }
+
+    // Following a link and going back or forward load another document
+    // into the tab. They used to rebuild it from `--toc`, so a sidebar the
+    // reader had closed by hand came back (and one opened by hand closed).
+    #[test]
+    fn loading_another_document_keeps_the_toc_as_the_reader_left_it() {
+        let graphics = crate::graphics::Graphics::halfblocks();
+        let source = format!("# A\n\n{}", "word ".repeat(200));
+        for started_open in [true, false] {
+            let mut args = test_args();
+            args.toc = started_open;
+            let pane = effective_width(120, started_open);
+            let mut tab = build_tab(source.as_str(), "a.md", &args, pane, 0, &graphics);
+            tab.toc.visible = !started_open; // the reader toggled it
+
+            let entry = NavEntry {
+                filename: "b.md".into(),
+                source: Arc::from("# B\n\nbody"),
+                mtime: None,
+                scroll_offset: 0,
+            };
+            restore_nav_entry(&mut tab, entry, &args, 120, 0, &graphics);
+            assert_eq!(tab.filename, "b.md");
+            assert_eq!(tab.toc.visible, !started_open, "back/forward");
+
+            replace_tab_keeping_toc(&mut tab, source.as_str(), "a.md", &args, 120, 0, &graphics);
+            assert_eq!(tab.toc.visible, !started_open, "followed link");
+            // Laid out for the pane the sidebar actually leaves.
+            let pane = effective_width(120, !started_open);
+            let expected = build_tab(source.as_str(), "a.md", &args, pane, 0, &graphics);
+            assert_eq!(tab.plain, expected.plain);
+        }
     }
 
     // The three ways a tab is rebuilt (re-layout, `--watch`, reload after
