@@ -450,12 +450,29 @@ fn sequence_and_pie_wrap_when_narrow_and_keep_their_form_when_not() {
         seq,
         60,
         r"
-╭─ sequence diagram ───────────────────────────────────╮
-│  Alice ──▶ John: Hello John, how are you?
-╰──────────────────────────────────────────────────────╯",
+╭─ sequence diagram ──────────────────╮
+│ ┌───────┐                  ┌──────┐ │
+│ │ Alice │                  │ John │ │
+│ └───┬───┘                  └───┬──┘ │
+│     │                          │    │
+│     │ Hello John, how are you? │    │
+│     │─────────────────────────▶│    │
+│     │                          │    │
+│ ┌───┴───┐                  ┌───┴──┐ │
+│ │ Alice │                  │ John │ │
+│ └───────┘                  └──────┘ │
+╰─────────────────────────────────────╯",
     );
-    for line in render(seq, 24).lines() {
-        assert!(text::width(line) <= 24, "{line}");
+    // Narrower, the label wraps between the lifelines; narrower still the
+    // diagram is listed. Every line fits either way.
+    let out = render(seq, 24);
+    assert!(out.contains("│ how are │"), "{out}");
+    let out = render(seq, 18);
+    assert!(out.contains("Alice ──▶ John"), "{out}");
+    for w in [24, 18, 12] {
+        for line in render(seq, w).lines() {
+            assert!(text::width(line) <= w, "{line}");
+        }
     }
     let pie = "pie title Pets\n    \"Dogs\" : 3\n    \"Cats\" : 1";
     expect(
@@ -467,6 +484,287 @@ fn sequence_and_pie_wrap_when_narrow_and_keep_their_form_when_not() {
 │          Cats ███████ 25.0%
 ╰──────────────────────────────────────────────────────╯",
     );
+}
+
+// ── Sequence diagrams ──
+
+/// The rows of a drawn sequence diagram that hold `needle`.
+fn rows_with<'a>(out: &'a str, needle: &str) -> Vec<&'a str> {
+    out.lines().filter(|l| l.contains(needle)).collect()
+}
+
+/// The row under the first row holding `label` (a message's arrow).
+fn arrow_under<'a>(out: &'a str, label: &str) -> &'a str {
+    let lines: Vec<&str> = out.lines().collect();
+    let i = lines
+        .iter()
+        .position(|l| l.contains(label))
+        .unwrap_or_else(|| panic!("{label:?} not in\n{out}"));
+    lines[i + 1]
+}
+
+#[test]
+fn sequence_diagram_with_a_loop_a_note_and_a_dotted_reply() {
+    expect(
+        "sequenceDiagram\n    participant C as Client\n    participant S as Server\n    participant D as Database\n    C->>S: GET /items\n    loop each page\n        S->>D: query\n        D-->>S: rows\n    end\n    Note right of D: indexed\n    S-->>C: 200 OK",
+        72,
+        r"
+╭─ sequence diagram ───────────────────────────────╮
+│ ┌────────┐   ┌────────┐      ┌──────────┐        │
+│ │ Client │   │ Server │      │ Database │        │
+│ └────┬───┘   └────┬───┘      └─────┬────┘        │
+│      │            │                │             │
+│      │ GET /items │                │             │
+│      │───────────▶│                │             │
+│      │          ┌─ loop [each page] ─┐           │
+│      │          │ │     query      │ │           │
+│      │          │ │───────────────▶│ │           │
+│      │          │ │      rows      │ │           │
+│      │          │ │◀┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│ │           │
+│      │          └─┼────────────────┼─┘           │
+│      │            │                │ ┌─────────┐ │
+│      │            │                │ │ indexed │ │
+│      │            │                │ └─────────┘ │
+│      │   200 OK   │                │             │
+│      │◀┄┄┄┄┄┄┄┄┄┄┄│                │             │
+│      │            │                │             │
+│ ┌────┴───┐   ┌────┴───┐      ┌─────┴────┐        │
+│ │ Client │   │ Server │      │ Database │        │
+│ └────────┘   └────────┘      └──────────┘        │
+╰──────────────────────────────────────────────────╯",
+    );
+}
+
+#[test]
+fn sequence_arrows_are_told_apart() {
+    let out = render(
+        "sequenceDiagram\nA->B: solid\nA-->B: dotted\nA->>B: head\nA-->>B: dhead\nA-xB: cross\nA--xB: dcross\nA-)B: open\nA--)B: dopen\nB->>A: back\nA<<->>B: both",
+        60,
+    );
+    assert!(arrow_under(&out, "solid").contains("│────────│"), "{out}");
+    assert!(arrow_under(&out, "dotted").contains("│┄┄┄┄┄┄┄┄│"), "{out}");
+    assert!(arrow_under(&out, "head").contains("│───────▶│"), "{out}");
+    assert!(arrow_under(&out, "dhead").contains("│┄┄┄┄┄┄┄▶│"), "{out}");
+    assert!(arrow_under(&out, "cross").contains("─×│"), "{out}");
+    assert!(arrow_under(&out, "dcross").contains("┄×│"), "{out}");
+    assert!(arrow_under(&out, "open").contains("─▷│"), "{out}");
+    assert!(arrow_under(&out, "dopen").contains("┄▷│"), "{out}");
+    assert!(arrow_under(&out, "back").contains("│◀─"), "{out}");
+    let both = arrow_under(&out, "both");
+    assert!(both.contains("│◀─") && both.contains("─▶│"), "{out}");
+    // In ASCII, solid and dotted still differ.
+    let ascii = render_opts("sequenceDiagram\nA->>B: s\nA-->>B: d", 60, true);
+    assert!(ascii.contains("|----->|"), "{ascii}");
+    assert!(ascii.contains("|.....>|"), "{ascii}");
+}
+
+#[test]
+fn sequence_self_message_is_a_loop_on_the_right() {
+    expect(
+        "sequenceDiagram\nA->>A: think\nA-->>A: dream",
+        40,
+        r"
+╭─ sequence diagram ─╮
+│     ┌───┐          │
+│     │ A │          │
+│     └─┬─┘          │
+│       │            │
+│       │ think      │
+│       │──┐         │
+│       │◀─┘         │
+│       │ dream      │
+│       │┄┄┐         │
+│       │◀┄┘         │
+│       │            │
+│     ┌─┴─┐          │
+│     │ A │          │
+│     └───┘          │
+╰────────────────────╯",
+    );
+}
+
+#[test]
+fn sequence_autonumber_prefixes_labels() {
+    let out = render(
+        "sequenceDiagram\nautonumber\nA->>B: one\nB-->>A: two\nA->>B",
+        60,
+    );
+    assert!(out.contains("1. one"), "{out}");
+    assert!(out.contains("2. two"), "{out}");
+    assert_eq!(rows_with(&out, " 3 ").len(), 1, "{out}");
+}
+
+#[test]
+fn sequence_notes_sit_left_right_over_and_across() {
+    expect(
+        "sequenceDiagram\nparticipant A\nparticipant B\nNote left of A: left\nNote right of B: right\nNote over A: over\nNote over A,B: across both",
+        60,
+        r"
+╭─ sequence diagram ─────────────╮
+│        ┌───┐     ┌───┐         │
+│        │ A │     │ B │         │
+│        └─┬─┘     └─┬─┘         │
+│          │         │           │
+│ ┌──────┐ │         │           │
+│ │ left │ │         │           │
+│ └──────┘ │         │           │
+│          │         │ ┌───────┐ │
+│          │         │ │ right │ │
+│          │         │ └───────┘ │
+│      ┌──────┐      │           │
+│      │ over │      │           │
+│      └──────┘      │           │
+│        ┌─────────────┐         │
+│        │ across both │         │
+│        └─────────────┘         │
+│          │         │           │
+│        ┌─┴─┐     ┌─┴─┐         │
+│        │ A │     │ B │         │
+│        └───┘     └───┘         │
+╰────────────────────────────────╯",
+    );
+}
+
+#[test]
+fn sequence_activation_thickens_the_lifeline() {
+    let out = render(
+        "sequenceDiagram\nA->>+B: start\nB-->>-A: done\nA->>B: idle\nactivate A\nA->>B: busy\ndeactivate A",
+        60,
+    );
+    assert!(arrow_under(&out, "start").contains("▶┃"), "{out}");
+    assert!(arrow_under(&out, "done").contains("│◀┄"), "{out}");
+    assert!(arrow_under(&out, "done").contains('┃'), "{out}");
+    assert!(!arrow_under(&out, "idle").contains('┃'), "{out}");
+    assert!(arrow_under(&out, "busy").contains("┃──"), "{out}");
+}
+
+#[test]
+fn sequence_blocks_are_frames_and_nest() {
+    expect(
+        "sequenceDiagram\nloop every minute\nA->>B: ping\nend\nalt ok\nB-->>A: pong\nelse failed\nopt retry\nA->>B: again\nend\nend",
+        60,
+        r"
+╭─ sequence diagram ────────────╮
+│   ┌───┐               ┌───┐   │
+│   │ A │               │ B │   │
+│   └─┬─┘               └─┬─┘   │
+│     │                   │     │
+│   ┌─ loop [every minute] ─┐   │
+│   │ │       ping        │ │   │
+│   │ │──────────────────▶│ │   │
+│   └─┼───────────────────┼─┘   │
+│ ┌─ alt [ok] ────────────┼───┐ │
+│ │   │       pong        │   │ │
+│ │   │◀┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄│   │ │
+│ ├┄ else [failed] ┄┄┄┄┄┄┄┼┄┄┄┤ │
+│ │ ┌─ opt [retry] ───────┼─┐ │ │
+│ │ │ │       again       │ │ │ │
+│ │ │ │──────────────────▶│ │ │ │
+│ │ └─┼───────────────────┼─┘ │ │
+│ └───┼───────────────────┼───┘ │
+│     │                   │     │
+│   ┌─┴─┐               ┌─┴─┐   │
+│   │ A │               │ B │   │
+│   └───┘               └───┘   │
+╰───────────────────────────────╯",
+    );
+    // Every block keyword draws a titled frame.
+    for kind in ["loop", "alt", "opt", "par", "critical", "break", "rect"] {
+        let out = render(&format!("sequenceDiagram\n{kind} x\nA->>B: m\nend"), 60);
+        assert!(out.contains(&format!("┌─ {kind} [x] ")), "{out}");
+    }
+    let out = render(
+        "sequenceDiagram\npar a\nA->>B: m\nand b\nA->>C: n\nend\ncritical c\nA->>B: o\noption d\nA->>B: p\nend",
+        60,
+    );
+    assert!(out.contains("├┄ and [b] ┄"), "{out}");
+    assert!(out.contains("├┄ option [d] ┄"), "{out}");
+}
+
+#[test]
+fn sequence_too_wide_falls_back_to_a_list() {
+    let src = "sequenceDiagram\nparticipant A as Alpha Service\nparticipant B as Beta Service\nparticipant C as Gamma Service\nparticipant D as Delta Service\nA->>B: a fairly long request label\nloop again\nC-->>D: reply\nend\nNote over A,B: shared";
+    let out = render(src, 40);
+    assert!(!out.contains('┬'), "drawn, not listed:\n{out}");
+    for want in [
+        "Alpha Service ──▶ Beta Service: a",
+        "loop [again]",
+        "  Gamma Service ┄┄▶ Delta Service:",
+        "end",
+        "📝 Note over Alpha Service, Beta",
+    ] {
+        assert!(out.contains(want), "{want:?} missing:\n{out}");
+    }
+    for line in out.lines() {
+        assert!(text::width(line) <= 40, "{line}");
+    }
+    // Wide enough, the same diagram is drawn.
+    assert!(render(src, 120).contains('┬'));
+}
+
+#[test]
+fn sequence_ascii_mode_is_seven_bit() {
+    let out = render_opts(
+        "sequenceDiagram\nactor U as User\nU->>+S: hi\nloop again\nS-xU: no\nS-)U: later\nend\nNote over U,S: done\nS-->>-U: bye",
+        60,
+        true,
+    );
+    assert!(out.is_ascii(), "{out}");
+    assert!(out.contains("| User |"), "{out}");
+    assert!(out.contains("+- loop [again] -"), "{out}");
+}
+
+#[test]
+fn sequence_robustness() {
+    // Empty: a frame with nothing in it.
+    let out = render("sequenceDiagram", 40);
+    assert!(out.starts_with("╭─ sequence diagram"), "{out}");
+    // Unknown lines, comments, a stray `end` and `else`, an unclosed block:
+    // skipped or closed, never a panic.
+    let out = render(
+        "sequenceDiagram\n%% comment\nthis is not mermaid\nend\nelse x\nA->>B: ok\n:::\n->>\nA->>: half\nloop open",
+        60,
+    );
+    assert!(out.contains("ok"), "{out}");
+    assert!(out.contains("loop"), "{out}");
+    // A note or activation naming an undeclared participant creates it.
+    let out = render(
+        "sequenceDiagram\nparticipant A\nNote right of Z: hello\nactivate Q",
+        60,
+    );
+    assert!(out.contains("│ Z │") && out.contains("│ Q │"), "{out}");
+    // Names and labels are measured in columns: CJK boxes close.
+    let out = render(
+        "sequenceDiagram\n参加者->>サーバー: こんにちは世界\nサーバー-->>参加者: ✓ 完了",
+        60,
+    );
+    assert_eq!(rows_with(&out, "参加者").len(), 2, "{out}");
+    let w = text::width(out.lines().next().unwrap());
+    for line in out.lines() {
+        assert_eq!(text::width(line), w, "ragged line {line:?}\n{out}");
+    }
+    assert!(out.contains("こんにちは世界"), "{out}");
+}
+
+#[test]
+fn sequence_hostile_input_returns_quickly() {
+    let limit = Duration::from_secs(5);
+    let mut s = String::from("sequenceDiagram\n");
+    for i in 0..5000 {
+        s.push_str(&format!("P{}->>P{}: message {i}\n", i % 7, (i * 3 + 1) % 7));
+    }
+    assert_quick(&s, limit);
+    let mut s = String::from("sequenceDiagram\n");
+    for i in 0..300 {
+        s.push_str(&format!("loop L{i}\nA{i}->>B: x\n"));
+    }
+    assert_quick(&s, limit);
+    let mut s = String::from("sequenceDiagram\n");
+    for i in 0..500 {
+        s.push_str(&format!("participant N{i}\n"));
+    }
+    s.push_str("N0->>N499: across");
+    assert_quick(&s, limit);
 }
 
 // Issue #30: a label wider than 12 columns ("Documentation") pushed its bar

@@ -2,9 +2,10 @@
 //!
 //! Flowcharts, state, class and ER diagrams are parsed into one graph model
 //! ([`graph`]) and drawn by a layered layout engine ([`engine`]) on a
-//! character grid ([`canvas`]). Sequence diagrams, pie and Gantt charts and
-//! mindmaps have renderers of their own; other diagram types are shown as
-//! their source in a labelled box.
+//! character grid ([`canvas`]). Sequence diagrams are drawn on the same grid
+//! by a layout of their own ([`sequence`]): lifelines, arrows, notes and
+//! block frames. Pie and Gantt charts and mindmaps have renderers of their
+//! own; other diagram types are shown as their source in a labelled box.
 //!
 //! Every renderer must fit the width it is given, finish quickly on hostile
 //! input, and produce the same output for the same input.
@@ -17,6 +18,7 @@ mod flowchart;
 mod gantt;
 mod graph;
 mod mindmap;
+mod sequence;
 mod state;
 mod text;
 
@@ -57,8 +59,9 @@ pub fn render_mermaid_with(
             }
         }
     }
-    // The sequence and pie renderers lay out for 56 columns (and the ASCII
-    // note marker is wider than the icon): wrap what does not fit.
+    // The pie chart and the sequence list (the form a sequence diagram takes
+    // when it cannot be drawn in the width) lay out for 56 columns, and the
+    // ASCII note marker is wider than the icon: wrap what does not fit.
     let bar = if ascii { "|" } else { "│" };
     fit_lines(
         lines,
@@ -209,7 +212,7 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
     let margin_str = " ".repeat(margin);
 
     let chart_width = width.min(56);
-    // The legacy renderers below read the source from its first line.
+    // The pie renderer reads the source from its first line.
     let legacy = || {
         // `pie title X` carries the title on the first line.
         let mut s = match src.header.strip_prefix("title ") {
@@ -227,15 +230,26 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
         return render_graph(&g, &title, theme, width, margin);
     }
     let mut lines = match src.keyword.as_str() {
-        "sequenceDiagram" => render_sequence(
-            &legacy(),
-            diagram_color,
-            text_color,
-            border_color,
-            arrow_color,
-            &margin_str,
-            chart_width,
-        ),
+        "sequenceDiagram" => {
+            let d = sequence::parse(src.title.clone(), &src.body);
+            let title = d
+                .title
+                .clone()
+                .unwrap_or_else(|| "sequence diagram".to_string());
+            match sequence::layout(&d, width.saturating_sub(4)) {
+                Some(rows) => framed(&title, &rows, &[], theme, width, margin),
+                None => render_sequence(
+                    &d,
+                    &title,
+                    diagram_color,
+                    text_color,
+                    border_color,
+                    arrow_color,
+                    &margin_str,
+                    chart_width,
+                ),
+            }
+        }
         "pie" => render_pie(&legacy(), theme, &margin_str, chart_width),
         "gantt" => {
             let (title, rows) =
@@ -654,8 +668,12 @@ fn framed_impl(
     lines
 }
 
+/// A sequence diagram too wide to draw: one line per message or note, with
+/// block contents indented under their keyword.
+#[allow(clippy::too_many_arguments)]
 fn render_sequence(
-    source: &str,
+    d: &sequence::Diagram,
+    title: &str,
     diagram_color: &str,
     text_color: &str,
     border_color: &str,
@@ -663,98 +681,125 @@ fn render_sequence(
     margin: &str,
     width: usize,
 ) -> Vec<StyledLine> {
+    use sequence::{Event, Head, Place};
     let mut lines = Vec::new();
-    let mut participants: Vec<String> = Vec::new();
-
     lines.push(make_header(
-        "sequence diagram",
+        &text::truncate(title, width.saturating_sub(6)),
         border_color,
         diagram_color,
         margin,
         width,
     ));
-
-    for raw_line in source.lines().skip(1) {
-        let l = raw_line.trim();
-        if l.is_empty() {
-            continue;
+    let style = |fg: &str, bold: bool, italic: bool| SpanStyle {
+        fg: Some(fg.to_string()),
+        bold,
+        italic,
+        ..Default::default()
+    };
+    let span = |text: String, style: SpanStyle| StyledSpan { text, style };
+    let name = |i: usize| d.participants[i].label.replace('\n', " ");
+    let one_line = |s: &str| s.replace('\n', " ");
+    let mut depth = 0usize;
+    for e in &d.events {
+        let mut spans = Vec::new();
+        let indent = |depth: usize| " ".repeat(2 * depth);
+        match e {
+            Event::Message {
+                from,
+                to,
+                dotted,
+                head,
+                both,
+                label,
+                number,
+                ..
+            } => {
+                let stroke = if *dotted { "┄" } else { "─" };
+                let tip = match head {
+                    Head::None => stroke,
+                    Head::Arrow => "▶",
+                    Head::Open => "▷",
+                    Head::Cross => "×",
+                };
+                let tail = if *both { "◀" } else { stroke };
+                let mut lead = indent(depth);
+                if let Some(k) = number {
+                    lead.push_str(&format!("{k}. "));
+                }
+                spans.push(span(
+                    format!("{lead}{} ", name(*from)),
+                    style(text_color, true, false),
+                ));
+                spans.push(span(
+                    format!("{tail}{stroke}{tip} "),
+                    style(arrow_color, false, false),
+                ));
+                spans.push(span(name(*to), style(text_color, true, false)));
+                if !label.is_empty() {
+                    spans.push(span(
+                        format!(": {}", one_line(label)),
+                        style(text_color, false, true),
+                    ));
+                }
+            }
+            Event::Note {
+                place,
+                lo,
+                hi,
+                text: t,
+            } => {
+                let at = match place {
+                    Place::Left => format!("left of {}", name(*lo)),
+                    Place::Right => format!("right of {}", name(*lo)),
+                    Place::Over if lo == hi => format!("over {}", name(*lo)),
+                    Place::Over => format!("over {}, {}", name(*lo), name(*hi)),
+                };
+                spans.push(span(
+                    format!("{}  📝 Note {at}: {}", indent(depth), one_line(t)),
+                    style(text_color, false, true),
+                ));
+            }
+            Event::Open { kind, label } | Event::Divider { kind, label } => {
+                let opens = matches!(e, Event::Open { .. });
+                let at = if opens {
+                    depth
+                } else {
+                    depth.saturating_sub(1)
+                };
+                spans.push(span(
+                    format!("{}{kind}", indent(at)),
+                    style(diagram_color, true, false),
+                ));
+                if !label.is_empty() {
+                    spans.push(span(
+                        format!(" [{}]", one_line(label)),
+                        style(text_color, false, true),
+                    ));
+                }
+                if opens {
+                    depth += 1;
+                }
+            }
+            Event::Close => {
+                depth = depth.saturating_sub(1);
+                spans.push(span(
+                    format!("{}end", indent(depth)),
+                    style(diagram_color, true, false),
+                ));
+            }
+            Event::Activate(_) | Event::Deactivate(_) => continue,
         }
-
-        if l.starts_with("participant ") {
-            let name = l.strip_prefix("participant ").unwrap_or("").trim();
-            if !participants.contains(&name.to_string()) {
-                participants.push(name.to_string());
-            }
-        } else if l.contains("->>") || l.contains("-->>") || l.contains("->") || l.contains("-->") {
-            // Parse: Alice->>Bob: Hello
-            let (arrow, from, to, msg) = parse_sequence_line(l);
-            let arrow_sym = if arrow.contains(">>") {
-                "──▶"
-            } else {
-                "───"
-            };
-
+        // Wrap at words, continuing two columns in from the item's indent.
+        let lead = spans
+            .first()
+            .map_or(0, |s| s.text.len() - s.text.trim_start_matches(' ').len());
+        for row in wrap_spans(spans, width.saturating_sub(3), lead + 2) {
             let mut line = StyledLine::new();
             push_margin(&mut line, margin);
-            line.push(StyledSpan {
-                text: "│  ".to_string(),
-                style: SpanStyle {
-                    fg: Some(border_color.to_string()),
-                    ..Default::default()
-                },
-            });
-            line.push(StyledSpan {
-                text: format!("{from} "),
-                style: SpanStyle {
-                    fg: Some(text_color.to_string()),
-                    bold: true,
-                    ..Default::default()
-                },
-            });
-            line.push(StyledSpan {
-                text: format!("{arrow_sym} "),
-                style: SpanStyle {
-                    fg: Some(arrow_color.to_string()),
-                    ..Default::default()
-                },
-            });
-            line.push(StyledSpan {
-                text: to.to_string(),
-                style: SpanStyle {
-                    fg: Some(text_color.to_string()),
-                    bold: true,
-                    ..Default::default()
-                },
-            });
-            if !msg.is_empty() {
-                line.push(StyledSpan {
-                    text: format!(": {msg}"),
-                    style: SpanStyle {
-                        fg: Some(text_color.to_string()),
-                        italic: true,
-                        ..Default::default()
-                    },
-                });
+            line.push(span("│  ".to_string(), style(border_color, false, false)));
+            for s in row {
+                line.push(s);
             }
-            lines.push(line);
-        } else if l.starts_with("Note") {
-            let mut line = StyledLine::new();
-            push_margin(&mut line, margin);
-            line.push(StyledSpan {
-                text: "│  ".to_string(),
-                style: SpanStyle {
-                    fg: Some(border_color.to_string()),
-                    ..Default::default()
-                },
-            });
-            line.push(StyledSpan {
-                text: format!("  📝 {l}"),
-                style: SpanStyle {
-                    fg: Some(text_color.to_string()),
-                    italic: true,
-                    ..Default::default()
-                },
-            });
             lines.push(line);
         }
     }
@@ -763,6 +808,35 @@ fn render_sequence(
     lines.push(StyledLine::empty());
 
     lines
+}
+
+/// Word-wrap a line of spans to `avail` columns, each continuation line
+/// starting with `cont` spaces. A word wider than a whole line is left for
+/// [`fit_lines`] to break.
+fn wrap_spans(spans: Vec<StyledSpan>, avail: usize, cont: usize) -> Vec<Vec<StyledSpan>> {
+    let mut rows: Vec<Vec<StyledSpan>> = vec![Vec::new()];
+    let mut w = 0;
+    for s in spans {
+        for word in s.text.split_inclusive(' ') {
+            if w > cont && w + text::width(word.trim_end()) > avail {
+                rows.push(vec![StyledSpan {
+                    text: " ".repeat(cont),
+                    style: SpanStyle::default(),
+                }]);
+                w = cont;
+            }
+            w += text::width(word);
+            let row = rows.last_mut().expect("never empty");
+            match row.last_mut() {
+                Some(last) if last.style == s.style => last.text.push_str(word),
+                _ => row.push(StyledSpan {
+                    text: word.to_string(),
+                    style: s.style.clone(),
+                }),
+            }
+        }
+    }
+    rows
 }
 
 fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<StyledLine> {
@@ -939,31 +1013,6 @@ fn push_margin(line: &mut StyledLine, margin: &str) {
             style: SpanStyle::default(),
         });
     }
-}
-
-fn parse_sequence_line(line: &str) -> (String, String, String, String) {
-    let arrows = ["-->>", "->>", "-->", "->"];
-    for arrow in &arrows {
-        if let Some(pos) = line.find(arrow) {
-            let from = line[..pos].trim().to_string();
-            let after = &line[pos + arrow.len()..];
-            let (to, msg) = if let Some(colon_pos) = after.find(':') {
-                (
-                    after[..colon_pos].trim().to_string(),
-                    after[colon_pos + 1..].trim().to_string(),
-                )
-            } else {
-                (after.trim().to_string(), String::new())
-            };
-            return (arrow.to_string(), from, to, msg);
-        }
-    }
-    (
-        String::new(),
-        line.to_string(),
-        String::new(),
-        String::new(),
-    )
 }
 
 #[cfg(test)]

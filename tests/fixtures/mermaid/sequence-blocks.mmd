@@ -1,0 +1,32 @@
+sequenceDiagram
+    title Checkout
+    autonumber
+    actor U as Shopper
+    participant W as Web App
+    participant P as Payments
+    participant S as Stock
+    U->>+W: Place order
+    W->>W: Validate cart
+    par Reserve and charge
+        W->>S: Reserve items
+        S-->>W: Reserved
+    and
+        W->>+P: Charge card
+        alt Approved
+            P-->>W: Receipt
+        else Declined
+            P--xW: Error
+            opt Retry once
+                W-)P: Charge again
+            end
+        end
+        deactivate P
+    end
+    critical Confirm
+        W-->>U: Order confirmed
+    option Timeout
+        W--)U: Email later
+    end
+    Note right of S: Ships in 2 days
+    Note over U,W: Session ends
+    W-->>-U: Done

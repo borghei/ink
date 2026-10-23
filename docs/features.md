@@ -80,7 +80,8 @@ Blank or garbled images? See [Troubleshooting](troubleshooting.md#images).
 | State, class, ER | The same box-and-arrow layout |
 | Gantt | Bars on a scaled time axis |
 | Mindmap | A tree |
-| Sequence, pie | A compact text form |
+| Sequence | Participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, `autonumber`, and `loop`, `alt`, `opt`, `par`, `critical`, `break` and `rect` blocks as frames. A diagram too wide for the terminal is listed message by message |
+| Pie | A compact text form |
 | Anything else | The source, in a titled box |
 
 Box-drawing characters by default, plain ASCII with `--ascii`.
