@@ -438,1172 +438,1407 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
     result
 }
 
-fn run_inner(
-    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    source: String,
-    mut args: Args,
-    graphics: &crate::graphics::Graphics,
-) -> Result<AppExit> {
-    let size = terminal.size()?;
-
-    let mut tabs: Vec<Tab> = Vec::new();
-    let mut active_tab: usize = 0;
-
-    let mut search = SearchState::new();
-    let mut nav = NavHistory::default();
-    let mut theme_picker_open = false;
-    let mut theme_picker_index: usize = 0;
-    let mut help_open = false;
+/// The modal overlays drawn over the document. At most one takes input at a
+/// time; see [`Reader::input_mode`].
+struct Overlays {
+    theme_picker_open: bool,
+    theme_picker_index: usize,
+    help_open: bool,
     // Active link-hint overlay: labeled links currently on screen.
-    let mut link_hints: Vec<LinkHint> = Vec::new();
-    let mut hint_kind = HintKind::Open;
+    link_hints: Vec<LinkHint>,
+    hint_kind: HintKind,
     // Active code-block hint overlay.
-    let mut code_hints: Vec<CodeHint> = Vec::new();
+    code_hints: Vec<CodeHint>,
+}
+
+/// Text selection, from visual mode or the mouse.
+struct SelectionState {
     // Active text selection (visual mode or an in-progress mouse drag).
-    let mut sel: Option<Selection> = None;
-    let mut visual_mode = false;
+    sel: Option<Selection>,
+    visual_mode: bool,
     // A left button is down and the pointer has moved since it went down.
-    let mut dragging = false;
-    let mut drag_moved = false;
+    dragging: bool,
+    drag_moved: bool,
     // (when, column, row, consecutive clicks) — crossterm reports no click
     // count, so double/triple clicks are timed here.
-    let mut last_click: Option<(Instant, u16, u16, u8)> = None;
+    last_click: Option<(Instant, u16, u16, u8)>,
+}
+
+/// Everything the interactive reader keeps between two turns of its loop.
+struct Reader<'g> {
+    args: Args,
+    graphics: &'g crate::graphics::Graphics,
+    tabs: Vec<Tab>,
+    active_tab: usize,
+    search: SearchState,
+    nav: NavHistory,
+    overlays: Overlays,
+    selection: SelectionState,
     // Transient status message ("copied 84 chars") and when it was set.
-    let mut flash: Option<(String, Instant)> = None;
+    flash: Option<(String, Instant)>,
     // Where the document was last drawn, for translating mouse coordinates.
-    let mut doc_rect = Rect::new(0, 0, 0, 0);
+    doc_rect: Rect,
     // Where the TOC's heading list was last drawn (empty when hidden), for
     // clicks and wheel scrolls over the sidebar.
-    let mut toc_rect = Rect::new(0, 0, 0, 0);
+    toc_rect: Rect,
     // Bumped on every theme change so tabs know their cached layout is stale.
-    let mut theme_gen: u32 = 0;
-
-    let filename = args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin");
-    let init_width = effective_width(size.width, args.toc);
-    if args.slides {
-        // Presentation mode: one tab per slide, navigated with ←/→/Space.
-        // Frontmatter is stripped from the whole deck first — otherwise the
-        // YAML header becomes slide 1.
-        let deck = if args.frontmatter {
-            source.clone()
-        } else {
-            crate::parser::frontmatter::strip_frontmatter(&source).1
-        };
-        for slide in crate::slides::split_slides(&deck) {
-            tabs.push(build_tab(
-                slide, filename, &args, init_width, theme_gen, graphics,
-            ));
-        }
-    } else {
-        tabs.push(build_tab(
-            source, filename, &args, init_width, theme_gen, graphics,
-        ));
-        for input in args.inputs.iter().skip(1) {
-            if let Ok(src) = std::fs::read_to_string(input) {
-                tabs.push(build_tab(
-                    src, input, &args, init_width, theme_gen, graphics,
-                ));
-            }
-        }
-    }
-
-    // --watch: spawn a file watcher for the current document if a real path is in play.
-    let watcher: Option<crate::watch::FileWatcher> = if args.watch {
-        match args.inputs.first() {
-            Some(input) if is_local_file(input) => {
-                let path = std::path::PathBuf::from(input);
-                match crate::watch::FileWatcher::new(&path) {
-                    Ok(w) => Some(w),
-                    Err(e) => {
-                        eprintln!("ink: failed to start file watcher: {e}");
-                        None
-                    }
-                }
-            }
-            _ => {
-                eprintln!("ink: --watch requires a local file path, ignoring");
-                None
-            }
-        }
-    } else {
-        None
-    };
-
-    // Find current theme index
-    for (i, t) in THEME_LIST.iter().enumerate() {
-        if *t == args.theme {
-            theme_picker_index = i;
-            break;
-        }
-    }
-
+    theme_gen: u32,
+    watcher: Option<crate::watch::FileWatcher>,
     // True when --watch is active and the latest read of the watched file failed
     // (file was deleted / renamed away). The doc keeps showing the last good content
     // and the bottom bar gets a "[file missing]" indicator.
-    let mut file_missing = false;
-
+    file_missing: bool,
     // Redraw only when something changed. An idle reader with no input pending
     // does no per-frame work at all (previously it redrew ~20×/second).
-    let mut dirty = true;
+    dirty: bool,
     // Set on every Resize event; the rebuild runs once events stop for 80ms.
-    let mut resize_pending: Option<std::time::Instant> = None;
+    resize_pending: Option<std::time::Instant>,
+}
 
+impl<'g> Reader<'g> {
+    /// Lay out the starting document(s) for a terminal `width` columns wide
+    /// and start the `--watch` watcher.
+    fn new(
+        source: String,
+        args: Args,
+        graphics: &'g crate::graphics::Graphics,
+        width: u16,
+    ) -> Self {
+        let mut tabs: Vec<Tab> = Vec::new();
+        let theme_gen: u32 = 0;
+        let mut theme_picker_index: usize = 0;
+
+        let filename = args.inputs.first().map(|s| s.as_str()).unwrap_or("stdin");
+        let init_width = effective_width(width, args.toc);
+        if args.slides {
+            // Presentation mode: one tab per slide, navigated with ←/→/Space.
+            // Frontmatter is stripped from the whole deck first — otherwise the
+            // YAML header becomes slide 1.
+            let deck = if args.frontmatter {
+                source.clone()
+            } else {
+                crate::parser::frontmatter::strip_frontmatter(&source).1
+            };
+            for slide in crate::slides::split_slides(&deck) {
+                tabs.push(build_tab(
+                    slide, filename, &args, init_width, theme_gen, graphics,
+                ));
+            }
+        } else {
+            tabs.push(build_tab(
+                source, filename, &args, init_width, theme_gen, graphics,
+            ));
+            for input in args.inputs.iter().skip(1) {
+                if let Ok(src) = std::fs::read_to_string(input) {
+                    tabs.push(build_tab(
+                        src, input, &args, init_width, theme_gen, graphics,
+                    ));
+                }
+            }
+        }
+
+        // --watch: spawn a file watcher for the current document if a real path is in play.
+        let watcher: Option<crate::watch::FileWatcher> = if args.watch {
+            match args.inputs.first() {
+                Some(input) if is_local_file(input) => {
+                    let path = std::path::PathBuf::from(input);
+                    match crate::watch::FileWatcher::new(&path) {
+                        Ok(w) => Some(w),
+                        Err(e) => {
+                            eprintln!("ink: failed to start file watcher: {e}");
+                            None
+                        }
+                    }
+                }
+                _ => {
+                    eprintln!("ink: --watch requires a local file path, ignoring");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        // Find current theme index
+        for (i, t) in THEME_LIST.iter().enumerate() {
+            if *t == args.theme {
+                theme_picker_index = i;
+                break;
+            }
+        }
+
+        Self {
+            args,
+            graphics,
+            tabs,
+            active_tab: 0,
+            search: SearchState::new(),
+            nav: NavHistory::default(),
+            overlays: Overlays {
+                theme_picker_open: false,
+                theme_picker_index,
+                help_open: false,
+                link_hints: Vec::new(),
+                hint_kind: HintKind::Open,
+                code_hints: Vec::new(),
+            },
+            selection: SelectionState {
+                sel: None,
+                visual_mode: false,
+                dragging: false,
+                drag_moved: false,
+                last_click: None,
+            },
+            flash: None,
+            doc_rect: Rect::new(0, 0, 0, 0),
+            toc_rect: Rect::new(0, 0, 0, 0),
+            theme_gen,
+            watcher,
+            file_missing: false,
+            dirty: true,
+            resize_pending: None,
+        }
+    }
+
+    /// How the next key is read: by the open overlay, visual mode, the
+    /// focused sidebar, slides, or ordinary reading.
+    fn input_mode(&self) -> input::InputMode {
+        let overlays = &self.overlays;
+        if self.search.active {
+            input::InputMode::Search
+        } else if !overlays.link_hints.is_empty() || !overlays.code_hints.is_empty() {
+            input::InputMode::LinkHint
+        } else if self.selection.visual_mode {
+            input::InputMode::Visual
+        } else if self.tabs[self.active_tab].toc.nav.focused
+            && !overlays.help_open
+            && !overlays.theme_picker_open
+        {
+            if self.tabs[self.active_tab].toc.nav.filter.is_some() {
+                input::InputMode::TocFilter
+            } else {
+                input::InputMode::Toc
+            }
+        } else if self.args.slides && !overlays.theme_picker_open && !overlays.help_open {
+            input::InputMode::Slides
+        } else {
+            input::InputMode::Normal
+        }
+    }
+
+    /// Act on one input action: the open overlay or mode takes it first,
+    /// anything left is an ordinary reader action. `Some` ends the reader.
+    fn handle_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<Option<AppExit>> {
+        // Any recognized action changes state → redraw on the next iteration.
+        self.dirty = true;
+
+        // The wheel scrolls what is under the pointer: the sidebar, or
+        // (as an ordinary scroll) the document.
+        let action = match action {
+            Action::WheelUp(col, row) | Action::WheelDown(col, row)
+                if self.toc_rect.contains(Position::new(col, row))
+                    && !self.overlays.help_open
+                    && !self.overlays.theme_picker_open =>
+            {
+                let delta = if matches!(action, Action::WheelUp(..)) {
+                    -3
+                } else {
+                    3
+                };
+                self.tabs[self.active_tab]
+                    .toc
+                    .scroll_by(delta, view.toc_rows);
+                return Ok(None);
+            }
+            Action::WheelUp(..) => Action::ScrollUp(3),
+            Action::WheelDown(..) => Action::ScrollDown(3),
+            other => other,
+        };
+
+        // Help overlay is modal: any key closes it.
+        if self.overlays.help_open {
+            if action != Action::None {
+                self.overlays.help_open = false;
+            }
+            return Ok(None);
+        }
+
+        // Code-block hint overlay is modal: a label copies that block.
+        if !self.overlays.code_hints.is_empty() {
+            self.pick_code_hint(action);
+            return Ok(None);
+        }
+
+        // Link-hint overlay is modal: a label opens (or copies) that link,
+        // Y switches between the two, Esc cancels.
+        if !self.overlays.link_hints.is_empty() {
+            self.pick_link_hint(action, terminal);
+            return Ok(None);
+        }
+        // Theme picker mode
+        if self.overlays.theme_picker_open {
+            self.theme_picker_action(action, terminal, view)?;
+            return Ok(None);
+        }
+
+        // Visual mode is modal: motions move the cursor end of the
+        // selection, `y` copies it, Esc/q leaves without copying.
+        if self.selection.visual_mode {
+            self.visual_action(action, view);
+            return Ok(None);
+        }
+
+        // The focused sidebar takes its own keys; anything else (mouse,
+        // resize, wheel) falls through to the ordinary handling below.
+        if let Action::Toc(key) = action {
+            let tab = &mut self.tabs[self.active_tab];
+            if let Some(i) = tab.toc.handle(key, view.toc_rows) {
+                jump_to_heading(tab, &mut self.nav, i, view.viewport_height as usize);
+            }
+            return Ok(None);
+        }
+
+        // A confirmed search shows highlighted matches; the first Esc/q
+        // dismisses them (vim/less convention) rather than quitting.
+        if action == Action::ExitApp && !self.search.matches.is_empty() {
+            self.search.deactivate();
+            let current_offset = self.tabs[self.active_tab].scroll_offset;
+            self.tabs[self.active_tab]
+                .toc
+                .update_selection(current_offset);
+            return Ok(None);
+        }
+
+        if let Some(exit) = self.reader_action(action, terminal, view)? {
+            return Ok(Some(exit));
+        }
+
+        let current_offset = self.tabs[self.active_tab].scroll_offset;
+        self.tabs[self.active_tab]
+            .toc
+            .update_selection(current_offset);
+        Ok(None)
+    }
+
+    /// A key in the code-block hint overlay. Any key closes it.
+    fn pick_code_hint(&mut self, action: Action) {
+        if let Action::LinkHint(c) = action {
+            if let Some(hint) = self.overlays.code_hints.iter().find(|h| h.label == c) {
+                let what = if hint.lang.is_empty() {
+                    "code block".to_string()
+                } else {
+                    format!("code block ({})", hint.lang)
+                };
+                self.flash = Some((
+                    copy_text(&hint.source, self.args.clipboard, &what),
+                    Instant::now(),
+                ));
+            }
+        }
+        self.overlays.code_hints.clear();
+    }
+
+    /// A key in the link-hint overlay. Anything but `Y` closes it.
+    fn pick_link_hint(&mut self, action: Action, terminal: &mut Tui) {
+        match action {
+            Action::HintCopyToggle => {
+                self.overlays.hint_kind = HintKind::CopyUrl;
+            }
+            Action::LinkHint(c) => {
+                if let Some(hint) = self.overlays.link_hints.iter().find(|h| h.label == c) {
+                    match self.overlays.hint_kind {
+                        HintKind::Open => {
+                            if let Some(msg) = open_link(
+                                &hint.url,
+                                &mut self.tabs,
+                                self.active_tab,
+                                &mut self.nav,
+                                &self.args,
+                                terminal,
+                                self.theme_gen,
+                                self.graphics,
+                            ) {
+                                self.flash = Some((msg, Instant::now()));
+                            }
+                        }
+                        HintKind::CopyUrl => {
+                            self.flash = Some((
+                                copy_text(&hint.url, self.args.clipboard, "link"),
+                                Instant::now(),
+                            ));
+                        }
+                    }
+                }
+                self.overlays.link_hints.clear();
+            }
+            Action::CloseSearch => self.overlays.link_hints.clear(),
+            _ => self.overlays.link_hints.clear(),
+        }
+    }
+
+    /// A key in the theme picker: move through the themes with a live
+    /// preview, or close it and save the choice.
+    fn theme_picker_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<()> {
+        let overlays = &mut self.overlays;
+        match action {
+            Action::ExitApp | Action::CloseSearch => {
+                // Closing keeps the previewed theme — persist it.
+                overlays.theme_picker_open = false;
+                let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
+            }
+            Action::ScrollDown(_) => {
+                overlays.theme_picker_index = (overlays.theme_picker_index + 1) % THEME_LIST.len();
+                // Live preview: rebuild the visible tab now; others refresh
+                // lazily when switched to (theme_gen marks them stale).
+                self.args.theme = THEME_LIST[overlays.theme_picker_index].to_string();
+                self.theme_gen = self.theme_gen.wrapping_add(1);
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    view.viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+            }
+            Action::ScrollUp(_) => {
+                overlays.theme_picker_index = if overlays.theme_picker_index == 0 {
+                    THEME_LIST.len() - 1
+                } else {
+                    overlays.theme_picker_index - 1
+                };
+                self.args.theme = THEME_LIST[overlays.theme_picker_index].to_string();
+                self.theme_gen = self.theme_gen.wrapping_add(1);
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    view.viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+            }
+            Action::SearchConfirm => {
+                // Confirm theme selection and persist it to config.
+                overlays.theme_picker_open = false;
+                let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A key in visual mode: move the cursor end of the selection, copy it
+    /// (`y`), or leave without copying (Esc/q).
+    fn visual_action(&mut self, action: Action, view: View) {
+        let plain = &self.tabs[self.active_tab].plain;
+        let Some(mut cursel) = self.selection.sel else {
+            self.selection.visual_mode = false;
+            return;
+        };
+        let cur = cursel.cursor;
+        let line_text = plain.get(cur.line).map(|t| t.as_str()).unwrap_or("");
+        let vh = view.viewport_height as usize;
+        let mut moved = true;
+        match action {
+            Action::Yank => {
+                let text = cursel.extract(plain);
+                let what = format!("{} chars", text.chars().count());
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+                self.selection.visual_mode = false;
+                self.selection.sel = None;
+                return;
+            }
+            Action::SelCancel | Action::ExitApp => {
+                self.selection.visual_mode = false;
+                self.selection.sel = None;
+                return;
+            }
+            Action::SelectMode => cursel.mode = SelMode::Char,
+            Action::SelectLineMode => {
+                cursel.mode = if cursel.mode == SelMode::Line {
+                    SelMode::Char
+                } else {
+                    SelMode::Line
+                }
+            }
+            Action::SelDown(n) => cursel.cursor.line = cur.line.saturating_add(n as usize),
+            Action::SelUp(n) => cursel.cursor.line = cur.line.saturating_sub(n as usize),
+            Action::SelLeft(n) => cursel.cursor.col = cur.col.saturating_sub(n as usize),
+            Action::SelRight(n) => cursel.cursor.col = cur.col.saturating_add(n as usize),
+            Action::SelWordNext => cursel.cursor.col = selection::next_word_col(line_text, cur.col),
+            Action::SelWordPrev => cursel.cursor.col = selection::prev_word_col(line_text, cur.col),
+            Action::SelLineStart => cursel.cursor.col = 0,
+            Action::SelLineEnd => {
+                cursel.cursor.col = selection::line_width(line_text).saturating_sub(1)
+            }
+            Action::SelDocStart => cursel.cursor = Pos::new(0, 0),
+            Action::SelDocEnd => {
+                cursel.cursor = Pos::new(plain.len().saturating_sub(1), 0);
+            }
+            Action::SelPageDown => cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1),
+            Action::SelPageUp => cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1),
+            Action::Resize(_, _) => {
+                self.resize_pending = Some(std::time::Instant::now());
+                moved = false;
+            }
+            _ => moved = false,
+        }
+        if moved {
+            cursel.cursor = selection::clamp(cursel.cursor, plain);
+            // Keep the moving end of the selection on screen.
+            let scroll = &mut self.tabs[self.active_tab].scroll_offset;
+            if cursel.cursor.line < *scroll {
+                *scroll = cursel.cursor.line;
+            } else if cursel.cursor.line >= *scroll + vh {
+                *scroll = cursel.cursor.line + 1 - vh;
+            }
+            *scroll = (*scroll).min(view.max_scroll);
+        }
+        self.selection.sel = Some(cursel);
+    }
+
+    /// An action in ordinary reading, with no overlay or mode in the way.
+    /// `Some` ends the reader.
+    fn reader_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<Option<AppExit>> {
+        let viewport_height = view.viewport_height;
+        let max_scroll = view.max_scroll;
+        match action {
+            Action::ExitApp => return Ok(Some(AppExit::Quit)),
+            Action::OpenBrowser => return Ok(Some(AppExit::BackToBrowser)),
+            Action::CloseDoc => return Ok(Some(AppExit::BackToBrowser)),
+
+            // Search
+            Action::Search => {
+                self.search.activate();
+            }
+            Action::CloseSearch => {
+                self.search.deactivate();
+            }
+            Action::SearchConfirm => {
+                // Keep matches visible but exit search input mode
+                self.search.active = false;
+            }
+            Action::SearchInput(c) => {
+                self.search.push_char(c);
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                // Auto-jump to first match
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchBackspace => {
+                self.search.pop_char();
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchNext => {
+                self.search.next_match();
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchPrev => {
+                self.search.prev_match();
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+
+            // Scrolling
+            Action::ScrollDown(n) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.saturating_add(n as usize).min(max_scroll);
+            }
+            Action::ScrollUp(n) => {
+                // Clamp before subtracting: a stale offset past the end
+                // (post-resize) must recover on the first upward scroll.
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.min(max_scroll).saturating_sub(n as usize);
+            }
+            Action::PageDown => {
+                let jump = (viewport_height as usize).saturating_sub(2); // keep 2 lines overlap
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.saturating_add(jump).min(max_scroll);
+            }
+            Action::PageUp => {
+                let jump = (viewport_height as usize).saturating_sub(2);
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.min(max_scroll).saturating_sub(jump);
+            }
+            Action::Home => self.tabs[self.active_tab].scroll_offset = 0,
+            Action::End => self.tabs[self.active_tab].scroll_offset = max_scroll,
+
+            // Slides
+            Action::SlideNext => {
+                if self.active_tab + 1 < self.tabs.len() {
+                    self.active_tab += 1;
+                    self.show_active_tab(terminal, viewport_height)?;
+                }
+            }
+            Action::SlidePrev => {
+                if self.active_tab > 0 {
+                    self.active_tab -= 1;
+                    self.show_active_tab(terminal, viewport_height)?;
+                }
+            }
+
+            // TOC
+            Action::TocFocus => self.focus_toc(terminal, viewport_height)?,
+            Action::ToggleToc => {
+                self.tabs[self.active_tab].toc.toggle();
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+            }
+
+            // Help overlay
+            Action::Help => {
+                self.overlays.help_open = true;
+            }
+
+            // Theme picker
+            Action::ThemePicker => {
+                self.overlays.theme_picker_open = true;
+            }
+
+            // Link-hint mode: label every link in the viewport.
+            Action::LinkMode => {
+                let tab = &self.tabs[self.active_tab];
+                let len = tab.styled_lines.len();
+                let offset = tab.scroll_offset.min(len);
+                let end = (offset + viewport_height as usize).min(len);
+                self.overlays.link_hints = collect_link_hints(&tab.styled_lines[offset..end]);
+            }
+
+            // After a confirmed search, n/N cycle matches (less/vim
+            // convention); otherwise they jump between headings.
+            Action::NextHeading => {
+                if !self.search.matches.is_empty() {
+                    self.search.next_match();
+                    if let Some(line) = self.search.current_line() {
+                        self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                    }
+                } else {
+                    let tab = &mut self.tabs[self.active_tab];
+                    let current = tab.scroll_offset;
+                    if let Some(next) = tab.toc.headings.iter().find(|h| h.line_index > current + 1)
+                    {
+                        tab.scroll_offset = next.line_index.saturating_sub(1).min(max_scroll);
+                    }
+                }
+            }
+            Action::PrevHeading => {
+                if !self.search.matches.is_empty() {
+                    self.search.prev_match();
+                    if let Some(line) = self.search.current_line() {
+                        self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                    }
+                } else {
+                    let tab = &mut self.tabs[self.active_tab];
+                    let current = tab.scroll_offset;
+                    if let Some(prev) = tab
+                        .toc
+                        .headings
+                        .iter()
+                        .rev()
+                        .find(|h| h.line_index + 1 < current)
+                    {
+                        tab.scroll_offset = prev.line_index.saturating_sub(1).min(max_scroll);
+                    }
+                }
+            }
+
+            // Links are handled via OSC 8 hyperlinks (Cmd+Click / Ctrl+Click)
+
+            // Tabs — refresh the newly-active tab if it was laid out for a
+            // stale width/theme (lazy rebuild).
+            Action::NextTab if self.tabs.len() > 1 => {
+                self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                self.show_active_tab(terminal, viewport_height)?;
+            }
+            Action::PrevTab if self.tabs.len() > 1 => {
+                self.active_tab = if self.active_tab == 0 {
+                    self.tabs.len() - 1
+                } else {
+                    self.active_tab - 1
+                };
+                self.show_active_tab(terminal, viewport_height)?;
+            }
+
+            // Follow the first link on screen that can be followed (web,
+            // mail, a .md file or a #heading anchor), through the same
+            // path as link-hint mode.
+            Action::FollowLink => self.follow_first_link(terminal, viewport_height),
+
+            // Navigation history
+            Action::NavBack => {
+                if let Some(entry) = self.nav.go_back(NavEntry::of(&self.tabs[self.active_tab])) {
+                    restore_nav_entry(
+                        &mut self.tabs[self.active_tab],
+                        entry,
+                        &self.args,
+                        terminal.size()?.width,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                }
+            }
+            Action::NavForward => {
+                if let Some(entry) = self
+                    .nav
+                    .go_forward(NavEntry::of(&self.tabs[self.active_tab]))
+                {
+                    restore_nav_entry(
+                        &mut self.tabs[self.active_tab],
+                        entry,
+                        &self.args,
+                        terminal.size()?.width,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                }
+            }
+
+            // Selection & clipboard
+            Action::SelectMode | Action::SelectLineMode => {
+                self.start_selection(action, viewport_height);
+            }
+
+            // Code-block hints: label every block touching the viewport.
+            Action::CopyCode => self.label_code_blocks(viewport_height),
+
+            // Open the file in $VISUAL/$EDITOR at the line on screen,
+            // then reload it.
+            Action::Edit => {
+                let width = terminal.size()?.width;
+                let msg = edit_in_editor(
+                    terminal,
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    viewport_height as usize,
+                    width,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                self.flash = msg.map(|m| (m, Instant::now()));
+            }
+
+            // Copy the section the viewport starts in, as markdown source.
+            Action::CopySection => {
+                let tab = &self.tabs[self.active_tab];
+                let (text, what) = section_source(tab, viewport_height as usize);
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+            }
+
+            // Mouse selection. Only reachable when ink holds the mouse;
+            // with `mouse_capture = false` these events never arrive and
+            // the terminal's own selection keeps working.
+            // A click on a sidebar row jumps to that heading.
+            Action::MouseDown(col, row) if self.toc_rect.contains(Position::new(col, row)) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.toc.leave();
+                if let Some(i) = tab.toc.heading_at((row - self.toc_rect.y) as usize) {
+                    jump_to_heading(tab, &mut self.nav, i, viewport_height as usize);
+                }
+            }
+            Action::MouseDown(col, row) => self.mouse_down(col, row),
+            Action::MouseDrag(col, row) => self.mouse_drag(col, row),
+            Action::MouseUp(col, row) => self.mouse_up(col, row, terminal),
+
+            Action::Resize(_, _) => {
+                // Debounced: dragging a terminal edge fires dozens of
+                // resize events, and every rebuild re-encodes all images.
+                // The actual rebuild happens above once events go quiet.
+                self.resize_pending = Some(std::time::Instant::now());
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// The active tab changed: refresh it if it was laid out for a stale
+    /// width/theme (lazy rebuild), and search it.
+    fn show_active_tab(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        ensure_tab_current(
+            &mut self.tabs[self.active_tab],
+            &self.args,
+            terminal.size()?.width,
+            viewport_height as usize,
+            self.theme_gen,
+            self.graphics,
+        );
+        self.search
+            .update_matches(&self.tabs[self.active_tab].lowered);
+        Ok(())
+    }
+
+    /// `o`: give the sidebar the keys, opening it first if it is closed.
+    fn focus_toc(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        let width = terminal.size()?.width;
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.toc.headings.is_empty() {
+            self.flash = Some(("no headings in this document".into(), Instant::now()));
+        } else if !sidebar_shown(true, width) {
+            self.flash = Some((
+                "window too narrow for the table of contents".into(),
+                Instant::now(),
+            ));
+        } else {
+            if !tab.toc.visible {
+                tab.toc.toggle();
+                rebuild_tab(
+                    tab,
+                    &self.args,
+                    width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search.update_matches(&tab.lowered);
+            }
+            tab.toc.update_selection(tab.scroll_offset);
+            tab.toc.focus();
+        }
+        Ok(())
+    }
+
+    /// `Enter`: follow the first followable link on screen.
+    fn follow_first_link(&mut self, terminal: &mut Tui, viewport_height: u16) {
+        let tab = &self.tabs[self.active_tab];
+        let found_link =
+            first_followable_link(&tab.styled_lines, tab.scroll_offset, viewport_height)
+                .map(str::to_string);
+        match found_link {
+            Some(link) => {
+                if let Some(msg) = open_link(
+                    &link,
+                    &mut self.tabs,
+                    self.active_tab,
+                    &mut self.nav,
+                    &self.args,
+                    terminal,
+                    self.theme_gen,
+                    self.graphics,
+                ) {
+                    self.flash = Some((msg, Instant::now()));
+                }
+            }
+            None => {
+                self.flash = Some(("no links on screen".into(), Instant::now()));
+            }
+        }
+    }
+
+    /// `v` / `V`: enter visual mode with a fresh selection.
+    fn start_selection(&mut self, action: Action, viewport_height: u16) {
+        let mode = if action == Action::SelectLineMode {
+            SelMode::Line
+        } else {
+            SelMode::Char
+        };
+        // Normal mode has no caret to inherit, so the selection
+        // starts on the first line of the viewport that has text —
+        // anchoring on the blank spacing above a heading looks
+        // broken.
+        let tab = &self.tabs[self.active_tab];
+        let start = tab.scroll_offset.min(tab.plain.len().saturating_sub(1));
+        let end = (start + viewport_height as usize).min(tab.plain.len());
+        let line = (start..end)
+            .find(|i| !tab.plain[*i].trim().is_empty())
+            .unwrap_or(start);
+        let col = tab
+            .plain
+            .get(line)
+            .map_or(0, |t| selection::content_start_col(t));
+        self.selection.sel = Some(Selection::new(Pos::new(line, col), mode));
+        self.selection.visual_mode = true;
+    }
+
+    /// `c`: label every code block touching the viewport.
+    fn label_code_blocks(&mut self, viewport_height: u16) {
+        let tab = &self.tabs[self.active_tab];
+        let top = tab.scroll_offset;
+        let bottom = top + viewport_height as usize;
+        self.overlays.code_hints = tab
+            .code_blocks
+            .iter()
+            .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
+            .zip('a'..='z')
+            .map(|(b, label)| {
+                // A block scrolled off the top keeps its label on
+                // the first visible row.
+                let row = b.line_index.max(top) - top;
+                let width = tab
+                    .plain
+                    .get(b.line_index)
+                    .map_or(0, |t| selection::line_width(t));
+                CodeHint {
+                    label,
+                    row: row as u16,
+                    col: width.saturating_sub(4) as u16,
+                    lang: b.lang.clone(),
+                    source: b.source.clone(),
+                }
+            })
+            .collect();
+        if self.overlays.code_hints.is_empty() {
+            self.flash = Some(("no code blocks on screen".to_string(), Instant::now()));
+        }
+    }
+
+    /// A left press in the document: start a selection, by word or line on
+    /// a double or triple click.
+    fn mouse_down(&mut self, col: u16, row: u16) {
+        self.tabs[self.active_tab].toc.leave();
+        let sel = &mut self.selection;
+        if let Some(pos) = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row) {
+            let clicks = match sel.last_click {
+                Some((at, c, r, n))
+                    if c == col && r == row && at.elapsed() < Duration::from_millis(400) =>
+                {
+                    n % 3 + 1
+                }
+                _ => 1,
+            };
+            sel.last_click = Some((Instant::now(), col, row, clicks));
+            let plain = &self.tabs[self.active_tab].plain;
+            let line_text = plain.get(pos.line).map(|t| t.as_str()).unwrap_or("");
+            sel.sel = Some(match clicks {
+                2 => {
+                    let (from, to) = selection::word_bounds(line_text, pos.col);
+                    Selection {
+                        anchor: Pos::new(pos.line, from),
+                        cursor: Pos::new(pos.line, to),
+                        mode: SelMode::Char,
+                    }
+                }
+                3 => Selection::new(pos, SelMode::Line),
+                _ => Selection::new(pos, SelMode::Char),
+            });
+            // A double/triple click has already selected something;
+            // release copies it without any drag.
+            sel.drag_moved = clicks > 1;
+            sel.dragging = true;
+            sel.visual_mode = false;
+        }
+    }
+
+    /// The pointer moved with the left button down: extend the selection.
+    fn mouse_drag(&mut self, col: u16, row: u16) {
+        let sel = &mut self.selection;
+        if sel.dragging {
+            if let Some(pos) = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row) {
+                if let Some(ref mut cursel) = sel.sel {
+                    if pos != cursel.cursor {
+                        sel.drag_moved = true;
+                    }
+                    cursel.cursor = pos;
+                }
+            }
+        }
+    }
+
+    /// The left button came up: copy what a drag selected, or follow the
+    /// link under a plain click.
+    fn mouse_up(&mut self, col: u16, row: u16, terminal: &mut Tui) {
+        let sel = &mut self.selection;
+        // Pressed and released on one cell with no drag, and not
+        // the second press of a double click.
+        let clicked = sel.dragging
+            && !sel.drag_moved
+            && matches!(sel.last_click, Some((_, c, r, 1)) if c == col && r == row);
+        sel.dragging = false;
+        match sel.sel {
+            // A plain click with no drag is a dismiss, not a copy.
+            Some(_) if !sel.drag_moved => sel.sel = None,
+            Some(cursel) => {
+                let text = cursel.extract(&self.tabs[self.active_tab].plain);
+                let what = format!("{} chars", text.chars().count());
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+            }
+            None => {}
+        }
+        self.selection.drag_moved = false;
+        // A click on a link follows it, the way `f` would.
+        let link = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row)
+            .filter(|_| clicked)
+            .and_then(|pos| link_at(&self.tabs[self.active_tab], pos))
+            .map(str::to_string);
+        if let Some(url) = link {
+            // The page under the pointer changes: the next press
+            // is a fresh click, not the second of a double.
+            self.selection.last_click = None;
+            if let Some(msg) = open_link(
+                &url,
+                &mut self.tabs,
+                self.active_tab,
+                &mut self.nav,
+                &self.args,
+                terminal,
+                self.theme_gen,
+                self.graphics,
+            ) {
+                self.flash = Some((msg, Instant::now()));
+            }
+        }
+    }
+
+    /// Catch up on what changed outside the input queue since the last
+    /// turn (the watched file, a settled resize, the sidebar going away,
+    /// an expired flash), and measure this turn's view.
+    fn update(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<View> {
+        self.reload_watched_file(terminal, viewport_height)?;
+        self.settle_resize(terminal, viewport_height)?;
+        self.drop_hidden_toc_focus(terminal.size()?.width);
+        self.expire_flash();
+
+        // The heading list sits under the sidebar's title row.
+        let toc_rows = viewport_height.saturating_sub(1) as usize;
+        if self.tabs[self.active_tab].toc.visible {
+            self.tabs[self.active_tab].toc.follow(toc_rows);
+        }
+
+        let tab = &self.tabs[self.active_tab];
+        let total_lines = tab.ratatui_lines.len();
+        let max_scroll = total_lines.saturating_sub(viewport_height as usize);
+        Ok(View {
+            viewport_height,
+            toc_rows,
+            total_lines,
+            max_scroll,
+        })
+    }
+
+    /// --watch: if the current doc is the watched file and it changed, rebuild it.
+    fn reload_watched_file(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        let (Some(w), Some(input)) = (self.watcher.as_ref(), self.args.inputs.first()) else {
+            return Ok(());
+        };
+        let path = std::path::Path::new(input);
+        if self.tabs[self.active_tab].filename == *input && w.check(path) {
+            match std::fs::read_to_string(path) {
+                Ok(new_source) if self.args.slides => {
+                    let deck = if self.args.frontmatter {
+                        new_source
+                    } else {
+                        crate::parser::frontmatter::strip_frontmatter(&new_source).1
+                    };
+                    let toc_visible = self.tabs[self.active_tab].toc.visible;
+                    let term_w = effective_width(terminal.size()?.width, toc_visible);
+                    let slides = crate::slides::split_slides(&deck);
+                    if !slides.is_empty() {
+                        self.tabs = slides
+                            .into_iter()
+                            .map(|sl| {
+                                build_tab(
+                                    sl,
+                                    input,
+                                    &self.args,
+                                    term_w,
+                                    self.theme_gen,
+                                    self.graphics,
+                                )
+                            })
+                            .collect();
+                        self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+                        self.tabs[self.active_tab].toc.visible = toc_visible;
+                    }
+                    self.search
+                        .update_matches(&self.tabs[self.active_tab].lowered);
+                    self.file_missing = false;
+                    self.dirty = true;
+                }
+                Ok(new_source) => {
+                    reload_tab(
+                        &mut self.tabs[self.active_tab],
+                        new_source.into(),
+                        Anchor::KeepOffset,
+                        &self.args,
+                        terminal.size()?.width,
+                        viewport_height as usize,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                    self.search
+                        .update_matches(&self.tabs[self.active_tab].lowered);
+                    if self.file_missing {
+                        self.file_missing = false;
+                    }
+                    self.dirty = true;
+                }
+                Err(_) => {
+                    // File was deleted or renamed away. Keep the last-rendered content
+                    // and surface the state in the status bar.
+                    if !self.file_missing {
+                        self.file_missing = true;
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Debounced resize: rebuild once the flurry of events has settled.
+    fn settle_resize(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        if let Some(t0) = self.resize_pending {
+            if t0.elapsed() >= Duration::from_millis(80) {
+                self.resize_pending = None;
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                self.dirty = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// The sidebar is not drawn (the window shrank, or it was hidden):
+    /// a focused TOC would take keys for an invisible cursor and keep its
+    /// key reminder in the status bar. Give focus back to the document.
+    fn drop_hidden_toc_focus(&mut self, width: u16) {
+        let toc = &mut self.tabs[self.active_tab].toc;
+        if toc.nav.focused && !sidebar_shown(toc.visible, width) {
+            toc.leave();
+            self.dirty = true;
+        }
+    }
+
+    /// A copy message is worth two seconds of the status bar, no longer.
+    fn expire_flash(&mut self) {
+        if let Some((_, at)) = self.flash {
+            if at.elapsed() >= Duration::from_secs(2) {
+                self.flash = None;
+                self.dirty = true;
+            }
+        }
+    }
+
+    /// Draw the reader, and mark it clean.
+    fn draw(&mut self, terminal: &mut Tui, view: View) -> Result<()> {
+        terminal.draw(|frame| self.render(frame, view))?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Lay out and paint one frame: bars, sidebar, document, images and
+    /// overlays. Records where the document and the sidebar's heading list
+    /// were drawn, for the mouse.
+    fn render(&mut self, frame: &mut Frame, view: View) {
+        let size = frame.area();
+        let tab = &self.tabs[self.active_tab];
+
+        // Fill entire frame with theme background color
+        let t = theme::resolve_theme(&self.args.theme);
+        if let Some(ref bg_hex) = t.colors.bg {
+            let bg_color = theme::hex_to_color(bg_hex);
+            let bg_block = ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
+            frame.render_widget(bg_block, size);
+        }
+
+        // Guard against a terminal too small to lay out safely.
+        if size.width < 20 || size.height < 6 {
+            let msg = Paragraph::new("terminal too small")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme::hex_to_color(&t.colors.fg)));
+            frame.render_widget(msg, size);
+            return;
+        }
+
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // top bar: progress
+                Constraint::Min(1),    // main content
+                Constraint::Length(2), // separator + bottom bar
+            ])
+            .split(size);
+
+        let top_bar_area = vertical[0];
+        let main_area = vertical[1];
+        let bottom_area = vertical[2];
+
+        // Split bottom into separator line + bar
+        let bottom_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(bottom_area);
+        let separator_area = bottom_split[0];
+        let bottom_bar_area = bottom_split[1];
+
+        // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
+        let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
+        let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
+        let sep_style = if let Some(cbg) = content_bg {
+            Style::default().fg(bar_bg).bg(cbg)
+        } else {
+            Style::default().fg(bar_bg)
+        };
+        let sep_line = Line::from(Span::styled(
+            crate::glyphs::current()
+                .separator
+                .repeat(separator_area.width as usize),
+            sep_style,
+        ));
+        frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
+
+        // Top bar: filename + progress
+        let tab_info = if self.tabs.len() > 1 {
+            Some((self.active_tab, self.tabs.len()))
+        } else {
+            None
+        };
+        render::render_top_bar(
+            frame,
+            top_bar_area,
+            &tab.filename,
+            tab.scroll_offset,
+            view.total_lines,
+            view.viewport_height as usize,
+            &t,
+            tab_info,
+        );
+
+        let (toc_area, doc_area) = if sidebar_shown(tab.toc.visible, main_area.width) {
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
+                .split(main_area);
+            (Some(horizontal[0]), horizontal[1])
+        } else {
+            (None, main_area)
+        };
+
+        if let Some(toc_area) = toc_area {
+            render::render_toc(frame, toc_area, &tab.toc, &t);
+        }
+        self.toc_rect = toc_area.map_or(Rect::default(), render::toc_list_area);
+
+        // Remembered for the next mouse event: screen coordinates only
+        // mean something relative to where the document was drawn.
+        self.doc_rect = doc_area;
+
+        // Render document (with search highlights and selection)
+        render::render_document_with_search(
+            frame,
+            doc_area,
+            &tab.ratatui_lines,
+            tab.scroll_offset,
+            view.total_lines,
+            &self.search,
+            self.selection.sel.as_ref(),
+            &tab.plain,
+            &t,
+        );
+
+        render_images(frame, tab, doc_area, &t);
+        self.render_overlays(frame, main_area, doc_area, &t);
+        self.render_bottom_bar(frame, bottom_bar_area, tab_info, &t);
+    }
+
+    /// The theme picker, link-hint, code-hint and help overlays, whichever
+    /// are open.
+    fn render_overlays(
+        &self,
+        frame: &mut Frame,
+        main_area: Rect,
+        doc_area: Rect,
+        t: &theme::Theme,
+    ) {
+        // Theme picker overlay
+        if self.overlays.theme_picker_open {
+            render::render_theme_picker(
+                frame,
+                main_area,
+                THEME_LIST,
+                self.overlays.theme_picker_index,
+                &self.args.theme,
+                t,
+            );
+        }
+
+        // Link-hint overlay
+        if !self.overlays.link_hints.is_empty() {
+            let hints: Vec<(char, String, String)> = self
+                .overlays
+                .link_hints
+                .iter()
+                .map(|h| (h.label, h.caption.clone(), h.url.clone()))
+                .collect();
+            let dash = crate::glyphs::current().dash;
+            let title = match self.overlays.hint_kind {
+                HintKind::Open => {
+                    format!("Follow link {dash} press a letter, Y to copy instead, Esc to cancel")
+                }
+                HintKind::CopyUrl => {
+                    format!("Copy link URL {dash} press a letter, Esc to cancel")
+                }
+            };
+            render::render_link_hints(frame, main_area, &hints, &title, t);
+        }
+
+        // Code-block hint labels, painted on the blocks themselves.
+        if !self.overlays.code_hints.is_empty() {
+            let labels: Vec<(char, u16, u16)> = self
+                .overlays
+                .code_hints
+                .iter()
+                .map(|h| (h.label, h.row, h.col))
+                .collect();
+            render::render_code_hints(frame, doc_area, &labels, t);
+        }
+
+        // Help overlay
+        if self.overlays.help_open {
+            render::render_help(frame, main_area, t);
+        }
+    }
+
+    fn render_bottom_bar(
+        &self,
+        frame: &mut Frame,
+        bottom_bar_area: Rect,
+        tab_info: Option<(usize, usize)>,
+        t: &theme::Theme,
+    ) {
+        let tab = &self.tabs[self.active_tab];
+        // Bottom bar: copy result OR search input OR keybindings + stats
+        if let Some((ref msg, _)) = self.flash {
+            render::render_flash_bar(frame, bottom_bar_area, msg, t);
+        } else if self.search.active {
+            render::render_search_bar(frame, bottom_bar_area, &self.search, t);
+        } else if tab.toc.nav.focused {
+            render::render_toc_bar(frame, bottom_bar_area, tab.toc.nav.filter.is_some(), t);
+        } else {
+            render::render_bottom_bar(
+                frame,
+                bottom_bar_area,
+                t,
+                &tab.filename,
+                tab.word_count,
+                tab.reading_time,
+                self.tabs.len() > 1,
+                tab_info,
+                self.file_missing,
+            );
+        }
+    }
+}
+
+/// Paint graphics-protocol images over their reserved blank rows.
+/// SlicedImage self-clips to doc_area, so partially-scrolled images
+/// (position.y negative or past the bottom) render correctly.
+fn render_images(frame: &mut Frame, tab: &Tab, doc_area: Rect, t: &theme::Theme) {
+    for img in &tab.images {
+        let y = img.line_index as i64 - tab.scroll_offset as i64;
+        // Skip images fully above or below the viewport.
+        if y + img.rows as i64 <= 0 || y >= doc_area.height as i64 {
+            continue;
+        }
+        match &img.protocol {
+            Some(proto) => {
+                let pos =
+                    ratatui_image::sliced::SignedPosition::from((img.col_offset as i16, y as i16));
+                frame.render_widget(
+                    ratatui_image::sliced::SlicedImage::new(proto, pos),
+                    doc_area,
+                );
+            }
+            None if (0..doc_area.height as i64).contains(&y) => {
+                // Encode failed: say so in the reserved space — a
+                // silent blank gap reads as a rendering bug.
+                frame.buffer_mut().set_string(
+                    doc_area.x + img.col_offset,
+                    doc_area.y + y as u16,
+                    format!(
+                        "{} (image could not be encoded for this terminal)",
+                        crate::glyphs::current().image
+                    ),
+                    Style::default()
+                        .fg(theme::hex_to_color(&t.colors.link_url))
+                        .add_modifier(Modifier::ITALIC),
+                );
+            }
+            None => {}
+        }
+    }
+}
+
+/// The reader's terminal.
+type Tui = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Sizes measured once per turn of the loop, before drawing and input.
+#[derive(Debug, Clone, Copy)]
+struct View {
+    /// Rows for the document: the terminal less the top bar, the separator
+    /// and the bottom bar.
+    viewport_height: u16,
+    /// Rows for the sidebar's heading list, under its title row.
+    toc_rows: usize,
+    total_lines: usize,
+    max_scroll: usize,
+}
+
+fn run_inner(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    source: String,
+    args: Args,
+    graphics: &crate::graphics::Graphics,
+) -> Result<AppExit> {
+    let size = terminal.size()?;
+    let mut reader = Reader::new(source, args, graphics, size.width);
     loop {
         if termination_requested() {
             return Ok(AppExit::Quit);
         }
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
+        let view = reader.update(terminal, viewport_height)?;
 
-        // --watch: if the current doc is the watched file and it changed, rebuild it.
-        if let (Some(w), Some(input)) = (watcher.as_ref(), args.inputs.first()) {
-            let path = std::path::Path::new(input);
-            if tabs[active_tab].filename == *input && w.check(path) {
-                match std::fs::read_to_string(path) {
-                    Ok(new_source) if args.slides => {
-                        let deck = if args.frontmatter {
-                            new_source
-                        } else {
-                            crate::parser::frontmatter::strip_frontmatter(&new_source).1
-                        };
-                        let toc_visible = tabs[active_tab].toc.visible;
-                        let term_w = effective_width(terminal.size()?.width, toc_visible);
-                        let slides = crate::slides::split_slides(&deck);
-                        if !slides.is_empty() {
-                            tabs = slides
-                                .into_iter()
-                                .map(|sl| build_tab(sl, input, &args, term_w, theme_gen, graphics))
-                                .collect();
-                            active_tab = active_tab.min(tabs.len() - 1);
-                            tabs[active_tab].toc.visible = toc_visible;
-                        }
-                        search.update_matches(&tabs[active_tab].lowered);
-                        file_missing = false;
-                        dirty = true;
-                    }
-                    Ok(new_source) => {
-                        reload_tab(
-                            &mut tabs[active_tab],
-                            new_source.into(),
-                            Anchor::KeepOffset,
-                            &args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            theme_gen,
-                            graphics,
-                        );
-                        search.update_matches(&tabs[active_tab].lowered);
-                        if file_missing {
-                            file_missing = false;
-                        }
-                        dirty = true;
-                    }
-                    Err(_) => {
-                        // File was deleted or renamed away. Keep the last-rendered content
-                        // and surface the state in the status bar.
-                        if !file_missing {
-                            file_missing = true;
-                            dirty = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Debounced resize: rebuild once the flurry of events has settled.
-        if let Some(t0) = resize_pending {
-            if t0.elapsed() >= Duration::from_millis(80) {
-                resize_pending = None;
-                rebuild_tab(
-                    &mut tabs[active_tab],
-                    &args,
-                    terminal.size()?.width,
-                    viewport_height as usize,
-                    theme_gen,
-                    graphics,
-                );
-                search.update_matches(&tabs[active_tab].lowered);
-                dirty = true;
-            }
-        }
-
-        // The sidebar is not drawn (the window shrank, or it was hidden):
-        // a focused TOC would take keys for an invisible cursor and keep its
-        // key reminder in the status bar. Give focus back to the document.
-        {
-            let width = terminal.size()?.width;
-            let toc = &mut tabs[active_tab].toc;
-            if toc.nav.focused && !sidebar_shown(toc.visible, width) {
-                toc.leave();
-                dirty = true;
-            }
-        }
-
-        // A copy message is worth two seconds of the status bar, no longer.
-        if let Some((_, at)) = flash {
-            if at.elapsed() >= Duration::from_secs(2) {
-                flash = None;
-                dirty = true;
-            }
-        }
-
-        // The heading list sits under the sidebar's title row.
-        let toc_rows = viewport_height.saturating_sub(1) as usize;
-        if tabs[active_tab].toc.visible {
-            tabs[active_tab].toc.follow(toc_rows);
-        }
-
-        let tab = &tabs[active_tab];
-        let total_lines = tab.ratatui_lines.len();
-        let max_scroll = total_lines.saturating_sub(viewport_height as usize);
-
-        if dirty {
-            terminal.draw(|frame| {
-                let size = frame.area();
-                let tab = &tabs[active_tab];
-
-                // Fill entire frame with theme background color
-                let t = theme::resolve_theme(&args.theme);
-                if let Some(ref bg_hex) = t.colors.bg {
-                    let bg_color = theme::hex_to_color(bg_hex);
-                    let bg_block =
-                        ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
-                    frame.render_widget(bg_block, size);
-                }
-
-                // Guard against a terminal too small to lay out safely.
-                if size.width < 20 || size.height < 6 {
-                    let msg = Paragraph::new("terminal too small")
-                        .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme::hex_to_color(&t.colors.fg)));
-                    frame.render_widget(msg, size);
-                    return;
-                }
-
-                let vertical = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // top bar: progress
-                        Constraint::Min(1),    // main content
-                        Constraint::Length(2), // separator + bottom bar
-                    ])
-                    .split(size);
-
-                let top_bar_area = vertical[0];
-                let main_area = vertical[1];
-                let bottom_area = vertical[2];
-
-                // Split bottom into separator line + bar
-                let bottom_split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                    .split(bottom_area);
-                let separator_area = bottom_split[0];
-                let bottom_bar_area = bottom_split[1];
-
-                // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
-                let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
-                let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
-                let sep_style = if let Some(cbg) = content_bg {
-                    Style::default().fg(bar_bg).bg(cbg)
-                } else {
-                    Style::default().fg(bar_bg)
-                };
-                let sep_line = Line::from(Span::styled(
-                    crate::glyphs::current()
-                        .separator
-                        .repeat(separator_area.width as usize),
-                    sep_style,
-                ));
-                frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
-
-                // Top bar: filename + progress
-                let tab_info = if tabs.len() > 1 {
-                    Some((active_tab, tabs.len()))
-                } else {
-                    None
-                };
-                render::render_top_bar(
-                    frame,
-                    top_bar_area,
-                    &tab.filename,
-                    tab.scroll_offset,
-                    total_lines,
-                    viewport_height as usize,
-                    &t,
-                    tab_info,
-                );
-
-                let (toc_area, doc_area) = if sidebar_shown(tab.toc.visible, main_area.width) {
-                    let horizontal = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
-                        .split(main_area);
-                    (Some(horizontal[0]), horizontal[1])
-                } else {
-                    (None, main_area)
-                };
-
-                if let Some(toc_area) = toc_area {
-                    render::render_toc(frame, toc_area, &tab.toc, &t);
-                }
-                toc_rect = toc_area.map_or(Rect::default(), render::toc_list_area);
-
-                // Remembered for the next mouse event: screen coordinates only
-                // mean something relative to where the document was drawn.
-                doc_rect = doc_area;
-
-                // Render document (with search highlights and selection)
-                render::render_document_with_search(
-                    frame,
-                    doc_area,
-                    &tab.ratatui_lines,
-                    tab.scroll_offset,
-                    total_lines,
-                    &search,
-                    sel.as_ref(),
-                    &tab.plain,
-                    &t,
-                );
-
-                // Paint graphics-protocol images over their reserved blank rows.
-                // SlicedImage self-clips to doc_area, so partially-scrolled images
-                // (position.y negative or past the bottom) render correctly.
-                for img in &tab.images {
-                    let y = img.line_index as i64 - tab.scroll_offset as i64;
-                    // Skip images fully above or below the viewport.
-                    if y + img.rows as i64 <= 0 || y >= doc_area.height as i64 {
-                        continue;
-                    }
-                    match &img.protocol {
-                        Some(proto) => {
-                            let pos = ratatui_image::sliced::SignedPosition::from((
-                                img.col_offset as i16,
-                                y as i16,
-                            ));
-                            frame.render_widget(
-                                ratatui_image::sliced::SlicedImage::new(proto, pos),
-                                doc_area,
-                            );
-                        }
-                        None if (0..doc_area.height as i64).contains(&y) => {
-                            // Encode failed: say so in the reserved space — a
-                            // silent blank gap reads as a rendering bug.
-                            frame.buffer_mut().set_string(
-                                doc_area.x + img.col_offset,
-                                doc_area.y + y as u16,
-                                format!(
-                                    "{} (image could not be encoded for this terminal)",
-                                    crate::glyphs::current().image
-                                ),
-                                Style::default()
-                                    .fg(theme::hex_to_color(&t.colors.link_url))
-                                    .add_modifier(Modifier::ITALIC),
-                            );
-                        }
-                        None => {}
-                    }
-                }
-
-                // Theme picker overlay
-                if theme_picker_open {
-                    render::render_theme_picker(
-                        frame,
-                        main_area,
-                        THEME_LIST,
-                        theme_picker_index,
-                        &args.theme,
-                        &t,
-                    );
-                }
-
-                // Link-hint overlay
-                if !link_hints.is_empty() {
-                    let hints: Vec<(char, String, String)> = link_hints
-                        .iter()
-                        .map(|h| (h.label, h.caption.clone(), h.url.clone()))
-                        .collect();
-                    let dash = crate::glyphs::current().dash;
-                    let title = match hint_kind {
-                        HintKind::Open => format!(
-                            "Follow link {dash} press a letter, Y to copy instead, Esc to cancel"
-                        ),
-                        HintKind::CopyUrl => {
-                            format!("Copy link URL {dash} press a letter, Esc to cancel")
-                        }
-                    };
-                    render::render_link_hints(frame, main_area, &hints, &title, &t);
-                }
-
-                // Code-block hint labels, painted on the blocks themselves.
-                if !code_hints.is_empty() {
-                    let labels: Vec<(char, u16, u16)> =
-                        code_hints.iter().map(|h| (h.label, h.row, h.col)).collect();
-                    render::render_code_hints(frame, doc_area, &labels, &t);
-                }
-
-                // Help overlay
-                if help_open {
-                    render::render_help(frame, main_area, &t);
-                }
-
-                // Bottom bar: copy result OR search input OR keybindings + stats
-                if let Some((ref msg, _)) = flash {
-                    render::render_flash_bar(frame, bottom_bar_area, msg, &t);
-                } else if search.active {
-                    render::render_search_bar(frame, bottom_bar_area, &search, &t);
-                } else if tab.toc.nav.focused {
-                    render::render_toc_bar(
-                        frame,
-                        bottom_bar_area,
-                        tab.toc.nav.filter.is_some(),
-                        &t,
-                    );
-                } else {
-                    render::render_bottom_bar(
-                        frame,
-                        bottom_bar_area,
-                        &t,
-                        &tab.filename,
-                        tab.word_count,
-                        tab.reading_time,
-                        tabs.len() > 1,
-                        tab_info,
-                        file_missing,
-                    );
-                }
-            })?;
-            dirty = false;
+        if reader.dirty {
+            reader.draw(terminal, view)?;
         }
 
         // Handle input
-        let input_mode = if search.active {
-            input::InputMode::Search
-        } else if !link_hints.is_empty() || !code_hints.is_empty() {
-            input::InputMode::LinkHint
-        } else if visual_mode {
-            input::InputMode::Visual
-        } else if tabs[active_tab].toc.nav.focused && !help_open && !theme_picker_open {
-            if tabs[active_tab].toc.nav.filter.is_some() {
-                input::InputMode::TocFilter
-            } else {
-                input::InputMode::Toc
+        if let Some(action) = input::poll_action(Duration::from_millis(50), reader.input_mode()) {
+            if let Some(exit) = reader.handle_action(action, terminal, view)? {
+                return Ok(exit);
             }
-        } else if args.slides && !theme_picker_open && !help_open {
-            input::InputMode::Slides
-        } else {
-            input::InputMode::Normal
-        };
-        if let Some(action) = input::poll_action(Duration::from_millis(50), input_mode) {
-            // Any recognized action changes state → redraw on the next iteration.
-            dirty = true;
-
-            // The wheel scrolls what is under the pointer: the sidebar, or
-            // (as an ordinary scroll) the document.
-            let action = match action {
-                Action::WheelUp(col, row) | Action::WheelDown(col, row)
-                    if toc_rect.contains(Position::new(col, row))
-                        && !help_open
-                        && !theme_picker_open =>
-                {
-                    let delta = if matches!(action, Action::WheelUp(..)) {
-                        -3
-                    } else {
-                        3
-                    };
-                    tabs[active_tab].toc.scroll_by(delta, toc_rows);
-                    continue;
-                }
-                Action::WheelUp(..) => Action::ScrollUp(3),
-                Action::WheelDown(..) => Action::ScrollDown(3),
-                other => other,
-            };
-
-            // Help overlay is modal: any key closes it.
-            if help_open {
-                if action != Action::None {
-                    help_open = false;
-                }
-                continue;
-            }
-
-            // Code-block hint overlay is modal: a label copies that block.
-            if !code_hints.is_empty() {
-                if let Action::LinkHint(c) = action {
-                    if let Some(hint) = code_hints.iter().find(|h| h.label == c) {
-                        let what = if hint.lang.is_empty() {
-                            "code block".to_string()
-                        } else {
-                            format!("code block ({})", hint.lang)
-                        };
-                        flash = Some((
-                            copy_text(&hint.source, args.clipboard, &what),
-                            Instant::now(),
-                        ));
-                    }
-                }
-                code_hints.clear();
-                continue;
-            }
-
-            // Link-hint overlay is modal: a label opens (or copies) that link,
-            // Y switches between the two, Esc cancels.
-            if !link_hints.is_empty() {
-                match action {
-                    Action::HintCopyToggle => {
-                        hint_kind = HintKind::CopyUrl;
-                    }
-                    Action::LinkHint(c) => {
-                        if let Some(hint) = link_hints.iter().find(|h| h.label == c) {
-                            match hint_kind {
-                                HintKind::Open => {
-                                    if let Some(msg) = open_link(
-                                        &hint.url, &mut tabs, active_tab, &mut nav, &args,
-                                        terminal, theme_gen, graphics,
-                                    ) {
-                                        flash = Some((msg, Instant::now()));
-                                    }
-                                }
-                                HintKind::CopyUrl => {
-                                    flash = Some((
-                                        copy_text(&hint.url, args.clipboard, "link"),
-                                        Instant::now(),
-                                    ));
-                                }
-                            }
-                        }
-                        link_hints.clear();
-                    }
-                    Action::CloseSearch => link_hints.clear(),
-                    _ => link_hints.clear(),
-                }
-                continue;
-            }
-            // Theme picker mode
-            if theme_picker_open {
-                match action {
-                    Action::ExitApp | Action::CloseSearch => {
-                        // Closing keeps the previewed theme — persist it.
-                        theme_picker_open = false;
-                        let _ = crate::config::set_theme(THEME_LIST[theme_picker_index]);
-                    }
-                    Action::ScrollDown(_) => {
-                        theme_picker_index = (theme_picker_index + 1) % THEME_LIST.len();
-                        // Live preview: rebuild the visible tab now; others refresh
-                        // lazily when switched to (theme_gen marks them stale).
-                        args.theme = THEME_LIST[theme_picker_index].to_string();
-                        theme_gen = theme_gen.wrapping_add(1);
-                        rebuild_tab(
-                            &mut tabs[active_tab],
-                            &args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            theme_gen,
-                            graphics,
-                        );
-                    }
-                    Action::ScrollUp(_) => {
-                        theme_picker_index = if theme_picker_index == 0 {
-                            THEME_LIST.len() - 1
-                        } else {
-                            theme_picker_index - 1
-                        };
-                        args.theme = THEME_LIST[theme_picker_index].to_string();
-                        theme_gen = theme_gen.wrapping_add(1);
-                        rebuild_tab(
-                            &mut tabs[active_tab],
-                            &args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            theme_gen,
-                            graphics,
-                        );
-                    }
-                    Action::SearchConfirm => {
-                        // Confirm theme selection and persist it to config.
-                        theme_picker_open = false;
-                        let _ = crate::config::set_theme(THEME_LIST[theme_picker_index]);
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Visual mode is modal: motions move the cursor end of the
-            // selection, `y` copies it, Esc/q leaves without copying.
-            if visual_mode {
-                let plain = &tabs[active_tab].plain;
-                let Some(mut cursel) = sel else {
-                    visual_mode = false;
-                    continue;
-                };
-                let cur = cursel.cursor;
-                let line_text = plain.get(cur.line).map(|t| t.as_str()).unwrap_or("");
-                let vh = viewport_height as usize;
-                let mut moved = true;
-                match action {
-                    Action::Yank => {
-                        let text = cursel.extract(plain);
-                        let what = format!("{} chars", text.chars().count());
-                        flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
-                        visual_mode = false;
-                        sel = None;
-                        continue;
-                    }
-                    Action::SelCancel | Action::ExitApp => {
-                        visual_mode = false;
-                        sel = None;
-                        continue;
-                    }
-                    Action::SelectMode => cursel.mode = SelMode::Char,
-                    Action::SelectLineMode => {
-                        cursel.mode = if cursel.mode == SelMode::Line {
-                            SelMode::Char
-                        } else {
-                            SelMode::Line
-                        }
-                    }
-                    Action::SelDown(n) => cursel.cursor.line = cur.line.saturating_add(n as usize),
-                    Action::SelUp(n) => cursel.cursor.line = cur.line.saturating_sub(n as usize),
-                    Action::SelLeft(n) => cursel.cursor.col = cur.col.saturating_sub(n as usize),
-                    Action::SelRight(n) => cursel.cursor.col = cur.col.saturating_add(n as usize),
-                    Action::SelWordNext => {
-                        cursel.cursor.col = selection::next_word_col(line_text, cur.col)
-                    }
-                    Action::SelWordPrev => {
-                        cursel.cursor.col = selection::prev_word_col(line_text, cur.col)
-                    }
-                    Action::SelLineStart => cursel.cursor.col = 0,
-                    Action::SelLineEnd => {
-                        cursel.cursor.col = selection::line_width(line_text).saturating_sub(1)
-                    }
-                    Action::SelDocStart => cursel.cursor = Pos::new(0, 0),
-                    Action::SelDocEnd => {
-                        cursel.cursor = Pos::new(plain.len().saturating_sub(1), 0);
-                    }
-                    Action::SelPageDown => {
-                        cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1)
-                    }
-                    Action::SelPageUp => {
-                        cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1)
-                    }
-                    Action::Resize(_, _) => {
-                        resize_pending = Some(std::time::Instant::now());
-                        moved = false;
-                    }
-                    _ => moved = false,
-                }
-                if moved {
-                    cursel.cursor = selection::clamp(cursel.cursor, plain);
-                    // Keep the moving end of the selection on screen.
-                    let scroll = &mut tabs[active_tab].scroll_offset;
-                    if cursel.cursor.line < *scroll {
-                        *scroll = cursel.cursor.line;
-                    } else if cursel.cursor.line >= *scroll + vh {
-                        *scroll = cursel.cursor.line + 1 - vh;
-                    }
-                    *scroll = (*scroll).min(max_scroll);
-                }
-                sel = Some(cursel);
-                continue;
-            }
-
-            // The focused sidebar takes its own keys; anything else (mouse,
-            // resize, wheel) falls through to the ordinary handling below.
-            if let Action::Toc(key) = action {
-                let tab = &mut tabs[active_tab];
-                if let Some(i) = tab.toc.handle(key, toc_rows) {
-                    jump_to_heading(tab, &mut nav, i, viewport_height as usize);
-                }
-                continue;
-            }
-
-            // A confirmed search shows highlighted matches; the first Esc/q
-            // dismisses them (vim/less convention) rather than quitting.
-            if action == Action::ExitApp && !search.matches.is_empty() {
-                search.deactivate();
-                let current_offset = tabs[active_tab].scroll_offset;
-                tabs[active_tab].toc.update_selection(current_offset);
-                continue;
-            }
-
-            match action {
-                Action::ExitApp => return Ok(AppExit::Quit),
-                Action::OpenBrowser => return Ok(AppExit::BackToBrowser),
-                Action::CloseDoc => return Ok(AppExit::BackToBrowser),
-
-                // Search
-                Action::Search => {
-                    search.activate();
-                }
-                Action::CloseSearch => {
-                    search.deactivate();
-                }
-                Action::SearchConfirm => {
-                    // Keep matches visible but exit search input mode
-                    search.active = false;
-                }
-                Action::SearchInput(c) => {
-                    search.push_char(c);
-                    search.update_matches(&tabs[active_tab].lowered);
-                    // Auto-jump to first match
-                    if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchBackspace => {
-                    search.pop_char();
-                    search.update_matches(&tabs[active_tab].lowered);
-                    if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchNext => {
-                    search.next_match();
-                    if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchPrev => {
-                    search.prev_match();
-                    if let Some(line) = search.current_line() {
-                        tabs[active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-
-                // Scrolling
-                Action::ScrollDown(n) => {
-                    tabs[active_tab].scroll_offset = tabs[active_tab]
-                        .scroll_offset
-                        .saturating_add(n as usize)
-                        .min(max_scroll);
-                }
-                Action::ScrollUp(n) => {
-                    // Clamp before subtracting: a stale offset past the end
-                    // (post-resize) must recover on the first upward scroll.
-                    tabs[active_tab].scroll_offset = tabs[active_tab]
-                        .scroll_offset
-                        .min(max_scroll)
-                        .saturating_sub(n as usize);
-                }
-                Action::PageDown => {
-                    let jump = (viewport_height as usize).saturating_sub(2); // keep 2 lines overlap
-                    tabs[active_tab].scroll_offset = tabs[active_tab]
-                        .scroll_offset
-                        .saturating_add(jump)
-                        .min(max_scroll);
-                }
-                Action::PageUp => {
-                    let jump = (viewport_height as usize).saturating_sub(2);
-                    tabs[active_tab].scroll_offset = tabs[active_tab]
-                        .scroll_offset
-                        .min(max_scroll)
-                        .saturating_sub(jump);
-                }
-                Action::Home => tabs[active_tab].scroll_offset = 0,
-                Action::End => tabs[active_tab].scroll_offset = max_scroll,
-
-                // Slides
-                Action::SlideNext => {
-                    if active_tab + 1 < tabs.len() {
-                        active_tab += 1;
-                        ensure_tab_current(
-                            &mut tabs[active_tab],
-                            &args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            theme_gen,
-                            graphics,
-                        );
-                        search.update_matches(&tabs[active_tab].lowered);
-                    }
-                }
-                Action::SlidePrev => {
-                    if active_tab > 0 {
-                        active_tab -= 1;
-                        ensure_tab_current(
-                            &mut tabs[active_tab],
-                            &args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            theme_gen,
-                            graphics,
-                        );
-                        search.update_matches(&tabs[active_tab].lowered);
-                    }
-                }
-
-                // TOC
-                Action::TocFocus => {
-                    let width = terminal.size()?.width;
-                    let tab = &mut tabs[active_tab];
-                    if tab.toc.headings.is_empty() {
-                        flash = Some(("no headings in this document".into(), Instant::now()));
-                    } else if !sidebar_shown(true, width) {
-                        flash = Some((
-                            "window too narrow for the table of contents".into(),
-                            Instant::now(),
-                        ));
-                    } else {
-                        if !tab.toc.visible {
-                            tab.toc.toggle();
-                            rebuild_tab(
-                                tab,
-                                &args,
-                                width,
-                                viewport_height as usize,
-                                theme_gen,
-                                graphics,
-                            );
-                            search.update_matches(&tab.lowered);
-                        }
-                        tab.toc.update_selection(tab.scroll_offset);
-                        tab.toc.focus();
-                    }
-                }
-                Action::ToggleToc => {
-                    tabs[active_tab].toc.toggle();
-                    rebuild_tab(
-                        &mut tabs[active_tab],
-                        &args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        theme_gen,
-                        graphics,
-                    );
-                    search.update_matches(&tabs[active_tab].lowered);
-                }
-
-                // Help overlay
-                Action::Help => {
-                    help_open = true;
-                }
-
-                // Theme picker
-                Action::ThemePicker => {
-                    theme_picker_open = true;
-                }
-
-                // Link-hint mode: label every link in the viewport.
-                Action::LinkMode => {
-                    let len = tabs[active_tab].styled_lines.len();
-                    let offset = tabs[active_tab].scroll_offset.min(len);
-                    let end = (offset + viewport_height as usize).min(len);
-                    link_hints = collect_link_hints(&tabs[active_tab].styled_lines[offset..end]);
-                }
-
-                // After a confirmed search, n/N cycle matches (less/vim
-                // convention); otherwise they jump between headings.
-                Action::NextHeading => {
-                    if !search.matches.is_empty() {
-                        search.next_match();
-                        if let Some(line) = search.current_line() {
-                            tabs[active_tab].scroll_offset = line.min(max_scroll);
-                        }
-                    } else {
-                        let current = tabs[active_tab].scroll_offset;
-                        if let Some(next) = tabs[active_tab]
-                            .toc
-                            .headings
-                            .iter()
-                            .find(|h| h.line_index > current + 1)
-                        {
-                            tabs[active_tab].scroll_offset =
-                                next.line_index.saturating_sub(1).min(max_scroll);
-                        }
-                    }
-                }
-                Action::PrevHeading => {
-                    if !search.matches.is_empty() {
-                        search.prev_match();
-                        if let Some(line) = search.current_line() {
-                            tabs[active_tab].scroll_offset = line.min(max_scroll);
-                        }
-                    } else {
-                        let current = tabs[active_tab].scroll_offset;
-                        if let Some(prev) = tabs[active_tab]
-                            .toc
-                            .headings
-                            .iter()
-                            .rev()
-                            .find(|h| h.line_index + 1 < current)
-                        {
-                            tabs[active_tab].scroll_offset =
-                                prev.line_index.saturating_sub(1).min(max_scroll);
-                        }
-                    }
-                }
-
-                // Links are handled via OSC 8 hyperlinks (Cmd+Click / Ctrl+Click)
-
-                // Tabs — refresh the newly-active tab if it was laid out for a
-                // stale width/theme (lazy rebuild).
-                Action::NextTab if tabs.len() > 1 => {
-                    active_tab = (active_tab + 1) % tabs.len();
-                    ensure_tab_current(
-                        &mut tabs[active_tab],
-                        &args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        theme_gen,
-                        graphics,
-                    );
-                    search.update_matches(&tabs[active_tab].lowered);
-                }
-                Action::PrevTab if tabs.len() > 1 => {
-                    active_tab = if active_tab == 0 {
-                        tabs.len() - 1
-                    } else {
-                        active_tab - 1
-                    };
-                    ensure_tab_current(
-                        &mut tabs[active_tab],
-                        &args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        theme_gen,
-                        graphics,
-                    );
-                    search.update_matches(&tabs[active_tab].lowered);
-                }
-
-                // Follow the first link on screen that can be followed (web,
-                // mail, a .md file or a #heading anchor), through the same
-                // path as link-hint mode.
-                Action::FollowLink => {
-                    let tab = &tabs[active_tab];
-                    let found_link = first_followable_link(
-                        &tab.styled_lines,
-                        tab.scroll_offset,
-                        viewport_height,
-                    )
-                    .map(str::to_string);
-                    match found_link {
-                        Some(link) => {
-                            if let Some(msg) = open_link(
-                                &link, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
-                                graphics,
-                            ) {
-                                flash = Some((msg, Instant::now()));
-                            }
-                        }
-                        None => {
-                            flash = Some(("no links on screen".into(), Instant::now()));
-                        }
-                    }
-                }
-
-                // Navigation history
-                Action::NavBack => {
-                    if let Some(entry) = nav.go_back(NavEntry::of(&tabs[active_tab])) {
-                        restore_nav_entry(
-                            &mut tabs[active_tab],
-                            entry,
-                            &args,
-                            terminal.size()?.width,
-                            theme_gen,
-                            graphics,
-                        );
-                    }
-                }
-                Action::NavForward => {
-                    if let Some(entry) = nav.go_forward(NavEntry::of(&tabs[active_tab])) {
-                        restore_nav_entry(
-                            &mut tabs[active_tab],
-                            entry,
-                            &args,
-                            terminal.size()?.width,
-                            theme_gen,
-                            graphics,
-                        );
-                    }
-                }
-
-                // Selection & clipboard
-                Action::SelectMode | Action::SelectLineMode => {
-                    let mode = if action == Action::SelectLineMode {
-                        SelMode::Line
-                    } else {
-                        SelMode::Char
-                    };
-                    // Normal mode has no caret to inherit, so the selection
-                    // starts on the first line of the viewport that has text —
-                    // anchoring on the blank spacing above a heading looks
-                    // broken.
-                    let tab = &tabs[active_tab];
-                    let start = tab.scroll_offset.min(tab.plain.len().saturating_sub(1));
-                    let end = (start + viewport_height as usize).min(tab.plain.len());
-                    let line = (start..end)
-                        .find(|i| !tab.plain[*i].trim().is_empty())
-                        .unwrap_or(start);
-                    let col = tab
-                        .plain
-                        .get(line)
-                        .map_or(0, |t| selection::content_start_col(t));
-                    sel = Some(Selection::new(Pos::new(line, col), mode));
-                    visual_mode = true;
-                }
-
-                // Code-block hints: label every block touching the viewport.
-                Action::CopyCode => {
-                    let tab = &tabs[active_tab];
-                    let top = tab.scroll_offset;
-                    let bottom = top + viewport_height as usize;
-                    code_hints = tab
-                        .code_blocks
-                        .iter()
-                        .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
-                        .zip('a'..='z')
-                        .map(|(b, label)| {
-                            // A block scrolled off the top keeps its label on
-                            // the first visible row.
-                            let row = b.line_index.max(top) - top;
-                            let width = tab
-                                .plain
-                                .get(b.line_index)
-                                .map_or(0, |t| selection::line_width(t));
-                            CodeHint {
-                                label,
-                                row: row as u16,
-                                col: width.saturating_sub(4) as u16,
-                                lang: b.lang.clone(),
-                                source: b.source.clone(),
-                            }
-                        })
-                        .collect();
-                    if code_hints.is_empty() {
-                        flash = Some(("no code blocks on screen".to_string(), Instant::now()));
-                    }
-                }
-
-                // Open the file in $VISUAL/$EDITOR at the line on screen,
-                // then reload it.
-                Action::Edit => {
-                    let width = terminal.size()?.width;
-                    let msg = edit_in_editor(
-                        terminal,
-                        &mut tabs[active_tab],
-                        &args,
-                        viewport_height as usize,
-                        width,
-                        theme_gen,
-                        graphics,
-                    );
-                    search.update_matches(&tabs[active_tab].lowered);
-                    flash = msg.map(|m| (m, Instant::now()));
-                }
-
-                // Copy the section the viewport starts in, as markdown source.
-                Action::CopySection => {
-                    let tab = &tabs[active_tab];
-                    let (text, what) = section_source(tab, viewport_height as usize);
-                    flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
-                }
-
-                // Mouse selection. Only reachable when ink holds the mouse;
-                // with `mouse_capture = false` these events never arrive and
-                // the terminal's own selection keeps working.
-                // A click on a sidebar row jumps to that heading.
-                Action::MouseDown(col, row) if toc_rect.contains(Position::new(col, row)) => {
-                    let tab = &mut tabs[active_tab];
-                    tab.toc.leave();
-                    if let Some(i) = tab.toc.heading_at((row - toc_rect.y) as usize) {
-                        jump_to_heading(tab, &mut nav, i, viewport_height as usize);
-                    }
-                }
-                Action::MouseDown(col, row) => {
-                    tabs[active_tab].toc.leave();
-                    if let Some(pos) = screen_to_doc(doc_rect, &tabs[active_tab], col, row) {
-                        let clicks = match last_click {
-                            Some((at, c, r, n))
-                                if c == col
-                                    && r == row
-                                    && at.elapsed() < Duration::from_millis(400) =>
-                            {
-                                n % 3 + 1
-                            }
-                            _ => 1,
-                        };
-                        last_click = Some((Instant::now(), col, row, clicks));
-                        let plain = &tabs[active_tab].plain;
-                        let line_text = plain.get(pos.line).map(|t| t.as_str()).unwrap_or("");
-                        sel = Some(match clicks {
-                            2 => {
-                                let (from, to) = selection::word_bounds(line_text, pos.col);
-                                Selection {
-                                    anchor: Pos::new(pos.line, from),
-                                    cursor: Pos::new(pos.line, to),
-                                    mode: SelMode::Char,
-                                }
-                            }
-                            3 => Selection::new(pos, SelMode::Line),
-                            _ => Selection::new(pos, SelMode::Char),
-                        });
-                        // A double/triple click has already selected something;
-                        // release copies it without any drag.
-                        drag_moved = clicks > 1;
-                        dragging = true;
-                        visual_mode = false;
-                    }
-                }
-                Action::MouseDrag(col, row) => {
-                    if dragging {
-                        if let Some(pos) = screen_to_doc(doc_rect, &tabs[active_tab], col, row) {
-                            if let Some(ref mut cursel) = sel {
-                                if pos != cursel.cursor {
-                                    drag_moved = true;
-                                }
-                                cursel.cursor = pos;
-                            }
-                        }
-                    }
-                }
-                Action::MouseUp(col, row) => {
-                    // Pressed and released on one cell with no drag, and not
-                    // the second press of a double click.
-                    let clicked = dragging
-                        && !drag_moved
-                        && matches!(last_click, Some((_, c, r, 1)) if c == col && r == row);
-                    dragging = false;
-                    match sel {
-                        // A plain click with no drag is a dismiss, not a copy.
-                        Some(_) if !drag_moved => sel = None,
-                        Some(cursel) => {
-                            let text = cursel.extract(&tabs[active_tab].plain);
-                            let what = format!("{} chars", text.chars().count());
-                            flash = Some((copy_text(&text, args.clipboard, &what), Instant::now()));
-                        }
-                        None => {}
-                    }
-                    drag_moved = false;
-                    // A click on a link follows it, the way `f` would.
-                    let link = screen_to_doc(doc_rect, &tabs[active_tab], col, row)
-                        .filter(|_| clicked)
-                        .and_then(|pos| link_at(&tabs[active_tab], pos))
-                        .map(str::to_string);
-                    if let Some(url) = link {
-                        // The page under the pointer changes: the next press
-                        // is a fresh click, not the second of a double.
-                        last_click = None;
-                        if let Some(msg) = open_link(
-                            &url, &mut tabs, active_tab, &mut nav, &args, terminal, theme_gen,
-                            graphics,
-                        ) {
-                            flash = Some((msg, Instant::now()));
-                        }
-                    }
-                }
-
-                Action::Resize(_, _) => {
-                    // Debounced: dragging a terminal edge fires dozens of
-                    // resize events, and every rebuild re-encodes all images.
-                    // The actual rebuild happens above once events go quiet.
-                    resize_pending = Some(std::time::Instant::now());
-                }
-                _ => {}
-            }
-
-            let current_offset = tabs[active_tab].scroll_offset;
-            tabs[active_tab].toc.update_selection(current_offset);
         }
     }
 }
