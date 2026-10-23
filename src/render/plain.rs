@@ -33,7 +33,7 @@ pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result
     // `width` is the total output width; reserve the left margin from it so the
     // rendered lines (margin + content) never exceed the requested width.
     let margin: usize = 2;
-    let width = args.width.unwrap_or(80);
+    let width = args.width.columns().unwrap_or(80);
     let content_width = width.saturating_sub(margin as u16).max(8);
     let styled_lines = layout::layout_document(
         root,

@@ -32,8 +32,9 @@ Every setting is optional. These are the defaults:
 # terminal, or the name of a custom theme. Unset: match the terminal background.
 # theme = "dark"
 
-# Max text width in columns, 20 to 1000. Unset: the terminal width, up to 120.
-# Plain output uses 80.
+# Max text width: 20 to 1000 columns, or "narrow" (60), "wide" (100) or
+# "full" (the whole reader pane). Unset: the terminal width, up to 120.
+# Plain output uses 80 unless a column count is set.
 # width = 90
 
 # Line spacing: compact, normal, relaxed

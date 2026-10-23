@@ -24,8 +24,8 @@ pub struct Cli {
     pub theme: String,
 
     /// Max rendering width in columns, 20-1000 (or: narrow, wide, full)
-    #[arg(short, long, value_parser = parse_width)]
-    pub width: Option<WidthArg>,
+    #[arg(short, long, value_parser = Width::parse)]
+    pub width: Option<Width>,
 
     /// Presentation mode (split on ---)
     #[arg(short, long)]
@@ -101,30 +101,49 @@ pub struct Cli {
     pub ascii: bool,
 }
 
-/// A parsed `--width` value.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum WidthArg {
-    /// A column count (`narrow` = 60, `wide` = 100).
+/// How wide to lay out text: `--width` or the config file's `width`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Width {
+    /// Nothing asked for: the reader caps text at 120 columns, plain output
+    /// renders 80.
+    #[default]
+    Auto,
+    /// A column count in [`config::WIDTH_RANGE`] (`narrow` = 60, `wide` = 100).
+    /// The reader still keeps it inside the document pane.
     Columns(u16),
-    /// `full`: no width cap.
+    /// `full`: the whole document pane in the reader; 80 columns in plain
+    /// output, where there is no pane.
     Full,
 }
 
-/// `--width` parser: a column count in [`config::WIDTH_RANGE`] or a keyword.
-fn parse_width(s: &str) -> Result<WidthArg, String> {
-    let (lo, hi) = (config::WIDTH_RANGE.start(), config::WIDTH_RANGE.end());
-    match s {
-        "narrow" => Ok(WidthArg::Columns(60)),
-        "wide" => Ok(WidthArg::Columns(100)),
-        "full" => Ok(WidthArg::Full),
-        _ => s
-            .parse::<u16>()
-            .ok()
-            .filter(|n| config::WIDTH_RANGE.contains(n))
-            .map(WidthArg::Columns)
-            .ok_or_else(|| {
-                format!("expected a column count from {lo} to {hi}, or one of: narrow, wide, full")
-            }),
+impl Width {
+    /// Parse a column count in [`config::WIDTH_RANGE`] or a keyword
+    /// (`narrow`, `wide`, `full`). Shared by `--width` and the config file.
+    pub fn parse(s: &str) -> Result<Width, String> {
+        let (lo, hi) = (config::WIDTH_RANGE.start(), config::WIDTH_RANGE.end());
+        match s {
+            "narrow" => Ok(Width::Columns(60)),
+            "wide" => Ok(Width::Columns(100)),
+            "full" => Ok(Width::Full),
+            _ => s
+                .parse::<u16>()
+                .ok()
+                .filter(|n| config::WIDTH_RANGE.contains(n))
+                .map(Width::Columns)
+                .ok_or_else(|| {
+                    format!(
+                        "expected a column count from {lo} to {hi}, or one of: narrow, wide, full"
+                    )
+                }),
+        }
+    }
+
+    /// The explicit column count, if one was asked for.
+    pub fn columns(self) -> Option<u16> {
+        match self {
+            Width::Columns(n) => Some(n),
+            Width::Auto | Width::Full => None,
+        }
     }
 }
 
@@ -200,13 +219,14 @@ pub enum ConfigAction {
 }
 
 /// Resolved arguments for the app.
+///
+/// Library users should build it with `..Default::default()` so that fields
+/// added later do not break their code.
 #[derive(Clone)]
 pub struct Args {
     pub inputs: Vec<String>,
     pub theme: String,
-    pub width: Option<u16>,
-    /// Use the entire document pane in the interactive reader.
-    pub full_width: bool,
+    pub width: Width,
     pub slides: bool,
     pub plain: bool,
     pub watch: bool,
@@ -217,6 +237,28 @@ pub struct Args {
     pub spacing: Spacing,
     pub mouse_capture: bool,
     pub clipboard: crate::clipboard::ClipboardMode,
+}
+
+/// The values `ink` uses with no flags and no config file, except that
+/// `plain` is on: a library caller has no terminal for the reader.
+impl Default for Args {
+    fn default() -> Self {
+        Args {
+            inputs: Vec::new(),
+            theme: "auto".to_string(),
+            width: Width::Auto,
+            slides: false,
+            plain: true,
+            watch: false,
+            toc: false,
+            images: crate::image::ImageMode::LocalOnly,
+            image_protocol: crate::graphics::ProtocolChoice::Auto,
+            frontmatter: false,
+            spacing: Spacing::Normal,
+            mouse_capture: true,
+            clipboard: crate::clipboard::ClipboardMode::Auto,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, ValueEnum)]
@@ -369,7 +411,6 @@ pub fn run() -> Result<()> {
         inputs,
         theme,
         width,
-        full_width: cli.width == Some(WidthArg::Full),
         slides: cli.slides,
         // The interactive reader needs a terminal: with stdout piped or
         // redirected (`ink file.md | cat`), render plain output instead.
@@ -648,12 +689,11 @@ pub(crate) fn mouse_capture(
     }
 }
 
-fn resolve_width(width: &Option<WidthArg>, config: &Option<config::Config>) -> Option<u16> {
-    match width {
-        Some(WidthArg::Columns(n)) => Some(*n),
-        Some(WidthArg::Full) => None,
-        None => config.as_ref().and_then(|c| c.width),
-    }
+/// The `--width` flag wins over the config file's `width`.
+fn resolve_width(width: &Option<Width>, config: &Option<config::Config>) -> Width {
+    width
+        .or_else(|| config.as_ref().and_then(|c| c.width))
+        .unwrap_or_default()
 }
 
 fn config_init(force: bool) -> Result<()> {
@@ -680,7 +720,7 @@ pub(crate) const STARTER_CONFIG: &str = r#"# ink configuration
 # Color theme: dark, light, dracula, catppuccin, nord, tokyo-night, gruvbox, solarized, terminal
 # theme = "catppuccin"
 
-# Max rendering width in columns (or use --width on the CLI)
+# Max rendering width: columns, or "narrow", "wide", "full" (or --width)
 # width = 90
 
 # Line spacing: compact, normal, relaxed
@@ -886,6 +926,32 @@ mod tests {
 
     fn cfg(toml: &str) -> Option<config::Config> {
         config::parse_config(toml, "test").config
+    }
+
+    #[test]
+    fn width_flag_wins_over_the_config_file() {
+        let c = cfg("width = \"full\"");
+        assert_eq!(resolve_width(&None, &c), Width::Full);
+        assert_eq!(
+            resolve_width(&Some(Width::Columns(70)), &c),
+            Width::Columns(70)
+        );
+        assert_eq!(
+            resolve_width(&Some(Width::Full), &cfg("width = 90")),
+            Width::Full
+        );
+        assert_eq!(resolve_width(&None, &None), Width::Auto);
+    }
+
+    #[test]
+    fn width_keywords_parse_the_same_everywhere() {
+        assert_eq!(Width::parse("full"), Ok(Width::Full));
+        assert_eq!(Width::parse("wide"), Ok(Width::Columns(100)));
+        assert_eq!(Width::parse("narrow"), Ok(Width::Columns(60)));
+        assert_eq!(Width::parse("140"), Ok(Width::Columns(140)));
+        assert!(Width::parse("19").is_err());
+        assert!(Width::parse("1001").is_err());
+        assert!(Width::parse("huge").is_err());
     }
 
     #[test]
