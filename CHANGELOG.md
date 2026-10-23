@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.12.0 — 2026-10-23
+
+### Added
+- **`width = "full"` in the config file.** The config file's `width` takes the same keywords as `--width` (`narrow`, `wide`, `full`) as well as a column count. Before, only a number worked.
+
+### Changed
+- **Wide terminals use the width you ask for.** In the reader, `-w full` and column counts above 120 were still held to 120 columns. Now `-w N` is honoured up to the width of the document pane, and `-w full` fills the pane with a 2-column margin. With no width set, text still stops at 120 columns, and `--plain` output is unchanged. A config `width` above 120 widens the reader too. Thanks to @narma. (#34)
+- **Richer code highlighting in the `terminal` theme.** Only a function's name is coloured now, not the whole call. Parameters, shell flags, JSON and YAML keys, CSS colours and values, Rust macros and diff headers get their own palette colours. Thanks to @feraxhp. (#33)
+- **Library API: `Args.width` is now `ink_md::Width`** (`Auto`, `Columns(n)` or `Full`) instead of `Option<u16>`, and `Args` implements `Default`. Build it with `Args { width: Width::Columns(80), ..Default::default() }` so fields added later don't break your code. (#37)
+
+### Fixed
+- **Links and inline styles work inside table cells.** Cells were flattened to plain text, so a link in a table (like the docs table in ink's own README) wasn't clickable, the `f` link hints skipped it, and bold, italic, strikethrough and inline code lost their styling. Cells now render inline markup as paragraphs do: links are clickable, show up in `f` and keep their target when wrapped. Emoji shortcodes, footnote references, inline images and inline HTML in a cell render too, instead of being dropped. Cells without markup look the same as before. (#35)
+- **The table of contents stays as you left it when you follow a link.** Following a link, or going back and forward, reopened a sidebar you had closed (or closed one you had opened) and laid the text out for the wrong width. (#38)
+
 ## 0.11.2 — 2026-10-23
 
 ### Security
