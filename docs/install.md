@@ -26,11 +26,11 @@ Two environment variables change what it does:
 
 | Variable | Effect |
 |---|---|
-| `INK_VERSION` | Install a specific release, e.g. `v0.11.1`. Default: latest. |
+| `INK_VERSION` | Install a specific release, e.g. `v0.11.2`. Default: latest. |
 | `INK_INSTALL_DIR` | Install somewhere else, e.g. `$HOME/.local/bin`. |
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.11.1 INK_INSTALL_DIR="$HOME/.local/bin" sh
+curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_VERSION=v0.11.2 INK_INSTALL_DIR="$HOME/.local/bin" sh
 ```
 
 ## Install script (Windows)
@@ -39,7 +39,7 @@ curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | INK_V
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 ```
 
-This installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.11.1"` first to pin a version.
+This installs `ink.exe` (x64 or ARM64) to `%LOCALAPPDATA%\Programs\ink` and adds it to your user `PATH`. Set `$env:INK_VERSION = "v0.11.2"` first to pin a version.
 
 ## Homebrew
 
