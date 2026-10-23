@@ -1411,6 +1411,255 @@ impl<'g> Reader<'g> {
             }
         }
     }
+
+    /// Draw the reader, and mark it clean.
+    fn draw(&mut self, terminal: &mut Tui, view: View) -> Result<()> {
+        terminal.draw(|frame| self.render(frame, view))?;
+        self.dirty = false;
+        Ok(())
+    }
+
+    /// Lay out and paint one frame: bars, sidebar, document, images and
+    /// overlays. Records where the document and the sidebar's heading list
+    /// were drawn, for the mouse.
+    fn render(&mut self, frame: &mut Frame, view: View) {
+        let size = frame.area();
+        let tab = &self.tabs[self.active_tab];
+
+        // Fill entire frame with theme background color
+        let t = theme::resolve_theme(&self.args.theme);
+        if let Some(ref bg_hex) = t.colors.bg {
+            let bg_color = theme::hex_to_color(bg_hex);
+            let bg_block = ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
+            frame.render_widget(bg_block, size);
+        }
+
+        // Guard against a terminal too small to lay out safely.
+        if size.width < 20 || size.height < 6 {
+            let msg = Paragraph::new("terminal too small")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(theme::hex_to_color(&t.colors.fg)));
+            frame.render_widget(msg, size);
+            return;
+        }
+
+        let vertical = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // top bar: progress
+                Constraint::Min(1),    // main content
+                Constraint::Length(2), // separator + bottom bar
+            ])
+            .split(size);
+
+        let top_bar_area = vertical[0];
+        let main_area = vertical[1];
+        let bottom_area = vertical[2];
+
+        // Split bottom into separator line + bar
+        let bottom_split = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Length(1)])
+            .split(bottom_area);
+        let separator_area = bottom_split[0];
+        let bottom_bar_area = bottom_split[1];
+
+        // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
+        let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
+        let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
+        let sep_style = if let Some(cbg) = content_bg {
+            Style::default().fg(bar_bg).bg(cbg)
+        } else {
+            Style::default().fg(bar_bg)
+        };
+        let sep_line = Line::from(Span::styled(
+            crate::glyphs::current()
+                .separator
+                .repeat(separator_area.width as usize),
+            sep_style,
+        ));
+        frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
+
+        // Top bar: filename + progress
+        let tab_info = if self.tabs.len() > 1 {
+            Some((self.active_tab, self.tabs.len()))
+        } else {
+            None
+        };
+        render::render_top_bar(
+            frame,
+            top_bar_area,
+            &tab.filename,
+            tab.scroll_offset,
+            view.total_lines,
+            view.viewport_height as usize,
+            &t,
+            tab_info,
+        );
+
+        let (toc_area, doc_area) = if sidebar_shown(tab.toc.visible, main_area.width) {
+            let horizontal = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
+                .split(main_area);
+            (Some(horizontal[0]), horizontal[1])
+        } else {
+            (None, main_area)
+        };
+
+        if let Some(toc_area) = toc_area {
+            render::render_toc(frame, toc_area, &tab.toc, &t);
+        }
+        self.toc_rect = toc_area.map_or(Rect::default(), render::toc_list_area);
+
+        // Remembered for the next mouse event: screen coordinates only
+        // mean something relative to where the document was drawn.
+        self.doc_rect = doc_area;
+
+        // Render document (with search highlights and selection)
+        render::render_document_with_search(
+            frame,
+            doc_area,
+            &tab.ratatui_lines,
+            tab.scroll_offset,
+            view.total_lines,
+            &self.search,
+            self.selection.sel.as_ref(),
+            &tab.plain,
+            &t,
+        );
+
+        render_images(frame, tab, doc_area, &t);
+        self.render_overlays(frame, main_area, doc_area, &t);
+        self.render_bottom_bar(frame, bottom_bar_area, tab_info, &t);
+    }
+
+    /// The theme picker, link-hint, code-hint and help overlays, whichever
+    /// are open.
+    fn render_overlays(
+        &self,
+        frame: &mut Frame,
+        main_area: Rect,
+        doc_area: Rect,
+        t: &theme::Theme,
+    ) {
+        // Theme picker overlay
+        if self.overlays.theme_picker_open {
+            render::render_theme_picker(
+                frame,
+                main_area,
+                THEME_LIST,
+                self.overlays.theme_picker_index,
+                &self.args.theme,
+                t,
+            );
+        }
+
+        // Link-hint overlay
+        if !self.overlays.link_hints.is_empty() {
+            let hints: Vec<(char, String, String)> = self
+                .overlays
+                .link_hints
+                .iter()
+                .map(|h| (h.label, h.caption.clone(), h.url.clone()))
+                .collect();
+            let dash = crate::glyphs::current().dash;
+            let title = match self.overlays.hint_kind {
+                HintKind::Open => {
+                    format!("Follow link {dash} press a letter, Y to copy instead, Esc to cancel")
+                }
+                HintKind::CopyUrl => {
+                    format!("Copy link URL {dash} press a letter, Esc to cancel")
+                }
+            };
+            render::render_link_hints(frame, main_area, &hints, &title, t);
+        }
+
+        // Code-block hint labels, painted on the blocks themselves.
+        if !self.overlays.code_hints.is_empty() {
+            let labels: Vec<(char, u16, u16)> = self
+                .overlays
+                .code_hints
+                .iter()
+                .map(|h| (h.label, h.row, h.col))
+                .collect();
+            render::render_code_hints(frame, doc_area, &labels, t);
+        }
+
+        // Help overlay
+        if self.overlays.help_open {
+            render::render_help(frame, main_area, t);
+        }
+    }
+
+    fn render_bottom_bar(
+        &self,
+        frame: &mut Frame,
+        bottom_bar_area: Rect,
+        tab_info: Option<(usize, usize)>,
+        t: &theme::Theme,
+    ) {
+        let tab = &self.tabs[self.active_tab];
+        // Bottom bar: copy result OR search input OR keybindings + stats
+        if let Some((ref msg, _)) = self.flash {
+            render::render_flash_bar(frame, bottom_bar_area, msg, t);
+        } else if self.search.active {
+            render::render_search_bar(frame, bottom_bar_area, &self.search, t);
+        } else if tab.toc.nav.focused {
+            render::render_toc_bar(frame, bottom_bar_area, tab.toc.nav.filter.is_some(), t);
+        } else {
+            render::render_bottom_bar(
+                frame,
+                bottom_bar_area,
+                t,
+                &tab.filename,
+                tab.word_count,
+                tab.reading_time,
+                self.tabs.len() > 1,
+                tab_info,
+                self.file_missing,
+            );
+        }
+    }
+}
+
+/// Paint graphics-protocol images over their reserved blank rows.
+/// SlicedImage self-clips to doc_area, so partially-scrolled images
+/// (position.y negative or past the bottom) render correctly.
+fn render_images(frame: &mut Frame, tab: &Tab, doc_area: Rect, t: &theme::Theme) {
+    for img in &tab.images {
+        let y = img.line_index as i64 - tab.scroll_offset as i64;
+        // Skip images fully above or below the viewport.
+        if y + img.rows as i64 <= 0 || y >= doc_area.height as i64 {
+            continue;
+        }
+        match &img.protocol {
+            Some(proto) => {
+                let pos =
+                    ratatui_image::sliced::SignedPosition::from((img.col_offset as i16, y as i16));
+                frame.render_widget(
+                    ratatui_image::sliced::SlicedImage::new(proto, pos),
+                    doc_area,
+                );
+            }
+            None if (0..doc_area.height as i64).contains(&y) => {
+                // Encode failed: say so in the reserved space — a
+                // silent blank gap reads as a rendering bug.
+                frame.buffer_mut().set_string(
+                    doc_area.x + img.col_offset,
+                    doc_area.y + y as u16,
+                    format!(
+                        "{} (image could not be encoded for this terminal)",
+                        crate::glyphs::current().image
+                    ),
+                    Style::default()
+                        .fg(theme::hex_to_color(&t.colors.link_url))
+                        .add_modifier(Modifier::ITALIC),
+                );
+            }
+            None => {}
+        }
+    }
 }
 
 /// The reader's terminal.
@@ -1424,6 +1673,7 @@ struct View {
     viewport_height: u16,
     /// Rows for the sidebar's heading list, under its title row.
     toc_rows: usize,
+    total_lines: usize,
     max_scroll: usize,
 }
 
@@ -1557,238 +1807,18 @@ fn run_inner(
         let tab = &reader.tabs[reader.active_tab];
         let total_lines = tab.ratatui_lines.len();
         let max_scroll = total_lines.saturating_sub(viewport_height as usize);
-
-        if reader.dirty {
-            terminal.draw(|frame| {
-                let size = frame.area();
-                let tab = &reader.tabs[reader.active_tab];
-
-                // Fill entire frame with theme background color
-                let t = theme::resolve_theme(&reader.args.theme);
-                if let Some(ref bg_hex) = t.colors.bg {
-                    let bg_color = theme::hex_to_color(bg_hex);
-                    let bg_block =
-                        ratatui::widgets::Block::default().style(Style::default().bg(bg_color));
-                    frame.render_widget(bg_block, size);
-                }
-
-                // Guard against a terminal too small to lay out safely.
-                if size.width < 20 || size.height < 6 {
-                    let msg = Paragraph::new("terminal too small")
-                        .alignment(Alignment::Center)
-                        .style(Style::default().fg(theme::hex_to_color(&t.colors.fg)));
-                    frame.render_widget(msg, size);
-                    return;
-                }
-
-                let vertical = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // top bar: progress
-                        Constraint::Min(1),    // main content
-                        Constraint::Length(2), // separator + bottom bar
-                    ])
-                    .split(size);
-
-                let top_bar_area = vertical[0];
-                let main_area = vertical[1];
-                let bottom_area = vertical[2];
-
-                // Split bottom into separator line + bar
-                let bottom_split = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(1), Constraint::Length(1)])
-                    .split(bottom_area);
-                let separator_area = bottom_split[0];
-                let bottom_bar_area = bottom_split[1];
-
-                // Separator: ▔ chars in bar-bg on content-bg = half-row visual gap
-                let bar_bg = theme::hex_to_color(&t.colors.status_bar_bg);
-                let content_bg = t.colors.bg.as_ref().map(|b| theme::hex_to_color(b));
-                let sep_style = if let Some(cbg) = content_bg {
-                    Style::default().fg(bar_bg).bg(cbg)
-                } else {
-                    Style::default().fg(bar_bg)
-                };
-                let sep_line = Line::from(Span::styled(
-                    crate::glyphs::current()
-                        .separator
-                        .repeat(separator_area.width as usize),
-                    sep_style,
-                ));
-                frame.render_widget(Paragraph::new(vec![sep_line]), separator_area);
-
-                // Top bar: filename + progress
-                let tab_info = if reader.tabs.len() > 1 {
-                    Some((reader.active_tab, reader.tabs.len()))
-                } else {
-                    None
-                };
-                render::render_top_bar(
-                    frame,
-                    top_bar_area,
-                    &tab.filename,
-                    tab.scroll_offset,
-                    total_lines,
-                    viewport_height as usize,
-                    &t,
-                    tab_info,
-                );
-
-                let (toc_area, doc_area) = if sidebar_shown(tab.toc.visible, main_area.width) {
-                    let horizontal = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Length(tab.toc.width), Constraint::Min(1)])
-                        .split(main_area);
-                    (Some(horizontal[0]), horizontal[1])
-                } else {
-                    (None, main_area)
-                };
-
-                if let Some(toc_area) = toc_area {
-                    render::render_toc(frame, toc_area, &tab.toc, &t);
-                }
-                reader.toc_rect = toc_area.map_or(Rect::default(), render::toc_list_area);
-
-                // Remembered for the next mouse event: screen coordinates only
-                // mean something relative to where the document was drawn.
-                reader.doc_rect = doc_area;
-
-                // Render document (with search highlights and selection)
-                render::render_document_with_search(
-                    frame,
-                    doc_area,
-                    &tab.ratatui_lines,
-                    tab.scroll_offset,
-                    total_lines,
-                    &reader.search,
-                    reader.selection.sel.as_ref(),
-                    &tab.plain,
-                    &t,
-                );
-
-                // Paint graphics-protocol images over their reserved blank rows.
-                // SlicedImage self-clips to doc_area, so partially-scrolled images
-                // (position.y negative or past the bottom) render correctly.
-                for img in &tab.images {
-                    let y = img.line_index as i64 - tab.scroll_offset as i64;
-                    // Skip images fully above or below the viewport.
-                    if y + img.rows as i64 <= 0 || y >= doc_area.height as i64 {
-                        continue;
-                    }
-                    match &img.protocol {
-                        Some(proto) => {
-                            let pos = ratatui_image::sliced::SignedPosition::from((
-                                img.col_offset as i16,
-                                y as i16,
-                            ));
-                            frame.render_widget(
-                                ratatui_image::sliced::SlicedImage::new(proto, pos),
-                                doc_area,
-                            );
-                        }
-                        None if (0..doc_area.height as i64).contains(&y) => {
-                            // Encode failed: say so in the reserved space — a
-                            // silent blank gap reads as a rendering bug.
-                            frame.buffer_mut().set_string(
-                                doc_area.x + img.col_offset,
-                                doc_area.y + y as u16,
-                                format!(
-                                    "{} (image could not be encoded for this terminal)",
-                                    crate::glyphs::current().image
-                                ),
-                                Style::default()
-                                    .fg(theme::hex_to_color(&t.colors.link_url))
-                                    .add_modifier(Modifier::ITALIC),
-                            );
-                        }
-                        None => {}
-                    }
-                }
-
-                // Theme picker overlay
-                if reader.overlays.theme_picker_open {
-                    render::render_theme_picker(
-                        frame,
-                        main_area,
-                        THEME_LIST,
-                        reader.overlays.theme_picker_index,
-                        &reader.args.theme,
-                        &t,
-                    );
-                }
-
-                // Link-hint overlay
-                if !reader.overlays.link_hints.is_empty() {
-                    let hints: Vec<(char, String, String)> = reader
-                        .overlays
-                        .link_hints
-                        .iter()
-                        .map(|h| (h.label, h.caption.clone(), h.url.clone()))
-                        .collect();
-                    let dash = crate::glyphs::current().dash;
-                    let title = match reader.overlays.hint_kind {
-                        HintKind::Open => format!(
-                            "Follow link {dash} press a letter, Y to copy instead, Esc to cancel"
-                        ),
-                        HintKind::CopyUrl => {
-                            format!("Copy link URL {dash} press a letter, Esc to cancel")
-                        }
-                    };
-                    render::render_link_hints(frame, main_area, &hints, &title, &t);
-                }
-
-                // Code-block hint labels, painted on the blocks themselves.
-                if !reader.overlays.code_hints.is_empty() {
-                    let labels: Vec<(char, u16, u16)> = reader
-                        .overlays
-                        .code_hints
-                        .iter()
-                        .map(|h| (h.label, h.row, h.col))
-                        .collect();
-                    render::render_code_hints(frame, doc_area, &labels, &t);
-                }
-
-                // Help overlay
-                if reader.overlays.help_open {
-                    render::render_help(frame, main_area, &t);
-                }
-
-                // Bottom bar: copy result OR search input OR keybindings + stats
-                if let Some((ref msg, _)) = reader.flash {
-                    render::render_flash_bar(frame, bottom_bar_area, msg, &t);
-                } else if reader.search.active {
-                    render::render_search_bar(frame, bottom_bar_area, &reader.search, &t);
-                } else if tab.toc.nav.focused {
-                    render::render_toc_bar(
-                        frame,
-                        bottom_bar_area,
-                        tab.toc.nav.filter.is_some(),
-                        &t,
-                    );
-                } else {
-                    render::render_bottom_bar(
-                        frame,
-                        bottom_bar_area,
-                        &t,
-                        &tab.filename,
-                        tab.word_count,
-                        tab.reading_time,
-                        reader.tabs.len() > 1,
-                        tab_info,
-                        reader.file_missing,
-                    );
-                }
-            })?;
-            reader.dirty = false;
-        }
-
-        // Handle input
         let view = View {
             viewport_height,
             toc_rows,
+            total_lines,
             max_scroll,
         };
+
+        if reader.dirty {
+            reader.draw(terminal, view)?;
+        }
+
+        // Handle input
         if let Some(action) = input::poll_action(Duration::from_millis(50), reader.input_mode()) {
             if let Some(exit) = reader.handle_action(action, terminal, view)? {
                 return Ok(exit);
