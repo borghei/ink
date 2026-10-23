@@ -205,6 +205,8 @@ pub struct Args {
     pub inputs: Vec<String>,
     pub theme: String,
     pub width: Option<u16>,
+    /// Use the entire document pane in the interactive reader.
+    pub full_width: bool,
     pub slides: bool,
     pub plain: bool,
     pub watch: bool,
@@ -367,6 +369,7 @@ pub fn run() -> Result<()> {
         inputs,
         theme,
         width,
+        full_width: cli.width == Some(WidthArg::Full),
         slides: cli.slides,
         // The interactive reader needs a terminal: with stdout piped or
         // redirected (`ink file.md | cat`), render plain output instead.

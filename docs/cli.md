@@ -22,7 +22,7 @@ With no file, ink reads stdin when something is piped in and opens the file brow
 | Option | What it does |
 |---|---|
 | `-t`, `--theme <THEME>` | Color theme. Default `auto`, which matches the terminal background. See [Themes](themes.md). |
-| `-w`, `--width <WIDTH>` | Max text width: 20 to 1000 columns, or `narrow`, `wide`, `full` |
+| `-w`, `--width <WIDTH>` | Max text width: 20 to 1000 columns, or `narrow` (60), `wide` (100), `full`. In the reader, explicit widths are limited only by the document pane; `full` uses the entire pane with two-column margins. Without a CLI or config width, text remains capped at 120 columns. |
 | `-s`, `--slides` | Presentation mode, split on `---` |
 | `-p`, `--plain` | Print rendered output instead of opening the reader. Automatic when stdout isn't a terminal. |
 | `--color <WHEN>` | `auto`, `always` or `never`. Default `auto`. See [Color in plain output](#color-in-plain-output). |

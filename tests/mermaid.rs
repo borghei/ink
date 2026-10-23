@@ -9,6 +9,7 @@ fn args(width: u16) -> Args {
         inputs: vec![],
         theme: "dark".to_string(),
         width: Some(width),
+        full_width: false,
         slides: false,
         plain: true,
         watch: false,

@@ -27,15 +27,18 @@ fn run_in_pty(
     envs: &[(&str, &str)],
     mut respond: impl FnMut(&[u8], Duration) -> Option<Vec<u8>>,
 ) -> Session {
-    run_in_pty_ctl(args, envs, move |out, t| respond(out, t).map(Reply::Type))
+    run_in_pty_ctl(args, envs, 100, move |out, t| {
+        respond(out, t).map(Reply::Type)
+    })
 }
 
 fn run_in_pty_ctl(
     args: &[&str],
     envs: &[(&str, &str)],
+    width: u16,
     mut respond: impl FnMut(&[u8], Duration) -> Option<Reply>,
 ) -> Session {
-    let (mut master, slave) = open_pty();
+    let (mut master, slave) = open_pty(width);
     let config_home = tempfile::tempdir().unwrap();
     // An `ink/` directory makes ink use this (empty) config instead of the
     // developer's real one.
@@ -114,11 +117,11 @@ fn run_in_pty_ctl(
     Session { output }
 }
 
-fn open_pty() -> (std::fs::File, OwnedFd) {
+fn open_pty(width: u16) -> (std::fs::File, OwnedFd) {
     let (mut m, mut s) = (0, 0);
     let mut size = libc::winsize {
         ws_row: 30,
-        ws_col: 100,
+        ws_col: width,
         ws_xpixel: 0,
         ws_ypixel: 0,
     };
@@ -559,6 +562,35 @@ fn reader_args(path: &std::path::Path) -> Vec<String> {
 }
 
 #[test]
+fn explicit_width_is_honored_on_a_wide_terminal() {
+    let doc = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
+    std::fs::write(doc.path(), "x".repeat(600)).unwrap();
+    for (width, expected) in [
+        (None, 120),
+        (Some("full"), 196),
+        (Some("120"), 120),
+        (Some("140"), 140),
+        (Some("1000"), 196),
+    ] {
+        let mut args = reader_args(doc.path());
+        if let Some(width) = width {
+            args.extend(["-w".into(), width.into()]);
+        }
+        let args: Vec<&str> = args.iter().map(String::as_str).collect();
+        let s = run_in_pty_ctl(&args, &[], 200, control_steps(Vec::new(), Marks::default()));
+        assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+        assert!(
+            contains(&s.output, "x".repeat(expected).as_bytes()),
+            "{width:?}"
+        );
+        assert!(
+            !contains(&s.output, "x".repeat(expected + 1).as_bytes()),
+            "{width:?}"
+        );
+    }
+}
+
+#[test]
 fn the_toc_takes_focus_filters_and_jumps() {
     let doc = long_doc_with_anchor_link();
     let marks = Marks::default();
@@ -597,7 +629,7 @@ fn shrinking_the_window_gives_focus_back_to_the_document() {
     ];
     let args = reader_args(doc.path());
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let s = run_in_pty_ctl(&args, &[], control_steps(steps, Marks::clone(&marks)));
+    let s = run_in_pty_ctl(&args, &[], 100, control_steps(steps, Marks::clone(&marks)));
     let marks = marks.borrow();
     assert_eq!(marks.len(), 3, "steps not all sent");
     let focused = String::from_utf8_lossy(&s.output[marks[0]..marks[1]]);
