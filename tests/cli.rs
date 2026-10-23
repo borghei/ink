@@ -183,6 +183,23 @@ fn terminal_theme_emits_only_palette_colours() {
 }
 
 #[test]
+fn terminal_theme_bash_highlighting_distinguishes_arguments_and_flags() {
+    ink()
+        .args([
+            "--plain", "--color", "always", "--theme", "terminal", "--width", "80",
+        ])
+        .write_stdin("```bash\ngit commit -m \"feat\"\n```\n")
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\x1b[34mgit")
+                .and(predicate::str::contains("\x1b[39m commit"))
+                .and(predicate::str::contains("\x1b[36m -"))
+                .and(predicate::str::contains("\x1b[32mfeat")),
+        );
+}
+
+#[test]
 fn doctor_reports_without_a_tty() {
     // In a test harness stdout is a pipe: the protocol query must be skipped
     // gracefully while the env report and decoder self-tests still run.
