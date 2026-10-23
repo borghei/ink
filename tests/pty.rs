@@ -956,6 +956,22 @@ fn tab_cycles_through_the_files_and_wraps() {
     assert!(contains(&out[m[1]..], b"qqqqqqqq"), "Tab did not wrap");
 }
 
+// Shift+Tab arrives as `ESC [ Z`, which crossterm reports as BackTab with
+// SHIFT set. It used to match no binding, so nothing happened.
+#[test]
+fn shift_tab_goes_back_a_file_and_wraps() {
+    let a = md_file("# Alpha\n\nqqqqqqqq\n");
+    let b = md_file("# Beta\n\nwwwwwwww\n");
+    let steps = keys(&[b"\x1b[Z", b"\x1b[Z"]);
+    let (out, m) = run_steps(&[], &[a.path(), b.path()], &[], steps);
+    assert!(contains(&out[..m[0]], b"qqqqqqqq"));
+    assert!(
+        contains(&out[m[0]..m[1]], b"wwwwwwww"),
+        "Shift+Tab did not wrap"
+    );
+    assert!(contains(&out[m[1]..], b"qqqqqqqq"), "Shift+Tab");
+}
+
 #[test]
 fn slides_step_forward_and_back() {
     let deck = md_file(

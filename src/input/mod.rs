@@ -610,12 +610,18 @@ fn map_key(key: KeyEvent) -> Action {
 }
 
 fn normalize_event(key: KeyEvent) -> (KeyCode, KeyModifiers) {
-    let code = key.code;
+    let mut code = key.code;
     let mut mods = key.modifiers;
-    if let KeyCode::Char(c) = code {
-        if c.is_ascii_uppercase() {
+    match code {
+        KeyCode::Char(c) if c.is_ascii_uppercase() => mods.remove(KeyModifiers::SHIFT),
+        // crossterm reports Shift+Tab as BackTab *with* SHIFT (and some
+        // terminals as Tab with SHIFT); bindings store plain BackTab.
+        KeyCode::BackTab => mods.remove(KeyModifiers::SHIFT),
+        KeyCode::Tab if mods.contains(KeyModifiers::SHIFT) => {
+            code = KeyCode::BackTab;
             mods.remove(KeyModifiers::SHIFT);
         }
+        _ => {}
     }
     (code, mods)
 }
@@ -671,6 +677,27 @@ mod tests {
 
     fn press(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
         KeyEvent::new(code, modifiers)
+    }
+
+    // crossterm reports Shift+Tab as BackTab with SHIFT set; the default
+    // `prev_tab` binding is a plain `backtab`, so it never fired.
+    #[test]
+    fn shift_tab_switches_to_the_previous_tab() {
+        init_keymap(None);
+        for (code, mods) in [
+            (KeyCode::BackTab, KeyModifiers::SHIFT),
+            (KeyCode::BackTab, KeyModifiers::NONE),
+            (KeyCode::Tab, KeyModifiers::SHIFT),
+        ] {
+            let ev = Event::Key(press(code, mods));
+            assert_eq!(
+                map_event(ev, InputMode::Normal),
+                Action::PrevTab,
+                "{code:?} {mods:?}"
+            );
+        }
+        let tab = Event::Key(press(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(map_event(tab, InputMode::Normal), Action::NextTab);
     }
 
     #[test]
