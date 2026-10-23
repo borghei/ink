@@ -599,6 +599,832 @@ impl<'g> Reader<'g> {
             resize_pending: None,
         }
     }
+
+    /// How the next key is read: by the open overlay, visual mode, the
+    /// focused sidebar, slides, or ordinary reading.
+    fn input_mode(&self) -> input::InputMode {
+        let overlays = &self.overlays;
+        if self.search.active {
+            input::InputMode::Search
+        } else if !overlays.link_hints.is_empty() || !overlays.code_hints.is_empty() {
+            input::InputMode::LinkHint
+        } else if self.selection.visual_mode {
+            input::InputMode::Visual
+        } else if self.tabs[self.active_tab].toc.nav.focused
+            && !overlays.help_open
+            && !overlays.theme_picker_open
+        {
+            if self.tabs[self.active_tab].toc.nav.filter.is_some() {
+                input::InputMode::TocFilter
+            } else {
+                input::InputMode::Toc
+            }
+        } else if self.args.slides && !overlays.theme_picker_open && !overlays.help_open {
+            input::InputMode::Slides
+        } else {
+            input::InputMode::Normal
+        }
+    }
+
+    /// Act on one input action: the open overlay or mode takes it first,
+    /// anything left is an ordinary reader action. `Some` ends the reader.
+    fn handle_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<Option<AppExit>> {
+        // Any recognized action changes state → redraw on the next iteration.
+        self.dirty = true;
+
+        // The wheel scrolls what is under the pointer: the sidebar, or
+        // (as an ordinary scroll) the document.
+        let action = match action {
+            Action::WheelUp(col, row) | Action::WheelDown(col, row)
+                if self.toc_rect.contains(Position::new(col, row))
+                    && !self.overlays.help_open
+                    && !self.overlays.theme_picker_open =>
+            {
+                let delta = if matches!(action, Action::WheelUp(..)) {
+                    -3
+                } else {
+                    3
+                };
+                self.tabs[self.active_tab]
+                    .toc
+                    .scroll_by(delta, view.toc_rows);
+                return Ok(None);
+            }
+            Action::WheelUp(..) => Action::ScrollUp(3),
+            Action::WheelDown(..) => Action::ScrollDown(3),
+            other => other,
+        };
+
+        // Help overlay is modal: any key closes it.
+        if self.overlays.help_open {
+            if action != Action::None {
+                self.overlays.help_open = false;
+            }
+            return Ok(None);
+        }
+
+        // Code-block hint overlay is modal: a label copies that block.
+        if !self.overlays.code_hints.is_empty() {
+            self.pick_code_hint(action);
+            return Ok(None);
+        }
+
+        // Link-hint overlay is modal: a label opens (or copies) that link,
+        // Y switches between the two, Esc cancels.
+        if !self.overlays.link_hints.is_empty() {
+            self.pick_link_hint(action, terminal);
+            return Ok(None);
+        }
+        // Theme picker mode
+        if self.overlays.theme_picker_open {
+            self.theme_picker_action(action, terminal, view)?;
+            return Ok(None);
+        }
+
+        // Visual mode is modal: motions move the cursor end of the
+        // selection, `y` copies it, Esc/q leaves without copying.
+        if self.selection.visual_mode {
+            self.visual_action(action, view);
+            return Ok(None);
+        }
+
+        // The focused sidebar takes its own keys; anything else (mouse,
+        // resize, wheel) falls through to the ordinary handling below.
+        if let Action::Toc(key) = action {
+            let tab = &mut self.tabs[self.active_tab];
+            if let Some(i) = tab.toc.handle(key, view.toc_rows) {
+                jump_to_heading(tab, &mut self.nav, i, view.viewport_height as usize);
+            }
+            return Ok(None);
+        }
+
+        // A confirmed search shows highlighted matches; the first Esc/q
+        // dismisses them (vim/less convention) rather than quitting.
+        if action == Action::ExitApp && !self.search.matches.is_empty() {
+            self.search.deactivate();
+            let current_offset = self.tabs[self.active_tab].scroll_offset;
+            self.tabs[self.active_tab]
+                .toc
+                .update_selection(current_offset);
+            return Ok(None);
+        }
+
+        if let Some(exit) = self.reader_action(action, terminal, view)? {
+            return Ok(Some(exit));
+        }
+
+        let current_offset = self.tabs[self.active_tab].scroll_offset;
+        self.tabs[self.active_tab]
+            .toc
+            .update_selection(current_offset);
+        Ok(None)
+    }
+
+    /// A key in the code-block hint overlay. Any key closes it.
+    fn pick_code_hint(&mut self, action: Action) {
+        if let Action::LinkHint(c) = action {
+            if let Some(hint) = self.overlays.code_hints.iter().find(|h| h.label == c) {
+                let what = if hint.lang.is_empty() {
+                    "code block".to_string()
+                } else {
+                    format!("code block ({})", hint.lang)
+                };
+                self.flash = Some((
+                    copy_text(&hint.source, self.args.clipboard, &what),
+                    Instant::now(),
+                ));
+            }
+        }
+        self.overlays.code_hints.clear();
+    }
+
+    /// A key in the link-hint overlay. Anything but `Y` closes it.
+    fn pick_link_hint(&mut self, action: Action, terminal: &mut Tui) {
+        match action {
+            Action::HintCopyToggle => {
+                self.overlays.hint_kind = HintKind::CopyUrl;
+            }
+            Action::LinkHint(c) => {
+                if let Some(hint) = self.overlays.link_hints.iter().find(|h| h.label == c) {
+                    match self.overlays.hint_kind {
+                        HintKind::Open => {
+                            if let Some(msg) = open_link(
+                                &hint.url,
+                                &mut self.tabs,
+                                self.active_tab,
+                                &mut self.nav,
+                                &self.args,
+                                terminal,
+                                self.theme_gen,
+                                self.graphics,
+                            ) {
+                                self.flash = Some((msg, Instant::now()));
+                            }
+                        }
+                        HintKind::CopyUrl => {
+                            self.flash = Some((
+                                copy_text(&hint.url, self.args.clipboard, "link"),
+                                Instant::now(),
+                            ));
+                        }
+                    }
+                }
+                self.overlays.link_hints.clear();
+            }
+            Action::CloseSearch => self.overlays.link_hints.clear(),
+            _ => self.overlays.link_hints.clear(),
+        }
+    }
+
+    /// A key in the theme picker: move through the themes with a live
+    /// preview, or close it and save the choice.
+    fn theme_picker_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<()> {
+        let overlays = &mut self.overlays;
+        match action {
+            Action::ExitApp | Action::CloseSearch => {
+                // Closing keeps the previewed theme — persist it.
+                overlays.theme_picker_open = false;
+                let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
+            }
+            Action::ScrollDown(_) => {
+                overlays.theme_picker_index = (overlays.theme_picker_index + 1) % THEME_LIST.len();
+                // Live preview: rebuild the visible tab now; others refresh
+                // lazily when switched to (theme_gen marks them stale).
+                self.args.theme = THEME_LIST[overlays.theme_picker_index].to_string();
+                self.theme_gen = self.theme_gen.wrapping_add(1);
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    view.viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+            }
+            Action::ScrollUp(_) => {
+                overlays.theme_picker_index = if overlays.theme_picker_index == 0 {
+                    THEME_LIST.len() - 1
+                } else {
+                    overlays.theme_picker_index - 1
+                };
+                self.args.theme = THEME_LIST[overlays.theme_picker_index].to_string();
+                self.theme_gen = self.theme_gen.wrapping_add(1);
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    view.viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+            }
+            Action::SearchConfirm => {
+                // Confirm theme selection and persist it to config.
+                overlays.theme_picker_open = false;
+                let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// A key in visual mode: move the cursor end of the selection, copy it
+    /// (`y`), or leave without copying (Esc/q).
+    fn visual_action(&mut self, action: Action, view: View) {
+        let plain = &self.tabs[self.active_tab].plain;
+        let Some(mut cursel) = self.selection.sel else {
+            self.selection.visual_mode = false;
+            return;
+        };
+        let cur = cursel.cursor;
+        let line_text = plain.get(cur.line).map(|t| t.as_str()).unwrap_or("");
+        let vh = view.viewport_height as usize;
+        let mut moved = true;
+        match action {
+            Action::Yank => {
+                let text = cursel.extract(plain);
+                let what = format!("{} chars", text.chars().count());
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+                self.selection.visual_mode = false;
+                self.selection.sel = None;
+                return;
+            }
+            Action::SelCancel | Action::ExitApp => {
+                self.selection.visual_mode = false;
+                self.selection.sel = None;
+                return;
+            }
+            Action::SelectMode => cursel.mode = SelMode::Char,
+            Action::SelectLineMode => {
+                cursel.mode = if cursel.mode == SelMode::Line {
+                    SelMode::Char
+                } else {
+                    SelMode::Line
+                }
+            }
+            Action::SelDown(n) => cursel.cursor.line = cur.line.saturating_add(n as usize),
+            Action::SelUp(n) => cursel.cursor.line = cur.line.saturating_sub(n as usize),
+            Action::SelLeft(n) => cursel.cursor.col = cur.col.saturating_sub(n as usize),
+            Action::SelRight(n) => cursel.cursor.col = cur.col.saturating_add(n as usize),
+            Action::SelWordNext => cursel.cursor.col = selection::next_word_col(line_text, cur.col),
+            Action::SelWordPrev => cursel.cursor.col = selection::prev_word_col(line_text, cur.col),
+            Action::SelLineStart => cursel.cursor.col = 0,
+            Action::SelLineEnd => {
+                cursel.cursor.col = selection::line_width(line_text).saturating_sub(1)
+            }
+            Action::SelDocStart => cursel.cursor = Pos::new(0, 0),
+            Action::SelDocEnd => {
+                cursel.cursor = Pos::new(plain.len().saturating_sub(1), 0);
+            }
+            Action::SelPageDown => cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1),
+            Action::SelPageUp => cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1),
+            Action::Resize(_, _) => {
+                self.resize_pending = Some(std::time::Instant::now());
+                moved = false;
+            }
+            _ => moved = false,
+        }
+        if moved {
+            cursel.cursor = selection::clamp(cursel.cursor, plain);
+            // Keep the moving end of the selection on screen.
+            let scroll = &mut self.tabs[self.active_tab].scroll_offset;
+            if cursel.cursor.line < *scroll {
+                *scroll = cursel.cursor.line;
+            } else if cursel.cursor.line >= *scroll + vh {
+                *scroll = cursel.cursor.line + 1 - vh;
+            }
+            *scroll = (*scroll).min(view.max_scroll);
+        }
+        self.selection.sel = Some(cursel);
+    }
+
+    /// An action in ordinary reading, with no overlay or mode in the way.
+    /// `Some` ends the reader.
+    fn reader_action(
+        &mut self,
+        action: Action,
+        terminal: &mut Tui,
+        view: View,
+    ) -> Result<Option<AppExit>> {
+        let viewport_height = view.viewport_height;
+        let max_scroll = view.max_scroll;
+        match action {
+            Action::ExitApp => return Ok(Some(AppExit::Quit)),
+            Action::OpenBrowser => return Ok(Some(AppExit::BackToBrowser)),
+            Action::CloseDoc => return Ok(Some(AppExit::BackToBrowser)),
+
+            // Search
+            Action::Search => {
+                self.search.activate();
+            }
+            Action::CloseSearch => {
+                self.search.deactivate();
+            }
+            Action::SearchConfirm => {
+                // Keep matches visible but exit search input mode
+                self.search.active = false;
+            }
+            Action::SearchInput(c) => {
+                self.search.push_char(c);
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                // Auto-jump to first match
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchBackspace => {
+                self.search.pop_char();
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchNext => {
+                self.search.next_match();
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+            Action::SearchPrev => {
+                self.search.prev_match();
+                if let Some(line) = self.search.current_line() {
+                    self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                }
+            }
+
+            // Scrolling
+            Action::ScrollDown(n) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.saturating_add(n as usize).min(max_scroll);
+            }
+            Action::ScrollUp(n) => {
+                // Clamp before subtracting: a stale offset past the end
+                // (post-resize) must recover on the first upward scroll.
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.min(max_scroll).saturating_sub(n as usize);
+            }
+            Action::PageDown => {
+                let jump = (viewport_height as usize).saturating_sub(2); // keep 2 lines overlap
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.saturating_add(jump).min(max_scroll);
+            }
+            Action::PageUp => {
+                let jump = (viewport_height as usize).saturating_sub(2);
+                let tab = &mut self.tabs[self.active_tab];
+                tab.scroll_offset = tab.scroll_offset.min(max_scroll).saturating_sub(jump);
+            }
+            Action::Home => self.tabs[self.active_tab].scroll_offset = 0,
+            Action::End => self.tabs[self.active_tab].scroll_offset = max_scroll,
+
+            // Slides
+            Action::SlideNext => {
+                if self.active_tab + 1 < self.tabs.len() {
+                    self.active_tab += 1;
+                    self.show_active_tab(terminal, viewport_height)?;
+                }
+            }
+            Action::SlidePrev => {
+                if self.active_tab > 0 {
+                    self.active_tab -= 1;
+                    self.show_active_tab(terminal, viewport_height)?;
+                }
+            }
+
+            // TOC
+            Action::TocFocus => self.focus_toc(terminal, viewport_height)?,
+            Action::ToggleToc => {
+                self.tabs[self.active_tab].toc.toggle();
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+            }
+
+            // Help overlay
+            Action::Help => {
+                self.overlays.help_open = true;
+            }
+
+            // Theme picker
+            Action::ThemePicker => {
+                self.overlays.theme_picker_open = true;
+            }
+
+            // Link-hint mode: label every link in the viewport.
+            Action::LinkMode => {
+                let tab = &self.tabs[self.active_tab];
+                let len = tab.styled_lines.len();
+                let offset = tab.scroll_offset.min(len);
+                let end = (offset + viewport_height as usize).min(len);
+                self.overlays.link_hints = collect_link_hints(&tab.styled_lines[offset..end]);
+            }
+
+            // After a confirmed search, n/N cycle matches (less/vim
+            // convention); otherwise they jump between headings.
+            Action::NextHeading => {
+                if !self.search.matches.is_empty() {
+                    self.search.next_match();
+                    if let Some(line) = self.search.current_line() {
+                        self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                    }
+                } else {
+                    let tab = &mut self.tabs[self.active_tab];
+                    let current = tab.scroll_offset;
+                    if let Some(next) = tab.toc.headings.iter().find(|h| h.line_index > current + 1)
+                    {
+                        tab.scroll_offset = next.line_index.saturating_sub(1).min(max_scroll);
+                    }
+                }
+            }
+            Action::PrevHeading => {
+                if !self.search.matches.is_empty() {
+                    self.search.prev_match();
+                    if let Some(line) = self.search.current_line() {
+                        self.tabs[self.active_tab].scroll_offset = line.min(max_scroll);
+                    }
+                } else {
+                    let tab = &mut self.tabs[self.active_tab];
+                    let current = tab.scroll_offset;
+                    if let Some(prev) = tab
+                        .toc
+                        .headings
+                        .iter()
+                        .rev()
+                        .find(|h| h.line_index + 1 < current)
+                    {
+                        tab.scroll_offset = prev.line_index.saturating_sub(1).min(max_scroll);
+                    }
+                }
+            }
+
+            // Links are handled via OSC 8 hyperlinks (Cmd+Click / Ctrl+Click)
+
+            // Tabs — refresh the newly-active tab if it was laid out for a
+            // stale width/theme (lazy rebuild).
+            Action::NextTab if self.tabs.len() > 1 => {
+                self.active_tab = (self.active_tab + 1) % self.tabs.len();
+                self.show_active_tab(terminal, viewport_height)?;
+            }
+            Action::PrevTab if self.tabs.len() > 1 => {
+                self.active_tab = if self.active_tab == 0 {
+                    self.tabs.len() - 1
+                } else {
+                    self.active_tab - 1
+                };
+                self.show_active_tab(terminal, viewport_height)?;
+            }
+
+            // Follow the first link on screen that can be followed (web,
+            // mail, a .md file or a #heading anchor), through the same
+            // path as link-hint mode.
+            Action::FollowLink => self.follow_first_link(terminal, viewport_height),
+
+            // Navigation history
+            Action::NavBack => {
+                if let Some(entry) = self.nav.go_back(NavEntry::of(&self.tabs[self.active_tab])) {
+                    restore_nav_entry(
+                        &mut self.tabs[self.active_tab],
+                        entry,
+                        &self.args,
+                        terminal.size()?.width,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                }
+            }
+            Action::NavForward => {
+                if let Some(entry) = self
+                    .nav
+                    .go_forward(NavEntry::of(&self.tabs[self.active_tab]))
+                {
+                    restore_nav_entry(
+                        &mut self.tabs[self.active_tab],
+                        entry,
+                        &self.args,
+                        terminal.size()?.width,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                }
+            }
+
+            // Selection & clipboard
+            Action::SelectMode | Action::SelectLineMode => {
+                self.start_selection(action, viewport_height);
+            }
+
+            // Code-block hints: label every block touching the viewport.
+            Action::CopyCode => self.label_code_blocks(viewport_height),
+
+            // Open the file in $VISUAL/$EDITOR at the line on screen,
+            // then reload it.
+            Action::Edit => {
+                let width = terminal.size()?.width;
+                let msg = edit_in_editor(
+                    terminal,
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    viewport_height as usize,
+                    width,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                self.flash = msg.map(|m| (m, Instant::now()));
+            }
+
+            // Copy the section the viewport starts in, as markdown source.
+            Action::CopySection => {
+                let tab = &self.tabs[self.active_tab];
+                let (text, what) = section_source(tab, viewport_height as usize);
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+            }
+
+            // Mouse selection. Only reachable when ink holds the mouse;
+            // with `mouse_capture = false` these events never arrive and
+            // the terminal's own selection keeps working.
+            // A click on a sidebar row jumps to that heading.
+            Action::MouseDown(col, row) if self.toc_rect.contains(Position::new(col, row)) => {
+                let tab = &mut self.tabs[self.active_tab];
+                tab.toc.leave();
+                if let Some(i) = tab.toc.heading_at((row - self.toc_rect.y) as usize) {
+                    jump_to_heading(tab, &mut self.nav, i, viewport_height as usize);
+                }
+            }
+            Action::MouseDown(col, row) => self.mouse_down(col, row),
+            Action::MouseDrag(col, row) => self.mouse_drag(col, row),
+            Action::MouseUp(col, row) => self.mouse_up(col, row, terminal),
+
+            Action::Resize(_, _) => {
+                // Debounced: dragging a terminal edge fires dozens of
+                // resize events, and every rebuild re-encodes all images.
+                // The actual rebuild happens above once events go quiet.
+                self.resize_pending = Some(std::time::Instant::now());
+            }
+            _ => {}
+        }
+        Ok(None)
+    }
+
+    /// The active tab changed: refresh it if it was laid out for a stale
+    /// width/theme (lazy rebuild), and search it.
+    fn show_active_tab(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        ensure_tab_current(
+            &mut self.tabs[self.active_tab],
+            &self.args,
+            terminal.size()?.width,
+            viewport_height as usize,
+            self.theme_gen,
+            self.graphics,
+        );
+        self.search
+            .update_matches(&self.tabs[self.active_tab].lowered);
+        Ok(())
+    }
+
+    /// `o`: give the sidebar the keys, opening it first if it is closed.
+    fn focus_toc(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        let width = terminal.size()?.width;
+        let tab = &mut self.tabs[self.active_tab];
+        if tab.toc.headings.is_empty() {
+            self.flash = Some(("no headings in this document".into(), Instant::now()));
+        } else if !sidebar_shown(true, width) {
+            self.flash = Some((
+                "window too narrow for the table of contents".into(),
+                Instant::now(),
+            ));
+        } else {
+            if !tab.toc.visible {
+                tab.toc.toggle();
+                rebuild_tab(
+                    tab,
+                    &self.args,
+                    width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search.update_matches(&tab.lowered);
+            }
+            tab.toc.update_selection(tab.scroll_offset);
+            tab.toc.focus();
+        }
+        Ok(())
+    }
+
+    /// `Enter`: follow the first followable link on screen.
+    fn follow_first_link(&mut self, terminal: &mut Tui, viewport_height: u16) {
+        let tab = &self.tabs[self.active_tab];
+        let found_link =
+            first_followable_link(&tab.styled_lines, tab.scroll_offset, viewport_height)
+                .map(str::to_string);
+        match found_link {
+            Some(link) => {
+                if let Some(msg) = open_link(
+                    &link,
+                    &mut self.tabs,
+                    self.active_tab,
+                    &mut self.nav,
+                    &self.args,
+                    terminal,
+                    self.theme_gen,
+                    self.graphics,
+                ) {
+                    self.flash = Some((msg, Instant::now()));
+                }
+            }
+            None => {
+                self.flash = Some(("no links on screen".into(), Instant::now()));
+            }
+        }
+    }
+
+    /// `v` / `V`: enter visual mode with a fresh selection.
+    fn start_selection(&mut self, action: Action, viewport_height: u16) {
+        let mode = if action == Action::SelectLineMode {
+            SelMode::Line
+        } else {
+            SelMode::Char
+        };
+        // Normal mode has no caret to inherit, so the selection
+        // starts on the first line of the viewport that has text —
+        // anchoring on the blank spacing above a heading looks
+        // broken.
+        let tab = &self.tabs[self.active_tab];
+        let start = tab.scroll_offset.min(tab.plain.len().saturating_sub(1));
+        let end = (start + viewport_height as usize).min(tab.plain.len());
+        let line = (start..end)
+            .find(|i| !tab.plain[*i].trim().is_empty())
+            .unwrap_or(start);
+        let col = tab
+            .plain
+            .get(line)
+            .map_or(0, |t| selection::content_start_col(t));
+        self.selection.sel = Some(Selection::new(Pos::new(line, col), mode));
+        self.selection.visual_mode = true;
+    }
+
+    /// `c`: label every code block touching the viewport.
+    fn label_code_blocks(&mut self, viewport_height: u16) {
+        let tab = &self.tabs[self.active_tab];
+        let top = tab.scroll_offset;
+        let bottom = top + viewport_height as usize;
+        self.overlays.code_hints = tab
+            .code_blocks
+            .iter()
+            .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
+            .zip('a'..='z')
+            .map(|(b, label)| {
+                // A block scrolled off the top keeps its label on
+                // the first visible row.
+                let row = b.line_index.max(top) - top;
+                let width = tab
+                    .plain
+                    .get(b.line_index)
+                    .map_or(0, |t| selection::line_width(t));
+                CodeHint {
+                    label,
+                    row: row as u16,
+                    col: width.saturating_sub(4) as u16,
+                    lang: b.lang.clone(),
+                    source: b.source.clone(),
+                }
+            })
+            .collect();
+        if self.overlays.code_hints.is_empty() {
+            self.flash = Some(("no code blocks on screen".to_string(), Instant::now()));
+        }
+    }
+
+    /// A left press in the document: start a selection, by word or line on
+    /// a double or triple click.
+    fn mouse_down(&mut self, col: u16, row: u16) {
+        self.tabs[self.active_tab].toc.leave();
+        let sel = &mut self.selection;
+        if let Some(pos) = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row) {
+            let clicks = match sel.last_click {
+                Some((at, c, r, n))
+                    if c == col && r == row && at.elapsed() < Duration::from_millis(400) =>
+                {
+                    n % 3 + 1
+                }
+                _ => 1,
+            };
+            sel.last_click = Some((Instant::now(), col, row, clicks));
+            let plain = &self.tabs[self.active_tab].plain;
+            let line_text = plain.get(pos.line).map(|t| t.as_str()).unwrap_or("");
+            sel.sel = Some(match clicks {
+                2 => {
+                    let (from, to) = selection::word_bounds(line_text, pos.col);
+                    Selection {
+                        anchor: Pos::new(pos.line, from),
+                        cursor: Pos::new(pos.line, to),
+                        mode: SelMode::Char,
+                    }
+                }
+                3 => Selection::new(pos, SelMode::Line),
+                _ => Selection::new(pos, SelMode::Char),
+            });
+            // A double/triple click has already selected something;
+            // release copies it without any drag.
+            sel.drag_moved = clicks > 1;
+            sel.dragging = true;
+            sel.visual_mode = false;
+        }
+    }
+
+    /// The pointer moved with the left button down: extend the selection.
+    fn mouse_drag(&mut self, col: u16, row: u16) {
+        let sel = &mut self.selection;
+        if sel.dragging {
+            if let Some(pos) = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row) {
+                if let Some(ref mut cursel) = sel.sel {
+                    if pos != cursel.cursor {
+                        sel.drag_moved = true;
+                    }
+                    cursel.cursor = pos;
+                }
+            }
+        }
+    }
+
+    /// The left button came up: copy what a drag selected, or follow the
+    /// link under a plain click.
+    fn mouse_up(&mut self, col: u16, row: u16, terminal: &mut Tui) {
+        let sel = &mut self.selection;
+        // Pressed and released on one cell with no drag, and not
+        // the second press of a double click.
+        let clicked = sel.dragging
+            && !sel.drag_moved
+            && matches!(sel.last_click, Some((_, c, r, 1)) if c == col && r == row);
+        sel.dragging = false;
+        match sel.sel {
+            // A plain click with no drag is a dismiss, not a copy.
+            Some(_) if !sel.drag_moved => sel.sel = None,
+            Some(cursel) => {
+                let text = cursel.extract(&self.tabs[self.active_tab].plain);
+                let what = format!("{} chars", text.chars().count());
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+            }
+            None => {}
+        }
+        self.selection.drag_moved = false;
+        // A click on a link follows it, the way `f` would.
+        let link = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row)
+            .filter(|_| clicked)
+            .and_then(|pos| link_at(&self.tabs[self.active_tab], pos))
+            .map(str::to_string);
+        if let Some(url) = link {
+            // The page under the pointer changes: the next press
+            // is a fresh click, not the second of a double.
+            self.selection.last_click = None;
+            if let Some(msg) = open_link(
+                &url,
+                &mut self.tabs,
+                self.active_tab,
+                &mut self.nav,
+                &self.args,
+                terminal,
+                self.theme_gen,
+                self.graphics,
+            ) {
+                self.flash = Some((msg, Instant::now()));
+            }
+        }
+    }
+}
+
+/// The reader's terminal.
+type Tui = Terminal<CrosstermBackend<io::Stdout>>;
+
+/// Sizes measured once per turn of the loop, before drawing and input.
+#[derive(Debug, Clone, Copy)]
+struct View {
+    /// Rows for the document: the terminal less the top bar, the separator
+    /// and the bottom bar.
+    viewport_height: u16,
+    /// Rows for the sidebar's heading list, under its title row.
+    toc_rows: usize,
+    max_scroll: usize,
 }
 
 fn run_inner(
@@ -958,818 +1784,15 @@ fn run_inner(
         }
 
         // Handle input
-        let input_mode = if reader.search.active {
-            input::InputMode::Search
-        } else if !reader.overlays.link_hints.is_empty() || !reader.overlays.code_hints.is_empty() {
-            input::InputMode::LinkHint
-        } else if reader.selection.visual_mode {
-            input::InputMode::Visual
-        } else if reader.tabs[reader.active_tab].toc.nav.focused
-            && !reader.overlays.help_open
-            && !reader.overlays.theme_picker_open
-        {
-            if reader.tabs[reader.active_tab].toc.nav.filter.is_some() {
-                input::InputMode::TocFilter
-            } else {
-                input::InputMode::Toc
-            }
-        } else if reader.args.slides
-            && !reader.overlays.theme_picker_open
-            && !reader.overlays.help_open
-        {
-            input::InputMode::Slides
-        } else {
-            input::InputMode::Normal
+        let view = View {
+            viewport_height,
+            toc_rows,
+            max_scroll,
         };
-        if let Some(action) = input::poll_action(Duration::from_millis(50), input_mode) {
-            // Any recognized action changes state → redraw on the next iteration.
-            reader.dirty = true;
-
-            // The wheel scrolls what is under the pointer: the sidebar, or
-            // (as an ordinary scroll) the document.
-            let action = match action {
-                Action::WheelUp(col, row) | Action::WheelDown(col, row)
-                    if reader.toc_rect.contains(Position::new(col, row))
-                        && !reader.overlays.help_open
-                        && !reader.overlays.theme_picker_open =>
-                {
-                    let delta = if matches!(action, Action::WheelUp(..)) {
-                        -3
-                    } else {
-                        3
-                    };
-                    reader.tabs[reader.active_tab]
-                        .toc
-                        .scroll_by(delta, toc_rows);
-                    continue;
-                }
-                Action::WheelUp(..) => Action::ScrollUp(3),
-                Action::WheelDown(..) => Action::ScrollDown(3),
-                other => other,
-            };
-
-            // Help overlay is modal: any key closes it.
-            if reader.overlays.help_open {
-                if action != Action::None {
-                    reader.overlays.help_open = false;
-                }
-                continue;
+        if let Some(action) = input::poll_action(Duration::from_millis(50), reader.input_mode()) {
+            if let Some(exit) = reader.handle_action(action, terminal, view)? {
+                return Ok(exit);
             }
-
-            // Code-block hint overlay is modal: a label copies that block.
-            if !reader.overlays.code_hints.is_empty() {
-                if let Action::LinkHint(c) = action {
-                    if let Some(hint) = reader.overlays.code_hints.iter().find(|h| h.label == c) {
-                        let what = if hint.lang.is_empty() {
-                            "code block".to_string()
-                        } else {
-                            format!("code block ({})", hint.lang)
-                        };
-                        reader.flash = Some((
-                            copy_text(&hint.source, reader.args.clipboard, &what),
-                            Instant::now(),
-                        ));
-                    }
-                }
-                reader.overlays.code_hints.clear();
-                continue;
-            }
-
-            // Link-hint overlay is modal: a label opens (or copies) that link,
-            // Y switches between the two, Esc cancels.
-            if !reader.overlays.link_hints.is_empty() {
-                match action {
-                    Action::HintCopyToggle => {
-                        reader.overlays.hint_kind = HintKind::CopyUrl;
-                    }
-                    Action::LinkHint(c) => {
-                        if let Some(hint) = reader.overlays.link_hints.iter().find(|h| h.label == c)
-                        {
-                            match reader.overlays.hint_kind {
-                                HintKind::Open => {
-                                    if let Some(msg) = open_link(
-                                        &hint.url,
-                                        &mut reader.tabs,
-                                        reader.active_tab,
-                                        &mut reader.nav,
-                                        &reader.args,
-                                        terminal,
-                                        reader.theme_gen,
-                                        reader.graphics,
-                                    ) {
-                                        reader.flash = Some((msg, Instant::now()));
-                                    }
-                                }
-                                HintKind::CopyUrl => {
-                                    reader.flash = Some((
-                                        copy_text(&hint.url, reader.args.clipboard, "link"),
-                                        Instant::now(),
-                                    ));
-                                }
-                            }
-                        }
-                        reader.overlays.link_hints.clear();
-                    }
-                    Action::CloseSearch => reader.overlays.link_hints.clear(),
-                    _ => reader.overlays.link_hints.clear(),
-                }
-                continue;
-            }
-            // Theme picker mode
-            if reader.overlays.theme_picker_open {
-                match action {
-                    Action::ExitApp | Action::CloseSearch => {
-                        // Closing keeps the previewed theme — persist it.
-                        reader.overlays.theme_picker_open = false;
-                        let _ = crate::config::set_theme(
-                            THEME_LIST[reader.overlays.theme_picker_index],
-                        );
-                    }
-                    Action::ScrollDown(_) => {
-                        reader.overlays.theme_picker_index =
-                            (reader.overlays.theme_picker_index + 1) % THEME_LIST.len();
-                        // Live preview: rebuild the visible tab now; others refresh
-                        // lazily when switched to (theme_gen marks them stale).
-                        reader.args.theme =
-                            THEME_LIST[reader.overlays.theme_picker_index].to_string();
-                        reader.theme_gen = reader.theme_gen.wrapping_add(1);
-                        rebuild_tab(
-                            &mut reader.tabs[reader.active_tab],
-                            &reader.args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                    }
-                    Action::ScrollUp(_) => {
-                        reader.overlays.theme_picker_index =
-                            if reader.overlays.theme_picker_index == 0 {
-                                THEME_LIST.len() - 1
-                            } else {
-                                reader.overlays.theme_picker_index - 1
-                            };
-                        reader.args.theme =
-                            THEME_LIST[reader.overlays.theme_picker_index].to_string();
-                        reader.theme_gen = reader.theme_gen.wrapping_add(1);
-                        rebuild_tab(
-                            &mut reader.tabs[reader.active_tab],
-                            &reader.args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                    }
-                    Action::SearchConfirm => {
-                        // Confirm theme selection and persist it to config.
-                        reader.overlays.theme_picker_open = false;
-                        let _ = crate::config::set_theme(
-                            THEME_LIST[reader.overlays.theme_picker_index],
-                        );
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-
-            // Visual mode is modal: motions move the cursor end of the
-            // selection, `y` copies it, Esc/q leaves without copying.
-            if reader.selection.visual_mode {
-                let plain = &reader.tabs[reader.active_tab].plain;
-                let Some(mut cursel) = reader.selection.sel else {
-                    reader.selection.visual_mode = false;
-                    continue;
-                };
-                let cur = cursel.cursor;
-                let line_text = plain.get(cur.line).map(|t| t.as_str()).unwrap_or("");
-                let vh = viewport_height as usize;
-                let mut moved = true;
-                match action {
-                    Action::Yank => {
-                        let text = cursel.extract(plain);
-                        let what = format!("{} chars", text.chars().count());
-                        reader.flash = Some((
-                            copy_text(&text, reader.args.clipboard, &what),
-                            Instant::now(),
-                        ));
-                        reader.selection.visual_mode = false;
-                        reader.selection.sel = None;
-                        continue;
-                    }
-                    Action::SelCancel | Action::ExitApp => {
-                        reader.selection.visual_mode = false;
-                        reader.selection.sel = None;
-                        continue;
-                    }
-                    Action::SelectMode => cursel.mode = SelMode::Char,
-                    Action::SelectLineMode => {
-                        cursel.mode = if cursel.mode == SelMode::Line {
-                            SelMode::Char
-                        } else {
-                            SelMode::Line
-                        }
-                    }
-                    Action::SelDown(n) => cursel.cursor.line = cur.line.saturating_add(n as usize),
-                    Action::SelUp(n) => cursel.cursor.line = cur.line.saturating_sub(n as usize),
-                    Action::SelLeft(n) => cursel.cursor.col = cur.col.saturating_sub(n as usize),
-                    Action::SelRight(n) => cursel.cursor.col = cur.col.saturating_add(n as usize),
-                    Action::SelWordNext => {
-                        cursel.cursor.col = selection::next_word_col(line_text, cur.col)
-                    }
-                    Action::SelWordPrev => {
-                        cursel.cursor.col = selection::prev_word_col(line_text, cur.col)
-                    }
-                    Action::SelLineStart => cursel.cursor.col = 0,
-                    Action::SelLineEnd => {
-                        cursel.cursor.col = selection::line_width(line_text).saturating_sub(1)
-                    }
-                    Action::SelDocStart => cursel.cursor = Pos::new(0, 0),
-                    Action::SelDocEnd => {
-                        cursel.cursor = Pos::new(plain.len().saturating_sub(1), 0);
-                    }
-                    Action::SelPageDown => {
-                        cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1)
-                    }
-                    Action::SelPageUp => {
-                        cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1)
-                    }
-                    Action::Resize(_, _) => {
-                        reader.resize_pending = Some(std::time::Instant::now());
-                        moved = false;
-                    }
-                    _ => moved = false,
-                }
-                if moved {
-                    cursel.cursor = selection::clamp(cursel.cursor, plain);
-                    // Keep the moving end of the selection on screen.
-                    let scroll = &mut reader.tabs[reader.active_tab].scroll_offset;
-                    if cursel.cursor.line < *scroll {
-                        *scroll = cursel.cursor.line;
-                    } else if cursel.cursor.line >= *scroll + vh {
-                        *scroll = cursel.cursor.line + 1 - vh;
-                    }
-                    *scroll = (*scroll).min(max_scroll);
-                }
-                reader.selection.sel = Some(cursel);
-                continue;
-            }
-
-            // The focused sidebar takes its own keys; anything else (mouse,
-            // resize, wheel) falls through to the ordinary handling below.
-            if let Action::Toc(key) = action {
-                let tab = &mut reader.tabs[reader.active_tab];
-                if let Some(i) = tab.toc.handle(key, toc_rows) {
-                    jump_to_heading(tab, &mut reader.nav, i, viewport_height as usize);
-                }
-                continue;
-            }
-
-            // A confirmed search shows highlighted matches; the first Esc/q
-            // dismisses them (vim/less convention) rather than quitting.
-            if action == Action::ExitApp && !reader.search.matches.is_empty() {
-                reader.search.deactivate();
-                let current_offset = reader.tabs[reader.active_tab].scroll_offset;
-                reader.tabs[reader.active_tab]
-                    .toc
-                    .update_selection(current_offset);
-                continue;
-            }
-
-            match action {
-                Action::ExitApp => return Ok(AppExit::Quit),
-                Action::OpenBrowser => return Ok(AppExit::BackToBrowser),
-                Action::CloseDoc => return Ok(AppExit::BackToBrowser),
-
-                // Search
-                Action::Search => {
-                    reader.search.activate();
-                }
-                Action::CloseSearch => {
-                    reader.search.deactivate();
-                }
-                Action::SearchConfirm => {
-                    // Keep matches visible but exit search input mode
-                    reader.search.active = false;
-                }
-                Action::SearchInput(c) => {
-                    reader.search.push_char(c);
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                    // Auto-jump to first match
-                    if let Some(line) = reader.search.current_line() {
-                        reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchBackspace => {
-                    reader.search.pop_char();
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                    if let Some(line) = reader.search.current_line() {
-                        reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchNext => {
-                    reader.search.next_match();
-                    if let Some(line) = reader.search.current_line() {
-                        reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-                Action::SearchPrev => {
-                    reader.search.prev_match();
-                    if let Some(line) = reader.search.current_line() {
-                        reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                    }
-                }
-
-                // Scrolling
-                Action::ScrollDown(n) => {
-                    reader.tabs[reader.active_tab].scroll_offset = reader.tabs[reader.active_tab]
-                        .scroll_offset
-                        .saturating_add(n as usize)
-                        .min(max_scroll);
-                }
-                Action::ScrollUp(n) => {
-                    // Clamp before subtracting: a stale offset past the end
-                    // (post-resize) must recover on the first upward scroll.
-                    reader.tabs[reader.active_tab].scroll_offset = reader.tabs[reader.active_tab]
-                        .scroll_offset
-                        .min(max_scroll)
-                        .saturating_sub(n as usize);
-                }
-                Action::PageDown => {
-                    let jump = (viewport_height as usize).saturating_sub(2); // keep 2 lines overlap
-                    reader.tabs[reader.active_tab].scroll_offset = reader.tabs[reader.active_tab]
-                        .scroll_offset
-                        .saturating_add(jump)
-                        .min(max_scroll);
-                }
-                Action::PageUp => {
-                    let jump = (viewport_height as usize).saturating_sub(2);
-                    reader.tabs[reader.active_tab].scroll_offset = reader.tabs[reader.active_tab]
-                        .scroll_offset
-                        .min(max_scroll)
-                        .saturating_sub(jump);
-                }
-                Action::Home => reader.tabs[reader.active_tab].scroll_offset = 0,
-                Action::End => reader.tabs[reader.active_tab].scroll_offset = max_scroll,
-
-                // Slides
-                Action::SlideNext => {
-                    if reader.active_tab + 1 < reader.tabs.len() {
-                        reader.active_tab += 1;
-                        ensure_tab_current(
-                            &mut reader.tabs[reader.active_tab],
-                            &reader.args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                        reader
-                            .search
-                            .update_matches(&reader.tabs[reader.active_tab].lowered);
-                    }
-                }
-                Action::SlidePrev => {
-                    if reader.active_tab > 0 {
-                        reader.active_tab -= 1;
-                        ensure_tab_current(
-                            &mut reader.tabs[reader.active_tab],
-                            &reader.args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                        reader
-                            .search
-                            .update_matches(&reader.tabs[reader.active_tab].lowered);
-                    }
-                }
-
-                // TOC
-                Action::TocFocus => {
-                    let width = terminal.size()?.width;
-                    let tab = &mut reader.tabs[reader.active_tab];
-                    if tab.toc.headings.is_empty() {
-                        reader.flash =
-                            Some(("no headings in this document".into(), Instant::now()));
-                    } else if !sidebar_shown(true, width) {
-                        reader.flash = Some((
-                            "window too narrow for the table of contents".into(),
-                            Instant::now(),
-                        ));
-                    } else {
-                        if !tab.toc.visible {
-                            tab.toc.toggle();
-                            rebuild_tab(
-                                tab,
-                                &reader.args,
-                                width,
-                                viewport_height as usize,
-                                reader.theme_gen,
-                                reader.graphics,
-                            );
-                            reader.search.update_matches(&tab.lowered);
-                        }
-                        tab.toc.update_selection(tab.scroll_offset);
-                        tab.toc.focus();
-                    }
-                }
-                Action::ToggleToc => {
-                    reader.tabs[reader.active_tab].toc.toggle();
-                    rebuild_tab(
-                        &mut reader.tabs[reader.active_tab],
-                        &reader.args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        reader.theme_gen,
-                        reader.graphics,
-                    );
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                }
-
-                // Help overlay
-                Action::Help => {
-                    reader.overlays.help_open = true;
-                }
-
-                // Theme picker
-                Action::ThemePicker => {
-                    reader.overlays.theme_picker_open = true;
-                }
-
-                // Link-hint mode: label every link in the viewport.
-                Action::LinkMode => {
-                    let len = reader.tabs[reader.active_tab].styled_lines.len();
-                    let offset = reader.tabs[reader.active_tab].scroll_offset.min(len);
-                    let end = (offset + viewport_height as usize).min(len);
-                    reader.overlays.link_hints = collect_link_hints(
-                        &reader.tabs[reader.active_tab].styled_lines[offset..end],
-                    );
-                }
-
-                // After a confirmed search, n/N cycle matches (less/vim
-                // convention); otherwise they jump between headings.
-                Action::NextHeading => {
-                    if !reader.search.matches.is_empty() {
-                        reader.search.next_match();
-                        if let Some(line) = reader.search.current_line() {
-                            reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                        }
-                    } else {
-                        let current = reader.tabs[reader.active_tab].scroll_offset;
-                        if let Some(next) = reader.tabs[reader.active_tab]
-                            .toc
-                            .headings
-                            .iter()
-                            .find(|h| h.line_index > current + 1)
-                        {
-                            reader.tabs[reader.active_tab].scroll_offset =
-                                next.line_index.saturating_sub(1).min(max_scroll);
-                        }
-                    }
-                }
-                Action::PrevHeading => {
-                    if !reader.search.matches.is_empty() {
-                        reader.search.prev_match();
-                        if let Some(line) = reader.search.current_line() {
-                            reader.tabs[reader.active_tab].scroll_offset = line.min(max_scroll);
-                        }
-                    } else {
-                        let current = reader.tabs[reader.active_tab].scroll_offset;
-                        if let Some(prev) = reader.tabs[reader.active_tab]
-                            .toc
-                            .headings
-                            .iter()
-                            .rev()
-                            .find(|h| h.line_index + 1 < current)
-                        {
-                            reader.tabs[reader.active_tab].scroll_offset =
-                                prev.line_index.saturating_sub(1).min(max_scroll);
-                        }
-                    }
-                }
-
-                // Links are handled via OSC 8 hyperlinks (Cmd+Click / Ctrl+Click)
-
-                // Tabs — refresh the newly-active tab if it was laid out for a
-                // stale width/theme (lazy rebuild).
-                Action::NextTab if reader.tabs.len() > 1 => {
-                    reader.active_tab = (reader.active_tab + 1) % reader.tabs.len();
-                    ensure_tab_current(
-                        &mut reader.tabs[reader.active_tab],
-                        &reader.args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        reader.theme_gen,
-                        reader.graphics,
-                    );
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                }
-                Action::PrevTab if reader.tabs.len() > 1 => {
-                    reader.active_tab = if reader.active_tab == 0 {
-                        reader.tabs.len() - 1
-                    } else {
-                        reader.active_tab - 1
-                    };
-                    ensure_tab_current(
-                        &mut reader.tabs[reader.active_tab],
-                        &reader.args,
-                        terminal.size()?.width,
-                        viewport_height as usize,
-                        reader.theme_gen,
-                        reader.graphics,
-                    );
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                }
-
-                // Follow the first link on screen that can be followed (web,
-                // mail, a .md file or a #heading anchor), through the same
-                // path as link-hint mode.
-                Action::FollowLink => {
-                    let tab = &reader.tabs[reader.active_tab];
-                    let found_link = first_followable_link(
-                        &tab.styled_lines,
-                        tab.scroll_offset,
-                        viewport_height,
-                    )
-                    .map(str::to_string);
-                    match found_link {
-                        Some(link) => {
-                            if let Some(msg) = open_link(
-                                &link,
-                                &mut reader.tabs,
-                                reader.active_tab,
-                                &mut reader.nav,
-                                &reader.args,
-                                terminal,
-                                reader.theme_gen,
-                                reader.graphics,
-                            ) {
-                                reader.flash = Some((msg, Instant::now()));
-                            }
-                        }
-                        None => {
-                            reader.flash = Some(("no links on screen".into(), Instant::now()));
-                        }
-                    }
-                }
-
-                // Navigation history
-                Action::NavBack => {
-                    if let Some(entry) = reader
-                        .nav
-                        .go_back(NavEntry::of(&reader.tabs[reader.active_tab]))
-                    {
-                        restore_nav_entry(
-                            &mut reader.tabs[reader.active_tab],
-                            entry,
-                            &reader.args,
-                            terminal.size()?.width,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                    }
-                }
-                Action::NavForward => {
-                    if let Some(entry) = reader
-                        .nav
-                        .go_forward(NavEntry::of(&reader.tabs[reader.active_tab]))
-                    {
-                        restore_nav_entry(
-                            &mut reader.tabs[reader.active_tab],
-                            entry,
-                            &reader.args,
-                            terminal.size()?.width,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                    }
-                }
-
-                // Selection & clipboard
-                Action::SelectMode | Action::SelectLineMode => {
-                    let mode = if action == Action::SelectLineMode {
-                        SelMode::Line
-                    } else {
-                        SelMode::Char
-                    };
-                    // Normal mode has no caret to inherit, so the selection
-                    // starts on the first line of the viewport that has text —
-                    // anchoring on the blank spacing above a heading looks
-                    // broken.
-                    let tab = &reader.tabs[reader.active_tab];
-                    let start = tab.scroll_offset.min(tab.plain.len().saturating_sub(1));
-                    let end = (start + viewport_height as usize).min(tab.plain.len());
-                    let line = (start..end)
-                        .find(|i| !tab.plain[*i].trim().is_empty())
-                        .unwrap_or(start);
-                    let col = tab
-                        .plain
-                        .get(line)
-                        .map_or(0, |t| selection::content_start_col(t));
-                    reader.selection.sel = Some(Selection::new(Pos::new(line, col), mode));
-                    reader.selection.visual_mode = true;
-                }
-
-                // Code-block hints: label every block touching the viewport.
-                Action::CopyCode => {
-                    let tab = &reader.tabs[reader.active_tab];
-                    let top = tab.scroll_offset;
-                    let bottom = top + viewport_height as usize;
-                    reader.overlays.code_hints = tab
-                        .code_blocks
-                        .iter()
-                        .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
-                        .zip('a'..='z')
-                        .map(|(b, label)| {
-                            // A block scrolled off the top keeps its label on
-                            // the first visible row.
-                            let row = b.line_index.max(top) - top;
-                            let width = tab
-                                .plain
-                                .get(b.line_index)
-                                .map_or(0, |t| selection::line_width(t));
-                            CodeHint {
-                                label,
-                                row: row as u16,
-                                col: width.saturating_sub(4) as u16,
-                                lang: b.lang.clone(),
-                                source: b.source.clone(),
-                            }
-                        })
-                        .collect();
-                    if reader.overlays.code_hints.is_empty() {
-                        reader.flash =
-                            Some(("no code blocks on screen".to_string(), Instant::now()));
-                    }
-                }
-
-                // Open the file in $VISUAL/$EDITOR at the line on screen,
-                // then reload it.
-                Action::Edit => {
-                    let width = terminal.size()?.width;
-                    let msg = edit_in_editor(
-                        terminal,
-                        &mut reader.tabs[reader.active_tab],
-                        &reader.args,
-                        viewport_height as usize,
-                        width,
-                        reader.theme_gen,
-                        reader.graphics,
-                    );
-                    reader
-                        .search
-                        .update_matches(&reader.tabs[reader.active_tab].lowered);
-                    reader.flash = msg.map(|m| (m, Instant::now()));
-                }
-
-                // Copy the section the viewport starts in, as markdown source.
-                Action::CopySection => {
-                    let tab = &reader.tabs[reader.active_tab];
-                    let (text, what) = section_source(tab, viewport_height as usize);
-                    reader.flash = Some((
-                        copy_text(&text, reader.args.clipboard, &what),
-                        Instant::now(),
-                    ));
-                }
-
-                // Mouse selection. Only reachable when ink holds the mouse;
-                // with `mouse_capture = false` these events never arrive and
-                // the terminal's own selection keeps working.
-                // A click on a sidebar row jumps to that heading.
-                Action::MouseDown(col, row)
-                    if reader.toc_rect.contains(Position::new(col, row)) =>
-                {
-                    let tab = &mut reader.tabs[reader.active_tab];
-                    tab.toc.leave();
-                    if let Some(i) = tab.toc.heading_at((row - reader.toc_rect.y) as usize) {
-                        jump_to_heading(tab, &mut reader.nav, i, viewport_height as usize);
-                    }
-                }
-                Action::MouseDown(col, row) => {
-                    reader.tabs[reader.active_tab].toc.leave();
-                    if let Some(pos) =
-                        screen_to_doc(reader.doc_rect, &reader.tabs[reader.active_tab], col, row)
-                    {
-                        let clicks = match reader.selection.last_click {
-                            Some((at, c, r, n))
-                                if c == col
-                                    && r == row
-                                    && at.elapsed() < Duration::from_millis(400) =>
-                            {
-                                n % 3 + 1
-                            }
-                            _ => 1,
-                        };
-                        reader.selection.last_click = Some((Instant::now(), col, row, clicks));
-                        let plain = &reader.tabs[reader.active_tab].plain;
-                        let line_text = plain.get(pos.line).map(|t| t.as_str()).unwrap_or("");
-                        reader.selection.sel = Some(match clicks {
-                            2 => {
-                                let (from, to) = selection::word_bounds(line_text, pos.col);
-                                Selection {
-                                    anchor: Pos::new(pos.line, from),
-                                    cursor: Pos::new(pos.line, to),
-                                    mode: SelMode::Char,
-                                }
-                            }
-                            3 => Selection::new(pos, SelMode::Line),
-                            _ => Selection::new(pos, SelMode::Char),
-                        });
-                        // A double/triple click has already selected something;
-                        // release copies it without any drag.
-                        reader.selection.drag_moved = clicks > 1;
-                        reader.selection.dragging = true;
-                        reader.selection.visual_mode = false;
-                    }
-                }
-                Action::MouseDrag(col, row) => {
-                    if reader.selection.dragging {
-                        if let Some(pos) = screen_to_doc(
-                            reader.doc_rect,
-                            &reader.tabs[reader.active_tab],
-                            col,
-                            row,
-                        ) {
-                            if let Some(ref mut cursel) = reader.selection.sel {
-                                if pos != cursel.cursor {
-                                    reader.selection.drag_moved = true;
-                                }
-                                cursel.cursor = pos;
-                            }
-                        }
-                    }
-                }
-                Action::MouseUp(col, row) => {
-                    // Pressed and released on one cell with no drag, and not
-                    // the second press of a double click.
-                    let clicked = reader.selection.dragging
-                        && !reader.selection.drag_moved
-                        && matches!(reader.selection.last_click, Some((_, c, r, 1)) if c == col && r == row);
-                    reader.selection.dragging = false;
-                    match reader.selection.sel {
-                        // A plain click with no drag is a dismiss, not a copy.
-                        Some(_) if !reader.selection.drag_moved => reader.selection.sel = None,
-                        Some(cursel) => {
-                            let text = cursel.extract(&reader.tabs[reader.active_tab].plain);
-                            let what = format!("{} chars", text.chars().count());
-                            reader.flash = Some((
-                                copy_text(&text, reader.args.clipboard, &what),
-                                Instant::now(),
-                            ));
-                        }
-                        None => {}
-                    }
-                    reader.selection.drag_moved = false;
-                    // A click on a link follows it, the way `f` would.
-                    let link =
-                        screen_to_doc(reader.doc_rect, &reader.tabs[reader.active_tab], col, row)
-                            .filter(|_| clicked)
-                            .and_then(|pos| link_at(&reader.tabs[reader.active_tab], pos))
-                            .map(str::to_string);
-                    if let Some(url) = link {
-                        // The page under the pointer changes: the next press
-                        // is a fresh click, not the second of a double.
-                        reader.selection.last_click = None;
-                        if let Some(msg) = open_link(
-                            &url,
-                            &mut reader.tabs,
-                            reader.active_tab,
-                            &mut reader.nav,
-                            &reader.args,
-                            terminal,
-                            reader.theme_gen,
-                            reader.graphics,
-                        ) {
-                            reader.flash = Some((msg, Instant::now()));
-                        }
-                    }
-                }
-
-                Action::Resize(_, _) => {
-                    // Debounced: dragging a terminal edge fires dozens of
-                    // resize events, and every rebuild re-encodes all images.
-                    // The actual rebuild happens above once events go quiet.
-                    reader.resize_pending = Some(std::time::Instant::now());
-                }
-                _ => {}
-            }
-
-            let current_offset = reader.tabs[reader.active_tab].scroll_offset;
-            reader.tabs[reader.active_tab]
-                .toc
-                .update_selection(current_offset);
         }
     }
 }
