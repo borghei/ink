@@ -660,6 +660,13 @@ impl<'g> Reader<'g> {
             other => other,
         };
 
+        // A resize re-lays out the document whatever is open on top of it.
+        // The overlays below take the event as a key (or ignore it), so
+        // schedule the debounced rebuild here, before any of them returns.
+        if matches!(action, Action::Resize(..)) {
+            self.resize_pending = Some(Instant::now());
+        }
+
         // Help overlay is modal: any key closes it.
         if self.overlays.help_open {
             if action != Action::None {
