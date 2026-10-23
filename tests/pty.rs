@@ -854,3 +854,315 @@ fn an_editor_that_cannot_start_leaves_the_reader_usable() {
         String::from_utf8_lossy(&after)
     );
 }
+
+// Characterization tests for the reader's main loop: they pin how the
+// interactive flows behave today so the loop can be restructured safely.
+
+/// Writes `body` to a fresh `.md` file.
+fn md_file(body: &str) -> tempfile::NamedTempFile {
+    let file = tempfile::Builder::new().suffix(".md").tempfile().unwrap();
+    std::fs::write(file.path(), body).unwrap();
+    file
+}
+
+/// Runs the reader on `paths` (plus `extra` flags) through `steps`, and
+/// returns the whole output with the offset at which each step went out.
+fn run_steps(
+    extra: &[&str],
+    paths: &[&std::path::Path],
+    envs: &[(&str, &str)],
+    steps: Vec<Reply>,
+) -> (Vec<u8>, Vec<usize>) {
+    let mut args: Vec<String> = extra.iter().map(|s| s.to_string()).collect();
+    args.extend(reader_args(paths[0]));
+    for p in &paths[1..] {
+        args.push(p.to_str().unwrap().to_string());
+    }
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let marks = Marks::default();
+    let n = steps.len();
+    let s = run_in_pty_ctl(&args, envs, 100, control_steps(steps, Marks::clone(&marks)));
+    let marks = marks.borrow().clone();
+    assert_eq!(marks.len(), n, "steps not all sent");
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    (s.output, marks)
+}
+
+fn keys(steps: &[&[u8]]) -> Vec<Reply> {
+    steps.iter().map(|k| Reply::Type(k.to_vec())).collect()
+}
+
+/// A long document: `filler 0` … `filler 59` (two display lines each) with a
+/// search needle on the second and fifth screens and a last line far below.
+fn long_doc_with_needles() -> tempfile::NamedTempFile {
+    let mut doc = String::from("Top of the document.\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+        if i == 20 {
+            doc.push_str("needle first-hit-marker\n\n");
+        }
+        if i == 45 {
+            doc.push_str("needle second-hit-marker\n\n");
+        }
+    }
+    doc.push_str("the-very-last-line\n");
+    md_file(&doc)
+}
+
+#[test]
+fn search_jumps_cycles_and_the_first_q_only_dismisses_it() {
+    let doc = long_doc_with_needles();
+    let steps = keys(&[b"/needle", b"\r", b"n", b"q", b"G"]);
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    assert!(!contains(&out[..m[0]], b"first-hit-marker"));
+    // Typing the query jumps to the first match.
+    let typed = &out[m[0]..m[1]];
+    assert!(contains(typed, b"first-hit-marker"), "no jump to match 1");
+    assert!(!contains(typed, b"second-hit-marker"));
+    // After Enter, `n` cycles to the next match instead of the next heading.
+    assert!(
+        contains(&out[m[2]..m[3]], b"second-hit-marker"),
+        "n did not go to match 2"
+    );
+    // The first `q` dismisses the highlights; the reader is still running
+    // and `G` draws the end of the document.
+    assert!(
+        contains(&out[m[4]..], b"the-very-last-line"),
+        "the first q quit instead of dismissing the search"
+    );
+}
+
+#[test]
+fn escape_closes_the_search_input_without_quitting() {
+    let doc = long_doc_with_needles();
+    let steps = keys(&[b"/zzz-no-such-text", b"\x1b", b"G"]);
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    let typed = String::from_utf8_lossy(&out[m[0]..m[1]]);
+    assert!(typed.contains("no matches"), "{typed}");
+    assert!(contains(&out[m[2]..], b"the-very-last-line"));
+}
+
+// The bodies differ in every cell: only changed cells are redrawn, so a
+// shared prefix or suffix would never show up again in the output.
+#[test]
+fn tab_cycles_through_the_files_and_wraps() {
+    let a = md_file("# Alpha\n\nqqqqqqqq\n");
+    let b = md_file("# Beta\n\nwwwwwwww\n");
+    let steps = keys(&[b"\t", b"\t"]);
+    let (out, m) = run_steps(&[], &[a.path(), b.path()], &[], steps);
+    assert!(contains(&out[..m[0]], b"qqqqqqqq"));
+    assert!(!contains(&out[..m[0]], b"wwwwwwww"));
+    assert!(contains(&out[m[0]..m[1]], b"wwwwwwww"), "Tab");
+    assert!(contains(&out[m[1]..], b"qqqqqqqq"), "Tab did not wrap");
+}
+
+#[test]
+fn slides_step_forward_and_back() {
+    let deck = md_file(
+        "---\ntitle: hidden-frontmatter\n---\n\n# One\n\nqqqqqqqq\n\n---\n\n\
+         # Two\n\nwwwwwwww\n\n---\n\n# Three\n\nrrrrrrrr\n",
+    );
+    let steps = keys(&[b"\x1b[C", b" ", b"\x1b[D"]);
+    let (out, m) = run_steps(&["--slides"], &[deck.path()], &[], steps);
+    assert!(contains(&out[..m[0]], b"qqqqqqqq"));
+    assert!(contains(&out[m[0]..m[1]], b"wwwwwwww"), "Right");
+    assert!(contains(&out[m[1]..m[2]], b"rrrrrrrr"), "Space");
+    assert!(contains(&out[m[2]..], b"wwwwwwww"), "Left");
+    assert!(!contains(&out, b"hidden-frontmatter"), "frontmatter shown");
+}
+
+#[test]
+fn watch_reloads_the_file_and_keeps_the_scroll_position() {
+    let mut doc = String::from("Start.\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+    }
+    let file = md_file(&doc);
+    let path = file.path().to_path_buf();
+    // Two page-downs (25 lines each) put `filler 24` at the top; then the
+    // file is rewritten with the same line count and new text.
+    let steps = keys(&[b" ", b" ", b""]);
+    let mut args: Vec<String> = vec!["--watch".into()];
+    args.extend(reader_args(&path));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let marks = Marks::default();
+    let mut ctl = control_steps(steps, Marks::clone(&marks));
+    let mut written = false;
+    let s = run_in_pty_ctl(&args, &[], 100, |out, t| {
+        let r = ctl(out, t);
+        if !written && marks.borrow().len() == 3 {
+            written = true;
+            let mut new = String::from("Start.\n\n");
+            for i in 0..60 {
+                new.push_str(&format!("Z{i}Z\n\n"));
+            }
+            std::fs::write(&path, new).unwrap();
+        }
+        r
+    });
+    assert!(contains(&s.output, b"\x1b[?1049l"), "reader did not exit");
+    let m = marks.borrow();
+    let after = &s.output[m[2]..];
+    assert!(contains(after, b"Z30Z"), "not reloaded in place");
+    assert!(!contains(after, b"Z0Z"), "scrolled back to the top");
+    assert!(!contains(after, b"Z10Z"), "scrolled back up");
+}
+
+#[test]
+fn the_help_overlay_swallows_the_key_that_closes_it() {
+    let doc = long_doc_with_anchor_link();
+    let steps = keys(&[b"?", b"q", b"G"]);
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    assert!(contains(&out[m[0]..m[1]], b"Keys"), "no help overlay");
+    // `q` only closed the overlay: `G` then reaches the end.
+    assert!(contains(&out[m[2]..], b"ARRIVED"), "q quit from the help");
+}
+
+// Pins today's behaviour: the help overlay takes the resize event as the key
+// that closes it, and the frame is redrawn without it.
+#[test]
+fn a_resize_while_the_help_is_open_closes_it_and_redraws() {
+    let doc = long_doc_with_anchor_link();
+    let steps = vec![
+        Reply::Type(b"?".to_vec()),
+        Reply::Resize(80, 30),
+        Reply::Type(b"G".to_vec()),
+    ];
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    assert!(contains(&out[m[0]..m[1]], b"Keys"), "no help overlay");
+    let resized = &out[m[1]..m[2]];
+    assert!(contains(resized, b"filler"), "no redraw after the resize");
+    assert!(!contains(resized, b"Keys"), "help survived the resize");
+    assert!(contains(&out[m[2]..], b"ARRIVED"));
+}
+
+#[test]
+fn the_theme_picker_previews_and_saves_the_choice() {
+    let doc = long_doc_with_anchor_link();
+    let config = tempfile::tempdir().unwrap();
+    std::fs::create_dir(config.path().join("ink")).unwrap();
+    let steps = keys(&[b"T", b"j", b"\r"]);
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        steps,
+    );
+    let picker = String::from_utf8_lossy(&out[m[0]..m[1]]);
+    assert!(picker.contains("dracula"), "no theme picker: {picker}");
+    let saved = std::fs::read_to_string(config.path().join("ink/config.toml")).unwrap();
+    assert!(saved.contains("theme = \"light\""), "{saved}");
+}
+
+#[test]
+fn c_labels_code_blocks_and_a_letter_copies_one() {
+    let doc = md_file("# Code\n\n```bash\necho CODE-COPIED\n```\n\nafter\n");
+    let config = osc52_only_config();
+    let steps = keys(&[b"c", b"a"]);
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        steps,
+    );
+    assert!(!contains(&out[..m[1]], b"\x1b]52;"));
+    let after = &out[m[1]..];
+    assert!(
+        contains(after, b"\x1b]52;c;ZWNobyBDT0RFLUNPUElFRA==\x07"),
+        "no OSC 52 copy of the block"
+    );
+    assert!(String::from_utf8_lossy(after).contains("copied code block (bash)"));
+}
+
+#[test]
+fn a_flash_message_clears_itself_after_two_seconds() {
+    let doc = md_file("# No code here\n\njust prose\n");
+    // `c` with no code block on screen flashes; the waits let it expire.
+    let mut steps = keys(&[b"c"]);
+    steps.extend(keys(&[b"", b"", b"", b"", b"", b"", b""]));
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    let flash = find_from(&out, b"on screen", m[0]).expect("no flash");
+    assert!(
+        find_from(&out, b"words", flash).is_some(),
+        "the status bar never came back"
+    );
+}
+
+#[test]
+fn the_link_hint_overlay_copies_a_url_after_y() {
+    let doc = long_doc_with_anchor_link();
+    let config = osc52_only_config();
+    let steps = keys(&[b"f", b"Y", b"a"]);
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        steps,
+    );
+    assert!(String::from_utf8_lossy(&out[m[0]..m[1]]).contains("Follow link"));
+    assert!(String::from_utf8_lossy(&out[m[1]..m[2]]).contains("link URL"));
+    let after = &out[m[2]..];
+    assert!(contains(after, b"\x1b]52;c;I3RhcmdldC1oZWFkaW5n\x07"));
+    assert!(!contains(after, b"ARRIVED"), "copying followed the link");
+}
+
+#[test]
+fn enter_follows_a_link_and_brackets_walk_the_history() {
+    let doc = long_doc_with_anchor_link();
+    let steps = keys(&[b"\r", b"[", b"]"]);
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    assert!(
+        contains(&out[m[0]..m[1]], b"ARRIVED"),
+        "Enter did not follow"
+    );
+    assert!(contains(&out[m[1]..m[2]], b"Start"), "[ did not go back");
+    assert!(contains(&out[m[2]..], b"ARRIVED"), "] did not go forward");
+}
+
+#[test]
+fn visual_line_mode_yanks_to_the_clipboard() {
+    let doc = long_doc_with_anchor_link();
+    let config = osc52_only_config();
+    let steps = keys(&[b"V", b"j", b"y"]);
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        steps,
+    );
+    assert!(!contains(&out[..m[2]], b"\x1b]52;"));
+    let after = &out[m[2]..];
+    assert!(contains(after, b"\x1b]52;c;"), "no OSC 52 copy");
+    assert!(String::from_utf8_lossy(after).contains("copied"));
+}
+
+#[test]
+fn shift_b_returns_to_the_file_browser() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.md"), "# A\n\nbrowser-doc-body\n").unwrap();
+    let marks = Marks::default();
+    // Open the file, go back to the browser, open it again.
+    let steps = keys(&[b"\r", b"B", b"\r"]);
+    let s = run_in_pty_ctl(
+        &[
+            "--color=never",
+            "--theme",
+            "dark",
+            "--image-protocol",
+            "halfblocks",
+            "--no-images",
+            dir.path().to_str().unwrap(),
+        ],
+        &[],
+        100,
+        control_steps(steps, Marks::clone(&marks)),
+    );
+    let m = marks.borrow();
+    assert_eq!(m.len(), 3, "steps not all sent");
+    assert!(contains(&s.output[m[0]..m[1]], b"browser-doc-body"));
+    assert!(contains(&s.output[m[1]..m[2]], b"a.md"), "no browser");
+    assert!(
+        contains(&s.output[m[2]..], b"browser-doc-body"),
+        "not reopened"
+    );
+}
