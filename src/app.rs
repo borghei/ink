@@ -1412,6 +1412,144 @@ impl<'g> Reader<'g> {
         }
     }
 
+    /// Catch up on what changed outside the input queue since the last
+    /// turn (the watched file, a settled resize, the sidebar going away,
+    /// an expired flash), and measure this turn's view.
+    fn update(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<View> {
+        self.reload_watched_file(terminal, viewport_height)?;
+        self.settle_resize(terminal, viewport_height)?;
+        self.drop_hidden_toc_focus(terminal.size()?.width);
+        self.expire_flash();
+
+        // The heading list sits under the sidebar's title row.
+        let toc_rows = viewport_height.saturating_sub(1) as usize;
+        if self.tabs[self.active_tab].toc.visible {
+            self.tabs[self.active_tab].toc.follow(toc_rows);
+        }
+
+        let tab = &self.tabs[self.active_tab];
+        let total_lines = tab.ratatui_lines.len();
+        let max_scroll = total_lines.saturating_sub(viewport_height as usize);
+        Ok(View {
+            viewport_height,
+            toc_rows,
+            total_lines,
+            max_scroll,
+        })
+    }
+
+    /// --watch: if the current doc is the watched file and it changed, rebuild it.
+    fn reload_watched_file(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        let (Some(w), Some(input)) = (self.watcher.as_ref(), self.args.inputs.first()) else {
+            return Ok(());
+        };
+        let path = std::path::Path::new(input);
+        if self.tabs[self.active_tab].filename == *input && w.check(path) {
+            match std::fs::read_to_string(path) {
+                Ok(new_source) if self.args.slides => {
+                    let deck = if self.args.frontmatter {
+                        new_source
+                    } else {
+                        crate::parser::frontmatter::strip_frontmatter(&new_source).1
+                    };
+                    let toc_visible = self.tabs[self.active_tab].toc.visible;
+                    let term_w = effective_width(terminal.size()?.width, toc_visible);
+                    let slides = crate::slides::split_slides(&deck);
+                    if !slides.is_empty() {
+                        self.tabs = slides
+                            .into_iter()
+                            .map(|sl| {
+                                build_tab(
+                                    sl,
+                                    input,
+                                    &self.args,
+                                    term_w,
+                                    self.theme_gen,
+                                    self.graphics,
+                                )
+                            })
+                            .collect();
+                        self.active_tab = self.active_tab.min(self.tabs.len() - 1);
+                        self.tabs[self.active_tab].toc.visible = toc_visible;
+                    }
+                    self.search
+                        .update_matches(&self.tabs[self.active_tab].lowered);
+                    self.file_missing = false;
+                    self.dirty = true;
+                }
+                Ok(new_source) => {
+                    reload_tab(
+                        &mut self.tabs[self.active_tab],
+                        new_source.into(),
+                        Anchor::KeepOffset,
+                        &self.args,
+                        terminal.size()?.width,
+                        viewport_height as usize,
+                        self.theme_gen,
+                        self.graphics,
+                    );
+                    self.search
+                        .update_matches(&self.tabs[self.active_tab].lowered);
+                    if self.file_missing {
+                        self.file_missing = false;
+                    }
+                    self.dirty = true;
+                }
+                Err(_) => {
+                    // File was deleted or renamed away. Keep the last-rendered content
+                    // and surface the state in the status bar.
+                    if !self.file_missing {
+                        self.file_missing = true;
+                        self.dirty = true;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Debounced resize: rebuild once the flurry of events has settled.
+    fn settle_resize(&mut self, terminal: &mut Tui, viewport_height: u16) -> Result<()> {
+        if let Some(t0) = self.resize_pending {
+            if t0.elapsed() >= Duration::from_millis(80) {
+                self.resize_pending = None;
+                rebuild_tab(
+                    &mut self.tabs[self.active_tab],
+                    &self.args,
+                    terminal.size()?.width,
+                    viewport_height as usize,
+                    self.theme_gen,
+                    self.graphics,
+                );
+                self.search
+                    .update_matches(&self.tabs[self.active_tab].lowered);
+                self.dirty = true;
+            }
+        }
+        Ok(())
+    }
+
+    /// The sidebar is not drawn (the window shrank, or it was hidden):
+    /// a focused TOC would take keys for an invisible cursor and keep its
+    /// key reminder in the status bar. Give focus back to the document.
+    fn drop_hidden_toc_focus(&mut self, width: u16) {
+        let toc = &mut self.tabs[self.active_tab].toc;
+        if toc.nav.focused && !sidebar_shown(toc.visible, width) {
+            toc.leave();
+            self.dirty = true;
+        }
+    }
+
+    /// A copy message is worth two seconds of the status bar, no longer.
+    fn expire_flash(&mut self) {
+        if let Some((_, at)) = self.flash {
+            if at.elapsed() >= Duration::from_secs(2) {
+                self.flash = None;
+                self.dirty = true;
+            }
+        }
+    }
+
     /// Draw the reader, and mark it clean.
     fn draw(&mut self, terminal: &mut Tui, view: View) -> Result<()> {
         terminal.draw(|frame| self.render(frame, view))?;
@@ -1690,129 +1828,7 @@ fn run_inner(
             return Ok(AppExit::Quit);
         }
         let viewport_height = terminal.size()?.height.saturating_sub(3); // top + separator + bottom
-
-        // --watch: if the current doc is the watched file and it changed, rebuild it.
-        if let (Some(w), Some(input)) = (reader.watcher.as_ref(), reader.args.inputs.first()) {
-            let path = std::path::Path::new(input);
-            if reader.tabs[reader.active_tab].filename == *input && w.check(path) {
-                match std::fs::read_to_string(path) {
-                    Ok(new_source) if reader.args.slides => {
-                        let deck = if reader.args.frontmatter {
-                            new_source
-                        } else {
-                            crate::parser::frontmatter::strip_frontmatter(&new_source).1
-                        };
-                        let toc_visible = reader.tabs[reader.active_tab].toc.visible;
-                        let term_w = effective_width(terminal.size()?.width, toc_visible);
-                        let slides = crate::slides::split_slides(&deck);
-                        if !slides.is_empty() {
-                            reader.tabs = slides
-                                .into_iter()
-                                .map(|sl| {
-                                    build_tab(
-                                        sl,
-                                        input,
-                                        &reader.args,
-                                        term_w,
-                                        reader.theme_gen,
-                                        reader.graphics,
-                                    )
-                                })
-                                .collect();
-                            reader.active_tab = reader.active_tab.min(reader.tabs.len() - 1);
-                            reader.tabs[reader.active_tab].toc.visible = toc_visible;
-                        }
-                        reader
-                            .search
-                            .update_matches(&reader.tabs[reader.active_tab].lowered);
-                        reader.file_missing = false;
-                        reader.dirty = true;
-                    }
-                    Ok(new_source) => {
-                        reload_tab(
-                            &mut reader.tabs[reader.active_tab],
-                            new_source.into(),
-                            Anchor::KeepOffset,
-                            &reader.args,
-                            terminal.size()?.width,
-                            viewport_height as usize,
-                            reader.theme_gen,
-                            reader.graphics,
-                        );
-                        reader
-                            .search
-                            .update_matches(&reader.tabs[reader.active_tab].lowered);
-                        if reader.file_missing {
-                            reader.file_missing = false;
-                        }
-                        reader.dirty = true;
-                    }
-                    Err(_) => {
-                        // File was deleted or renamed away. Keep the last-rendered content
-                        // and surface the state in the status bar.
-                        if !reader.file_missing {
-                            reader.file_missing = true;
-                            reader.dirty = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        // Debounced resize: rebuild once the flurry of events has settled.
-        if let Some(t0) = reader.resize_pending {
-            if t0.elapsed() >= Duration::from_millis(80) {
-                reader.resize_pending = None;
-                rebuild_tab(
-                    &mut reader.tabs[reader.active_tab],
-                    &reader.args,
-                    terminal.size()?.width,
-                    viewport_height as usize,
-                    reader.theme_gen,
-                    reader.graphics,
-                );
-                reader
-                    .search
-                    .update_matches(&reader.tabs[reader.active_tab].lowered);
-                reader.dirty = true;
-            }
-        }
-
-        // The sidebar is not drawn (the window shrank, or it was hidden):
-        // a focused TOC would take keys for an invisible cursor and keep its
-        // key reminder in the status bar. Give focus back to the document.
-        {
-            let width = terminal.size()?.width;
-            let toc = &mut reader.tabs[reader.active_tab].toc;
-            if toc.nav.focused && !sidebar_shown(toc.visible, width) {
-                toc.leave();
-                reader.dirty = true;
-            }
-        }
-
-        // A copy message is worth two seconds of the status bar, no longer.
-        if let Some((_, at)) = reader.flash {
-            if at.elapsed() >= Duration::from_secs(2) {
-                reader.flash = None;
-                reader.dirty = true;
-            }
-        }
-
-        // The heading list sits under the sidebar's title row.
-        let toc_rows = viewport_height.saturating_sub(1) as usize;
-        if reader.tabs[reader.active_tab].toc.visible {
-            reader.tabs[reader.active_tab].toc.follow(toc_rows);
-        }
-
-        let tab = &reader.tabs[reader.active_tab];
-        let total_lines = tab.ratatui_lines.len();
-        let max_scroll = total_lines.saturating_sub(viewport_height as usize);
-        let view = View {
-            viewport_height,
-            toc_rows,
-            total_lines,
-            max_scroll,
-        };
+        let view = reader.update(terminal, viewport_height)?;
 
         if reader.dirty {
             reader.draw(terminal, view)?;
