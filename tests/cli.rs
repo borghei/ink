@@ -844,3 +844,84 @@ fn line_range_rejects_invalid_ranges() {
         assert!(err.contains("--line-range"), "{bad:?}: {err}");
     }
 }
+
+// Issue #35: table cells were flattened to plain text, so a link in a cell
+// lost its destination (no OSC 8, no `f` hint) and bold/code lost their style.
+const TABLE_DOC: &str = "| Doc | What |\n|-----|------|\n\
+    | [Install](https://github.com/borghei/ink/blob/main/docs/install.md) | Every install route |\n\
+    | Usage | **Keys** and `flags` |\n";
+
+/// `ink --plain --color=<color> --width <width>` on `doc` via stdin.
+fn plain_table(doc: &str, color: &str, width: &str) -> String {
+    stdout_of(
+        ink_clean_env()
+            .args(["--plain", "--theme", "dark", "--width", width])
+            .arg(format!("--color={color}"))
+            .arg("-")
+            .write_stdin(doc),
+    )
+}
+
+/// Every OSC 8 destination opened in `out`, in order.
+fn osc8_urls(out: &str) -> Vec<&str> {
+    out.split("\x1b]8;;")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("\x1b\\").map(|(url, _)| url))
+        .filter(|url| !url.is_empty())
+        .collect()
+}
+
+#[test]
+fn a_link_in_a_table_cell_is_an_osc8_hyperlink() {
+    let out = plain_table(TABLE_DOC, "always", "80");
+    assert!(
+        out.contains(
+            "\x1b]8;;https://github.com/borghei/ink/blob/main/docs/install.md\x1b\\Install\x1b]8;;\x1b\\"
+        ),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_table_with_inline_markup_is_unchanged_text_without_colour() {
+    let out = plain_table(TABLE_DOC, "never", "80");
+    assert!(!out.contains('\x1b'), "{out:?}");
+    let want = "  ╭─────────┬─────────────────────╮\n\
+                \x20 │ Doc     │ What                │\n\
+                \x20 ├─────────┼─────────────────────┤\n\
+                \x20 │ Install │ Every install route │\n\
+                \x20 │ Usage   │ Keys and flags      │\n\
+                \x20 ╰─────────┴─────────────────────╯\n";
+    assert!(out.contains(want), "{out}");
+}
+
+#[test]
+fn a_link_in_a_transposed_table_keeps_its_destination() {
+    // Four columns cannot sit side by side in 20 columns: the table is
+    // drawn as stacked `Header value` records.
+    let doc =
+        "| A | B | C | D |\n|---|---|---|---|\n| [Install](https://e.com/install) | x | y | z |\n";
+    let out = plain_table(doc, "always", "20");
+    assert!(!out.contains('╭'), "not transposed: {out}");
+    assert!(
+        out.contains("\x1b]8;;https://e.com/install\x1b\\Install\x1b]8;;\x1b\\"),
+        "{out:?}"
+    );
+}
+
+#[test]
+fn a_link_wrapped_in_a_narrow_column_links_every_fragment() {
+    let doc =
+        "| Name | Notes |\n|---|---|\n| one | [alpha beta gamma delta](https://e.com/wrap) |\n";
+    let out = plain_table(doc, "always", "20");
+    let urls = osc8_urls(&out);
+    assert!(urls.len() >= 2, "link not wrapped: {out:?}");
+    assert!(urls.iter().all(|u| *u == "https://e.com/wrap"), "{urls:?}");
+    for word in ["alpha", "delta"] {
+        let line = out.lines().find(|l| l.contains(word)).unwrap();
+        assert!(
+            line.contains("\x1b]8;;https://e.com/wrap\x1b\\"),
+            "{line:?}"
+        );
+    }
+}
