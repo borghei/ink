@@ -662,7 +662,9 @@ impl<'g> Reader<'g> {
 
         // A resize re-lays out the document whatever is open on top of it.
         // The overlays below take the event as a key (or ignore it), so
-        // schedule the debounced rebuild here, before any of them returns.
+        // schedule the rebuild here, before any of them returns. Debounced:
+        // dragging a terminal edge fires dozens of resize events, and every
+        // rebuild re-encodes all images, so `update` rebuilds once they stop.
         if matches!(action, Action::Resize(..)) {
             self.resize_pending = Some(Instant::now());
         }
@@ -783,7 +785,6 @@ impl<'g> Reader<'g> {
                 }
                 self.overlays.link_hints.clear();
             }
-            Action::CloseSearch => self.overlays.link_hints.clear(),
             _ => self.overlays.link_hints.clear(),
         }
     }
@@ -895,10 +896,6 @@ impl<'g> Reader<'g> {
             }
             Action::SelPageDown => cursel.cursor.line = cur.line.saturating_add(vh.max(1) - 1),
             Action::SelPageUp => cursel.cursor.line = cur.line.saturating_sub(vh.max(1) - 1),
-            Action::Resize(_, _) => {
-                self.resize_pending = Some(std::time::Instant::now());
-                moved = false;
-            }
             _ => moved = false,
         }
         if moved {
@@ -1181,12 +1178,6 @@ impl<'g> Reader<'g> {
             Action::MouseDrag(col, row) => self.mouse_drag(col, row),
             Action::MouseUp(col, row) => self.mouse_up(col, row, terminal),
 
-            Action::Resize(_, _) => {
-                // Debounced: dragging a terminal edge fires dozens of
-                // resize events, and every rebuild re-encodes all images.
-                // The actual rebuild happens above once events go quiet.
-                self.resize_pending = Some(std::time::Instant::now());
-            }
             _ => {}
         }
         Ok(None)
