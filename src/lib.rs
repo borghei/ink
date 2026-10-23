@@ -25,4 +25,4 @@ pub mod toc;
 pub mod watch;
 pub mod wikilink;
 
-pub use cli::{Args, Cli, Commands, ConfigAction, Spacing};
+pub use cli::{Args, Cli, Commands, ConfigAction, Spacing, Width};

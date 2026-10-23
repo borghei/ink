@@ -9,8 +9,7 @@ fn args() -> Args {
     Args {
         inputs: vec![],
         theme: "dark".to_string(),
-        width: Some(80),
-        full_width: false,
+        width: ink_md::Width::Columns(80),
         slides: false,
         plain: true,
         watch: false,
@@ -22,6 +21,20 @@ fn args() -> Args {
         mouse_capture: true,
         clipboard: ink_md::clipboard::ClipboardMode::Off,
     }
+}
+
+/// Library callers can fill in only what they need: fields added to `Args`
+/// later must not break this.
+#[test]
+fn args_default_renders_plain_output() {
+    let args = Args {
+        width: ink_md::Width::Columns(40),
+        images: ink_md::image::ImageMode::Off,
+        ..Default::default()
+    };
+    let out = render_plain_with_color(&"word ".repeat(40), &args, false).unwrap();
+    assert!(out.lines().count() > 1, "{out}");
+    assert!(out.lines().all(|l| l.width() <= 40), "{out}");
 }
 
 fn render(src: &str) -> String {
@@ -87,7 +100,7 @@ fn table_alignment_applies_to_each_wrapped_line() {
     // visual line of it is right-aligned within the column.
     let out = render_with(
         "| k | value |\n|---|------:|\n| a | one two three four five six seven eight |\n",
-        |a| a.width = Some(30),
+        |a| a.width = ink_md::Width::Columns(30),
     );
     assert_eq!(
         table_rows(&out),
@@ -418,7 +431,7 @@ fn frontmatter_box_wraps_long_values_within_the_width() {
         "---\ndescription: one two three four five six seven eight nine ten eleven\n---\n",
         |a| {
             a.frontmatter = true;
-            a.width = Some(40);
+            a.width = ink_md::Width::Columns(40);
         },
     );
     for line in out.lines() {
@@ -498,7 +511,9 @@ fn math_in_table_cells() {
 #[test]
 fn display_math_wider_than_the_view_is_broken_not_clipped() {
     let long = "x + ".repeat(30);
-    let out = render_with(&format!("$$\n{long}y\n$$\n"), |a| a.width = Some(40));
+    let out = render_with(&format!("$$\n{long}y\n$$\n"), |a| {
+        a.width = ink_md::Width::Columns(40)
+    });
     for line in out.lines() {
         assert!(line.width() <= 40, "{line:?}");
     }

@@ -91,6 +91,7 @@ Bug reports and pull requests are welcome. Read [CONTRIBUTING.md](https://github
 Thanks to everyone who has sent a pull request:
 
 - [@mariusrueve](https://github.com/mariusrueve) for the Conda and Pixi instructions ([#9](https://github.com/borghei/ink/pull/9)) and the [conda-forge package](https://github.com/conda-forge/ink-md-feedstock) behind them
+- [@narma](https://github.com/narma) for honouring `--width full` and wide column counts in the reader ([#34](https://github.com/borghei/ink/pull/34))
 
 ## License
 

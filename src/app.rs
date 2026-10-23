@@ -8,7 +8,7 @@ use crate::selection::{self, Pos, SelMode, Selection};
 use crate::stats;
 use crate::theme;
 use crate::toc::TocState;
-use crate::Args;
+use crate::{Args, Width};
 use anyhow::Result;
 use comrak::{parse_document, Arena};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -2377,10 +2377,10 @@ fn build_tab(
     // it at term_width - 4 (a requested --width wider than the terminal would
     // otherwise overflow and be clipped at the right edge).
     let available_width = term_width.saturating_sub(4).max(8);
-    let max_content_width = if args.full_width {
-        available_width
-    } else {
-        args.width.unwrap_or(120).clamp(8, available_width)
+    let max_content_width = match args.width {
+        Width::Full => available_width,
+        Width::Columns(n) => n.clamp(8, available_width),
+        Width::Auto => 120.min(available_width),
     };
     let center_margin = if term_width > max_content_width + 4 {
         ((term_width - max_content_width) / 2) as usize
@@ -2846,8 +2846,7 @@ mod section_tests {
         Args {
             inputs: Vec::new(),
             theme: "dark".into(),
-            width: None,
-            full_width: false,
+            width: Width::Auto,
             slides: false,
             plain: false,
             watch: false,
@@ -3091,8 +3090,7 @@ mod section_tests {
         for terminal_width in [80, 200, 320] {
             for toc_visible in [false, true] {
                 let mut args = test_args();
-                args.full_width = true;
-                args.width = Some(60); // A configured width must not limit full-width mode.
+                args.width = Width::Full;
                 args.toc = toc_visible;
                 let pane_width = effective_width(terminal_width, toc_visible);
                 let tab = build_tab(source.as_str(), "t.md", &args, pane_width, 0, &graphics);
@@ -3120,7 +3118,7 @@ mod section_tests {
             (140, 80, 2, 76),
         ] {
             let mut args = test_args();
-            args.width = Some(requested);
+            args.width = Width::Columns(requested);
             let tab = build_tab(source.as_str(), "t.md", &args, terminal_width, 0, &graphics);
             let first = tab.plain.iter().find(|line| !line.is_empty()).unwrap();
             assert_eq!(first.len() - first.trim_start().len(), margin);

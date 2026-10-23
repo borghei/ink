@@ -8,8 +8,7 @@ fn args(width: u16) -> Args {
     Args {
         inputs: vec![],
         theme: "dark".to_string(),
-        width: Some(width),
-        full_width: false,
+        width: ink_md::Width::Columns(width),
         slides: false,
         plain: true,
         watch: false,

@@ -437,7 +437,7 @@ fn config_unknown_key_warns_and_valid_keys_still_apply() {
 
 #[test]
 fn config_bad_value_warns_and_falls_back() {
-    let dir = xdg_with_config("width = \"wide\"\nspacing = \"bogus\"\n");
+    let dir = xdg_with_config("width = \"huge\"\nspacing = \"bogus\"\n");
     ink()
         .env("XDG_CONFIG_HOME", dir.path())
         .arg("--plain")
@@ -445,6 +445,27 @@ fn config_bad_value_warns_and_falls_back() {
         .assert()
         .success()
         .stderr(predicate::str::contains("`width`").and(predicate::str::contains("`spacing`")));
+}
+
+#[test]
+fn config_width_keyword_applies() {
+    let dir = xdg_with_config("width = \"narrow\"\n");
+    let out = ink()
+        .env("XDG_CONFIG_HOME", dir.path())
+        .args(["--plain", "--color=never"])
+        .write_stdin(LONG_PARAGRAPH)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    let widest = text.lines().map(|l| l.chars().count()).max().unwrap_or(0);
+    assert!(
+        (40..=60).contains(&widest),
+        "config width = \"narrow\" must apply, widest line {widest}: {text}"
+    );
 }
 
 /// `ink` with the color-related environment cleared, so the host shell's

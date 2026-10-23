@@ -6,7 +6,9 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Deserialize)]
 pub struct Config {
     pub theme: Option<String>,
-    pub width: Option<u16>,
+    /// Parsed by hand in [`parse_config`]: a number or a `--width` keyword.
+    #[serde(skip)]
+    pub width: Option<crate::cli::Width>,
     pub spacing: Option<String>,
     pub toc: Option<bool>,
     pub frontmatter: Option<bool>,
@@ -162,15 +164,37 @@ pub fn parse_config(content: &str, path: &str) -> ConfigLoad {
         warnings: &mut warnings,
     };
 
-    let mut width: Option<u16> = w.take(&mut table, "", "width");
-    if let Some(n) = width.filter(|n| !WIDTH_RANGE.contains(n)) {
-        w.push(format!(
-            "`width` = {n} is out of range ({}..={}); ignoring it",
-            WIDTH_RANGE.start(),
-            WIDTH_RANGE.end()
-        ));
-        width = None;
-    }
+    // A column count or a `--width` keyword (`narrow`, `wide`, `full`).
+    let width = match table.remove("width") {
+        None => None,
+        Some(toml::Value::Integer(n)) => {
+            match u16::try_from(n).ok().filter(|n| WIDTH_RANGE.contains(n)) {
+                Some(n) => Some(crate::cli::Width::Columns(n)),
+                None => {
+                    w.push(format!(
+                        "`width` = {n} is out of range ({}..={}); ignoring it",
+                        WIDTH_RANGE.start(),
+                        WIDTH_RANGE.end()
+                    ));
+                    None
+                }
+            }
+        }
+        Some(toml::Value::String(s)) => match crate::cli::Width::parse(&s) {
+            Ok(width) => Some(width),
+            Err(e) => {
+                w.push(format!("`width` = \"{s}\": {e}; ignoring it"));
+                None
+            }
+        },
+        Some(other) => {
+            w.push(format!(
+                "`width`: expected a column count or one of: narrow, wide, full, found {}; ignoring it",
+                other.type_str()
+            ));
+            None
+        }
+    };
     let mut spacing: Option<String> = w.take(&mut table, "", "spacing");
     if let Some(s) = spacing.as_deref().filter(|s| !SPACING_VALUES.contains(s)) {
         w.push(format!(
@@ -275,6 +299,7 @@ pub fn set_theme(name: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cli::Width;
 
     fn platform() -> Option<PathBuf> {
         Some(PathBuf::from("platform-config"))
@@ -302,7 +327,7 @@ mod tests {
 
     #[test]
     fn bad_value_warns_and_keeps_the_rest() {
-        let src = "width = \"wide\"\ntheme = \"nord\"\n[keybindings]\npreset = \"vim\"\n";
+        let src = "width = \"huge\"\ntheme = \"nord\"\n[keybindings]\npreset = \"vim\"\n";
         let load = parse_config(src, "cfg.toml");
         let cfg = load.config.expect("rest of the config still applies");
         assert_eq!(cfg.width, None);
@@ -316,7 +341,7 @@ mod tests {
     fn unknown_keys_warn_by_name() {
         let src = "widht = 90\nwidth = 90\n[behavior]\nmouse_capure = false\n";
         let load = parse_config(src, "cfg.toml");
-        assert_eq!(load.config.unwrap().width, Some(90));
+        assert_eq!(load.config.unwrap().width, Some(Width::Columns(90)));
         let all = load.warnings.join("\n");
         assert!(
             all.contains("unknown config key `widht` in cfg.toml"),
@@ -324,6 +349,29 @@ mod tests {
         );
         assert!(all.contains("`behavior.mouse_capure`"), "{all}");
         assert_eq!(load.warnings.len(), 2);
+    }
+
+    #[test]
+    fn width_takes_the_cli_keywords() {
+        for (src, want) in [
+            ("width = \"full\"", Width::Full),
+            ("width = \"wide\"", Width::Columns(100)),
+            ("width = \"narrow\"", Width::Columns(60)),
+        ] {
+            let load = parse_config(src, "c");
+            assert!(load.warnings.is_empty(), "{src}: {:?}", load.warnings);
+            assert_eq!(load.config.unwrap().width, Some(want), "{src}");
+        }
+    }
+
+    #[test]
+    fn width_of_the_wrong_type_warns() {
+        let load = parse_config("width = true\ntheme = \"nord\"\n", "c");
+        let cfg = load.config.unwrap();
+        assert_eq!(cfg.width, None);
+        assert_eq!(cfg.theme.as_deref(), Some("nord"));
+        assert_eq!(load.warnings.len(), 1, "{:?}", load.warnings);
+        assert!(load.warnings[0].contains("`width`"), "{:?}", load.warnings);
     }
 
     #[test]
@@ -344,7 +392,7 @@ mod tests {
             "c",
         );
         assert!(load.warnings.is_empty(), "{:?}", load.warnings);
-        assert_eq!(load.config.unwrap().width, Some(90));
+        assert_eq!(load.config.unwrap().width, Some(Width::Columns(90)));
     }
 
     #[test]
