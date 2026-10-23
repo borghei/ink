@@ -30,7 +30,7 @@ ink renders markdown in your terminal: code, tables, images, diagrams and math, 
 - **Proper rendering.** Headings, tables with alignment, task lists, footnotes, admonitions, frontmatter and wikilinks.
 - **Highlighted code.** Every major language, in bordered blocks. Press `c` to copy a block's raw source.
 - **Inline images.** Real pixels on Kitty, iTerm2, WezTerm, Ghostty and Sixel terminals, half-blocks everywhere else. SVG too.
-- **Mermaid diagrams.** Flowcharts, state, class and ER diagrams drawn as boxes and arrows. Gantt charts, mindmaps, sequence diagrams and pie charts too.
+- **Mermaid diagrams.** Flowcharts, state, class and ER diagrams drawn as boxes and arrows, and sequence diagrams with lifelines. Gantt charts, mindmaps and pie charts too.
 - **Math and emoji.** LaTeX renders as Unicode (`√(b² - 4ac)`) and `:rocket:` becomes 🚀.
 - **Made for reading.** Search, a table of contents you can filter, tabs, a file browser, link hints and watch mode.
 - **Select and copy.** Keyboard or mouse selection, copy a section as markdown, and it works over SSH and tmux.

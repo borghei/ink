@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.13.0 — 2026-10-23
+
+### Added
+- **Sequence diagrams are drawn, not listed.** Mermaid `sequenceDiagram` blocks now render as a diagram: participant boxes and lifelines, solid and dotted messages with every arrow head mermaid has, messages to self, `autonumber`, notes beside or over participants, activations, and `loop`, `alt`/`else`, `opt`, `par`, `critical`, `break` and `rect` drawn as frames that nest. When a diagram is too wide for the terminal it falls back to a list, which now shows dotted replies and every arrow type instead of drawing them all the same. (#42)
+
+### Fixed
+- **Shift+Tab switches to the previous tab.** It did nothing in real terminals. A `shift-tab` binding in the config file works now too. (#43)
+- **Resizing the window while help, link hints or the theme picker is open** lays the document out for the new width. It used to keep the old width until the next resize. (#43)
+
+### Internal
+- The reader's main loop was split up: its state lives in one struct and each part (input, drawing, resizing, file watching) has its own method. Nothing changes for users; 14 new end-to-end tests pin the reader's behaviour. (#41)
+
 ## 0.12.0 — 2026-10-23
 
 ### Added
