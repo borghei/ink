@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.2 — 2026-10-23
+
+### Security
+- **TLS and HTTP dependencies updated** (rustls 0.23.46, rustls-webpki 0.103.16, webpki-roots 1.0.11): fixes RUSTSEC-2026-0346 to 0349, 0381 and 0382, including acceptance of distrusted certificate intermediates. These only matter when ink fetches remote images or a URL. quinn-proto (RUSTSEC-2026-0338 to 0342) is updated in the lockfile too, though ink never compiles it, and the lru unsoundness warning and a yanked chacha20 release are cleared.
+
 ## 0.11.1 — 2026-10-04
 
 ### Fixed
