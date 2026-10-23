@@ -103,6 +103,7 @@ pub struct Cli {
 
 /// How wide to lay out text: `--width` or the config file's `width`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub enum Width {
     /// Nothing asked for: the reader caps text at 120 columns, plain output
     /// renders 80.
