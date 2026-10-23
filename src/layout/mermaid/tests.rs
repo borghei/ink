@@ -691,7 +691,7 @@ fn sequence_too_wide_falls_back_to_a_list() {
         "loop [again]",
         "  Gamma Service ┄┄▶ Delta Service:",
         "end",
-        "📝 Note over Alpha Service, Beta",
+        "📝 over Alpha Service, Beta",
     ] {
         assert!(out.contains(want), "{want:?} missing:\n{out}");
     }
@@ -744,6 +744,87 @@ fn sequence_robustness() {
         assert_eq!(text::width(line), w, "ragged line {line:?}\n{out}");
     }
     assert!(out.contains("こんにちは世界"), "{out}");
+}
+
+/// True for a list row with nothing but the left border.
+fn blank_row(line: &str) -> bool {
+    line.trim() == "│" || line.trim() == "|"
+}
+
+// A word that just fit used to carry its trailing space one column past the
+// edge, and `fit_lines` wrapped that space onto a row of its own.
+#[test]
+fn sequence_list_wraps_at_the_edge_without_blank_rows() {
+    let words = [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa",
+    ];
+    let mut src = String::from("sequenceDiagram\n");
+    for i in 0..40 {
+        let label: Vec<&str> = (0..2 + i % 5)
+            .map(|j| words[(i * 7 + j * 3) % 10])
+            .collect();
+        src.push_str(&format!("Alexandrina->>Bartholomew: {}\n", label.join(" ")));
+    }
+    for w in 18..=32 {
+        let out = render(&src, w);
+        assert!(!out.contains('┬'), "width {w} drew instead of listing");
+        for line in out.lines() {
+            assert!(text::width(line) <= w, "width {w}: {line:?}");
+            assert!(!blank_row(line), "width {w}: blank row\n{out}");
+        }
+    }
+}
+
+// Nesting indent is capped, so a deep block keeps room for its keyword and
+// the output grows linearly with the depth.
+#[test]
+fn sequence_list_caps_the_nesting_indent() {
+    let nested = |depth: usize| {
+        let mut s = String::from("sequenceDiagram\n");
+        for i in 0..depth {
+            s.push_str(&format!("loop L{i}\n"));
+        }
+        s.push_str("Alice->>Bob: deep message here\n");
+        s.push_str(&"end\n".repeat(depth));
+        s
+    };
+    let out = render(&nested(25), 40);
+    for line in out.lines().skip(1) {
+        assert!(text::width(line) <= 40, "{line:?}");
+        assert!(!blank_row(line), "blank row\n{out}");
+    }
+    for i in 0..25 {
+        assert_eq!(
+            rows_with(&out, &format!("loop [L{i}]")).len(),
+            1,
+            "L{i} split\n{out}"
+        );
+    }
+    assert_eq!(rows_with(&out, "end").len(), 25, "{out}");
+    // 3000 levels: one row per statement, give or take a wrap.
+    let lines = render_mermaid_with(&nested(3000), &theme(), 40, 2, false);
+    assert!(lines.len() < 6100, "{} rows", lines.len());
+    assert!(lines.iter().all(|l| l.width() <= 42));
+}
+
+#[test]
+fn sequence_autonumber_continues_after_off() {
+    let out = render(
+        "sequenceDiagram\nautonumber\nA->>B: one\nA->>B: two\nautonumber off\nA->>B: three\nautonumber\nA->>B: four",
+        60,
+    );
+    assert!(out.contains("1. one") && out.contains("2. two"), "{out}");
+    assert!(!out.contains(". three"), "{out}");
+    assert!(out.contains("4. four"), "{out}");
+}
+
+#[test]
+fn sequence_list_names_a_note_once_in_ascii() {
+    let src = "sequenceDiagram\nparticipant A as Alpha Service\nparticipant B as Beta Service\nparticipant C as Gamma Service\nA->>C: a long message label\nNote right of C: busy";
+    let out = render_opts(src, 30, true);
+    assert!(out.contains("note: right of Gamma"), "{out}");
+    assert!(!out.contains("note: Note"), "{out}");
+    assert!(render(src, 30).contains("📝 right of Gamma"));
 }
 
 #[test]

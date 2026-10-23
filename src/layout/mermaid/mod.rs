@@ -702,7 +702,9 @@ fn render_sequence(
     let mut depth = 0usize;
     for e in &d.events {
         let mut spans = Vec::new();
-        let indent = |depth: usize| " ".repeat(2 * depth);
+        // Nesting indents at most a quarter of the width, so deep blocks
+        // keep room for their text and the output stays linear.
+        let indent = |depth: usize| " ".repeat(2 * depth.min(width / 8));
         match e {
             Event::Message {
                 from,
@@ -754,8 +756,9 @@ fn render_sequence(
                     Place::Over if lo == hi => format!("over {}", name(*lo)),
                     Place::Over => format!("over {}, {}", name(*lo), name(*hi)),
                 };
+                // The icon says "note" (and reads `note:` in ASCII).
                 spans.push(span(
-                    format!("{}  📝 Note {at}: {}", indent(depth), one_line(t)),
+                    format!("{}  📝 {at}: {}", indent(depth), one_line(t)),
                     style(text_color, false, true),
                 ));
             }
@@ -812,13 +815,25 @@ fn render_sequence(
 
 /// Word-wrap a line of spans to `avail` columns, each continuation line
 /// starting with `cont` spaces. A word wider than a whole line is left for
-/// [`fit_lines`] to break.
+/// [`fit_lines`] to break. Rows never end in a space: a word fits when its
+/// text does, and the space after it is dropped at the end of the row.
 fn wrap_spans(spans: Vec<StyledSpan>, avail: usize, cont: usize) -> Vec<Vec<StyledSpan>> {
+    fn trim_end(row: &mut Vec<StyledSpan>) {
+        while let Some(last) = row.last_mut() {
+            let kept = last.text.trim_end_matches(' ').len();
+            last.text.truncate(kept);
+            if !last.text.is_empty() {
+                break;
+            }
+            row.pop();
+        }
+    }
     let mut rows: Vec<Vec<StyledSpan>> = vec![Vec::new()];
     let mut w = 0;
     for s in spans {
         for word in s.text.split_inclusive(' ') {
             if w > cont && w + text::width(word.trim_end()) > avail {
+                trim_end(rows.last_mut().expect("never empty"));
                 rows.push(vec![StyledSpan {
                     text: " ".repeat(cont),
                     style: SpanStyle::default(),
@@ -836,6 +851,7 @@ fn wrap_spans(spans: Vec<StyledSpan>, avail: usize, cont: usize) -> Vec<Vec<Styl
             }
         }
     }
+    trim_end(rows.last_mut().expect("never empty"));
     rows
 }
 

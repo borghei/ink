@@ -166,8 +166,9 @@ pub fn parse(title: Option<String>, body: &[String]) -> Diagram {
     // Open groups: true for a drawn block, false for a `box` group (whose
     // `end` closes nothing that is drawn).
     let mut open: Vec<bool> = Vec::new();
-    // (next number, step) while `autonumber` is on.
-    let mut numbering: Option<(u64, u64)> = None;
+    // As in mermaid: the count advances on every message, numbered or not;
+    // `autonumber N [step]` sets it, and a bare `autonumber` continues it.
+    let (mut seq, mut step, mut numbering) = (1u64, 1u64, false);
     let mut in_descr = false;
     for raw in body {
         let line = raw.trim().trim_end_matches(';').trim();
@@ -200,14 +201,14 @@ pub fn parse(title: Option<String>, body: &[String]) -> Diagram {
                 }
             }
             "autonumber" => {
+                numbering = rest.trim() != "off";
                 let mut nums = rest.split_whitespace().map(|n| n.parse::<u64>().ok());
-                numbering = if rest.trim() == "off" {
-                    None
-                } else {
-                    let start = nums.next().flatten().unwrap_or(1);
-                    let step = nums.next().flatten().unwrap_or(1);
-                    Some((start, step))
-                };
+                if let Some(start) = nums.next().flatten() {
+                    seq = start;
+                }
+                if let Some(s) = nums.next().flatten() {
+                    step = s;
+                }
             }
             "loop" | "alt" | "opt" | "par" | "par_over" | "critical" | "break" | "rect" => {
                 open.push(true);
@@ -254,10 +255,8 @@ pub fn parse(title: Option<String>, body: &[String]) -> Diagram {
                 else {
                     continue;
                 };
-                let number = numbering.map(|(n, _)| n);
-                if let Some((n, step)) = &mut numbering {
-                    *n = n.saturating_add(*step);
-                }
+                let number = numbering.then_some(seq);
+                seq = seq.saturating_add(step);
                 d.events.push(Event::Message {
                     from,
                     to,
@@ -617,17 +616,23 @@ fn attempt(
                     y + 1
                 } else {
                     let (a, b) = (c[from.min(to)], c[from.max(to)]);
+                    // Centred between the two lifelines. A message that
+                    // crosses others has its label in the gap beside the
+                    // sender when it fits there: centred over the span, it
+                    // would sit in some other gap and read as that one's.
+                    let gap = if to > from {
+                        (a, c[from + 1])
+                    } else {
+                        (c[from - 1], b)
+                    };
+                    let (la, lb) = if text_w(k) + 3 <= gap.1 - gap.0 {
+                        gap
+                    } else {
+                        (a, b)
+                    };
                     for (t, l) in lines.iter().enumerate() {
-                        let w = text::width(l);
-                        let mut x = a + 1 + (b - a - 1).saturating_sub(w) / 2;
-                        // Keep a space between the label and a lifeline it
-                        // passes, when there is room to.
-                        if c.contains(&(x - 1)) && x + w + 1 < b {
-                            x += 1;
-                        } else if c.contains(&(x + w)) && x > a + 2 {
-                            x -= 1;
-                        }
-                        cv.text(r + t, x, l, b, Class::Label);
+                        let x = la + 1 + (lb - la - 1).saturating_sub(text::width(l)) / 2;
+                        cv.text(r + t, x, l, lb, Class::Label);
                     }
                     cv.line(y, a + 1, y, b - 1, style, Class::Edge);
                     let rightward = to > from;
@@ -871,6 +876,30 @@ mod tests {
             Event::Message { label, .. } => assert_eq!(label, "a -> b: c"),
             e => panic!("{e:?}"),
         }
+    }
+
+    #[test]
+    fn autonumber_counts_every_message_like_mermaid() {
+        let numbers = |src: &str| -> Vec<Option<u64>> {
+            parse_src(src)
+                .events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::Message { number, .. } => Some(*number),
+                    _ => None,
+                })
+                .collect()
+        };
+        // A bare `autonumber` continues the count, which runs while off.
+        assert_eq!(
+            numbers("A->>B: a\nA->>B: b\nautonumber\nA->>B: c\nautonumber off\nA->>B: d\nautonumber\nA->>B: e"),
+            vec![None, None, Some(3), None, Some(5)]
+        );
+        // An explicit start resets it; the step carries over.
+        assert_eq!(
+            numbers("autonumber 10 5\nA->>B: a\nautonumber 1\nA->>B: b\nA->>B: c"),
+            vec![Some(10), Some(1), Some(6)]
+        );
     }
 
     #[test]
