@@ -956,6 +956,22 @@ fn tab_cycles_through_the_files_and_wraps() {
     assert!(contains(&out[m[1]..], b"qqqqqqqq"), "Tab did not wrap");
 }
 
+// Shift+Tab arrives as `ESC [ Z`, which crossterm reports as BackTab with
+// SHIFT set. It used to match no binding, so nothing happened.
+#[test]
+fn shift_tab_goes_back_a_file_and_wraps() {
+    let a = md_file("# Alpha\n\nqqqqqqqq\n");
+    let b = md_file("# Beta\n\nwwwwwwww\n");
+    let steps = keys(&[b"\x1b[Z", b"\x1b[Z"]);
+    let (out, m) = run_steps(&[], &[a.path(), b.path()], &[], steps);
+    assert!(contains(&out[..m[0]], b"qqqqqqqq"));
+    assert!(
+        contains(&out[m[0]..m[1]], b"wwwwwwww"),
+        "Shift+Tab did not wrap"
+    );
+    assert!(contains(&out[m[1]..], b"qqqqqqqq"), "Shift+Tab");
+}
+
 #[test]
 fn slides_step_forward_and_back() {
     let deck = md_file(
@@ -1034,6 +1050,38 @@ fn a_resize_while_the_help_is_open_closes_it_and_redraws() {
     assert!(contains(resized, b"filler"), "no redraw after the resize");
     assert!(!contains(resized, b"Keys"), "help survived the resize");
     assert!(contains(&out[m[2]..], b"ARRIVED"));
+}
+
+// A resize while an overlay is open used to leave the document laid out for
+// the old width until the next resize. Words are 8 columns apart after a
+// 2-column margin, below the top border: at 100 columns (96 of text)
+// "08alpha" sits mid-line at row 2, column 59; at 60 (56 of text) it starts
+// row 3. Words differ in their first cell because ratatui only rewrites the
+// cells that changed, so the relaid row begins with `ESC[3;3H08`.
+#[test]
+fn a_resize_under_an_overlay_relays_out_the_document() {
+    let words: Vec<String> = (1..=40).map(|i| format!("{i:02}alpha")).collect();
+    let doc = md_file(&format!(
+        "{}\n\n[a link](https://example.com)\n",
+        words.join(" ")
+    ));
+    for overlay in [&b"?"[..], b"f", b"T"] {
+        let steps = vec![
+            Reply::Type(overlay.to_vec()),
+            Reply::Resize(60, 30),
+            Reply::Type(Vec::new()),
+        ];
+        let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+        let what = String::from_utf8_lossy(overlay);
+        assert!(
+            contains(&out[..m[0]], b"\x1b[2;59H08alpha"),
+            "{what}: not wide at first"
+        );
+        assert!(
+            contains(&out[m[1]..], b"\x1b[3;3H08"),
+            "{what}: still laid out for 100 columns"
+        );
+    }
 }
 
 #[test]

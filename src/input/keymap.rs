@@ -81,6 +81,15 @@ fn parse_keycode(s: &str) -> Result<KeyCode, String> {
 }
 
 fn normalize_shift(code: KeyCode, mods: KeyModifiers) -> (KeyCode, KeyModifiers) {
+    // Shift+Tab is BackTab: `shift-tab` splits into SHIFT + `tab`, and
+    // `shift-backtab` repeats the shift. Both must match the BackTab event.
+    match code {
+        KeyCode::Tab if mods.contains(KeyModifiers::SHIFT) => {
+            return (KeyCode::BackTab, mods - KeyModifiers::SHIFT)
+        }
+        KeyCode::BackTab => return (KeyCode::BackTab, mods - KeyModifiers::SHIFT),
+        _ => {}
+    }
     if let KeyCode::Char(c) = code {
         if mods.contains(KeyModifiers::SHIFT) && c.is_ascii_alphabetic() {
             return (
@@ -256,6 +265,21 @@ mod tests {
         assert_eq!(
             parse_key("alt-down"),
             Ok((KeyCode::Down, KeyModifiers::ALT))
+        );
+    }
+
+    #[test]
+    fn every_spelling_of_shift_tab_is_backtab() {
+        for s in ["backtab", "shift-tab", "shift-backtab", "S-Tab"] {
+            assert_eq!(
+                parse_key(s),
+                Ok((KeyCode::BackTab, KeyModifiers::empty())),
+                "{s}"
+            );
+        }
+        assert_eq!(
+            parse_key("ctrl-shift-tab"),
+            Ok((KeyCode::BackTab, KeyModifiers::CONTROL))
         );
     }
 
