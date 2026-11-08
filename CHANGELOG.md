@@ -5,6 +5,9 @@
 ### Added
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
 
+### Changed
+- **Wide tables wrap where there is room.** A table too wide for the window used to shrink every column by the same share, so short columns broke mid-word (`timeo`/`ut`) and numbers split into what looked like two (`1,204` over `.50`). Now each column keeps at least its longest word, numeric columns keep their full width, and the spare room goes to the long columns. A table that can't fit even that way is shown one row at a time as `Header  value` lines, as very narrow tables already were. Long URLs and paths in cells break after a `/ ? & = _ - .` instead of anywhere. Every line of a header that wraps is bold, not just the first.
+
 ## 0.13.0 — 2026-10-23
 
 ### Added

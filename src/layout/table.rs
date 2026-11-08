@@ -33,56 +33,28 @@ pub(super) fn layout_table<'a>(
         _ => Vec::new(),
     };
 
-    // Calculate ideal column widths from content
-    let mut col_widths: Vec<usize> = headers.iter().map(|h| cell_width(h)).collect();
-    for row in &rows {
-        for (i, cell) in row.iter().enumerate() {
-            if i < col_widths.len() {
-                col_widths[i] = col_widths[i].max(cell_width(cell));
-            }
-        }
-    }
-
     // Check if table fits in max_width
     let overhead = num_cols + 1 + num_cols * 2; // borders + padding
-    let total_content: usize = col_widths.iter().sum();
-    let total = total_content + overhead;
+    let available = max_width.saturating_sub(overhead);
 
-    // If the grid can't fit even at the minimum column width, the columns can't
-    // sit side by side readably — fall back to a transposed key/value layout
-    // (like `psql -x`) that fits any width.
-    if num_cols * MIN_COL + overhead > max_width && !rows.is_empty() {
-        render_transposed(&headers, &rows, theme, max_width, &margin_str, lines);
-        return;
-    }
-
-    if total > max_width {
-        // Shrink columns proportionally to fit. A small per-column floor keeps
-        // narrow tables inside the width by wrapping cells hard rather than
-        // overflowing (only reached when the table is wider than the view).
-        let available = max_width.saturating_sub(overhead);
-        if total_content > 0 {
-            let scale = available as f64 / total_content as f64;
-            for w in &mut col_widths {
-                let new_w = ((*w as f64) * scale).floor() as usize;
-                *w = new_w.max(MIN_COL);
-            }
-            // Trim excess from widest columns
-            let mut sum: usize = col_widths.iter().sum();
-            while sum > available {
-                if let Some((idx, _)) = col_widths.iter().enumerate().max_by_key(|(_, w)| *w) {
-                    if col_widths[idx] > MIN_COL {
-                        col_widths[idx] -= 1;
-                        sum -= 1;
-                    } else {
-                        break;
-                    }
-                } else {
-                    break;
-                }
-            }
+    // Borders and padding alone can be wider than a very narrow view.
+    let grid = if overhead > max_width {
+        None
+    } else {
+        column_widths(&headers, &rows, available)
+    };
+    let col_widths = match grid {
+        Some(widths) => widths,
+        // Even each column's narrowest readable width doesn't fit side by
+        // side: lay the rows out as key/value records (like `psql -x`),
+        // which fit any width.
+        None if !rows.is_empty() => {
+            render_transposed(&headers, &rows, theme, max_width, &margin_str, lines);
+            return;
         }
-    }
+        // A header-only table has no records to stack; squeeze it.
+        None => squeeze_widths(&ideal_widths(&headers, &rows), available),
+    };
 
     let border_color = &theme.colors.table_border;
     let header_color = &theme.colors.table_header;
@@ -148,6 +120,162 @@ pub(super) fn layout_table<'a>(
         &margin_str,
     ));
     lines.push(StyledLine::empty());
+}
+
+/// The longest word a column must show unbroken. Longer words (URLs, paths,
+/// identifiers) break inside anyway, so they don't make the whole table
+/// switch to the stacked layout.
+const WORD_CAP: usize = 16;
+
+/// Share of a column's non-empty body cells that must be numbers for it to
+/// count as numeric, and so never wrap.
+const NUMERIC_SHARE: f64 = 0.8;
+
+/// Each column's natural width: its widest hard-broken line, header included.
+fn ideal_widths(headers: &[Cell], rows: &[Vec<Cell>]) -> Vec<usize> {
+    let mut widths: Vec<usize> = headers.iter().map(|h| cell_width(h)).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if let Some(w) = widths.get_mut(i) {
+                *w = (*w).max(cell_width(cell));
+            }
+        }
+    }
+    widths
+}
+
+/// The narrowest a column can be and still read well: its longest word
+/// (capped at [`WORD_CAP`]), or, for a numeric column, its widest number,
+/// so `1,204.50` is never split into what look like two numbers.
+fn min_widths(headers: &[Cell], rows: &[Vec<Cell>], ideal: &[usize]) -> Vec<usize> {
+    (0..headers.len())
+        .map(|i| {
+            let body = || rows.iter().filter_map(move |r| r.get(i));
+            let mut min = std::iter::once(&headers[i])
+                .chain(body())
+                .map(|c| longest_word(c).min(WORD_CAP))
+                .max()
+                .unwrap_or(0);
+            if is_numeric_column(body()) {
+                // Only the numbers stay whole; a text note in the column
+                // ("n/a, refunded") still wraps.
+                let widest_number = body()
+                    .filter(|c| is_number(cell_text(c).trim()))
+                    .map(|c| cell_width(c))
+                    .max()
+                    .unwrap_or(0);
+                min = min.max(widest_number);
+            }
+            // An all-empty column has an ideal width of 0, and its minimum
+            // must not exceed that.
+            min.min(ideal[i])
+        })
+        .collect()
+}
+
+/// Column widths that sum to at most `available`: natural widths when they
+/// fit, otherwise every column gets its minimum and the room left over goes
+/// to the columns that want more, in proportion to how much more. `None`
+/// when even the minimums don't fit side by side.
+fn column_widths(headers: &[Cell], rows: &[Vec<Cell>], available: usize) -> Option<Vec<usize>> {
+    let ideal = ideal_widths(headers, rows);
+    if ideal.iter().sum::<usize>() <= available {
+        return Some(ideal);
+    }
+    let min = min_widths(headers, rows, &ideal);
+    let min_total: usize = min.iter().sum();
+    if min_total > available {
+        return None;
+    }
+    let slack = available - min_total;
+    let wants: Vec<usize> = ideal.iter().zip(&min).map(|(i, m)| i - m).collect();
+    let total_want: usize = wants.iter().sum();
+    // `slack < total_want` here (the natural widths didn't fit), so no
+    // column is offered more than it wants. Shares are floored, and the
+    // columns with the largest remainders take the columns left over, so
+    // the widths fill `available` exactly.
+    let mut widths = min;
+    let mut remainders = Vec::with_capacity(widths.len());
+    let mut given = 0;
+    for (i, want) in wants.iter().enumerate() {
+        let exact = slack * want;
+        widths[i] += exact / total_want;
+        given += exact / total_want;
+        remainders.push((exact % total_want, i));
+    }
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    for &(_, i) in remainders.iter().take(slack - given) {
+        widths[i] += 1;
+    }
+    Some(widths)
+}
+
+/// Shrink `widths` proportionally into `available`, keeping [`MIN_COL`] per
+/// column. Only for header-only tables, which have no stacked layout.
+fn squeeze_widths(widths: &[usize], available: usize) -> Vec<usize> {
+    let total: usize = widths.iter().sum();
+    if total <= available || total == 0 {
+        return widths.to_vec();
+    }
+    let scale = available as f64 / total as f64;
+    let mut out: Vec<usize> = widths
+        .iter()
+        .map(|w| (((*w as f64) * scale).floor() as usize).max(MIN_COL))
+        .collect();
+    let mut sum: usize = out.iter().sum();
+    while sum > available {
+        match out.iter().enumerate().max_by_key(|(_, w)| **w) {
+            Some((idx, w)) if *w > MIN_COL => {
+                out[idx] -= 1;
+                sum -= 1;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+
+/// Display width of the longest whitespace-separated word in a cell.
+fn longest_word(cell: &[StyledSpan]) -> usize {
+    split_lines(cell)
+        .iter()
+        .flat_map(|line| words(line))
+        .map(|(_, w)| spans_width(&w))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Whether most non-empty cells hold a single number: `42`, `-3.5`,
+/// `1,204.50`, `$12`, `€3,000`, `15%`.
+fn is_numeric_column<'c>(cells: impl Iterator<Item = &'c Cell>) -> bool {
+    let (mut filled, mut numeric) = (0usize, 0usize);
+    for cell in cells {
+        let text = cell_text(cell);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        filled += 1;
+        if is_number(text) {
+            numeric += 1;
+        }
+    }
+    filled > 0 && numeric as f64 >= filled as f64 * NUMERIC_SHARE
+}
+
+/// A cell's text with its styles dropped.
+fn cell_text(cell: &[StyledSpan]) -> String {
+    cell.iter().map(|s| s.text.as_str()).collect()
+}
+
+fn is_number(s: &str) -> bool {
+    let s = s.strip_prefix(['-', '+', '\u{2212}']).unwrap_or(s);
+    let s = s.strip_prefix(['$', '€', '£', '¥']).unwrap_or(s);
+    let s = s.strip_suffix('%').unwrap_or(s);
+    !s.is_empty()
+        && s.chars().any(|c| c.is_ascii_digit())
+        && s.chars()
+            .all(|c| c.is_ascii_digit() || c == '.' || c == ',')
 }
 
 /// Render a table too wide for the view as a stacked key/value layout: each
@@ -514,26 +642,51 @@ fn words(line: &[StyledSpan]) -> Vec<(SpanStyle, Cell)> {
 
 /// Force-break a single long word into chunks of max_width, breaking only
 /// between grapheme clusters so the chunk widths match the rendered widths.
+/// A URL or path breaks after a `/ ? & = _ - .` when one sits in the second
+/// half of the chunk, so `grant_type=client_credentials` splits at the `=`
+/// rather than mid-word.
 fn force_break(word: &[StyledSpan], max_width: usize) -> Vec<Cell> {
+    let clusters: Vec<(&str, &SpanStyle)> = word
+        .iter()
+        .flat_map(|span| span.text.graphemes(true).map(move |g| (g, &span.style)))
+        .collect();
     let mut parts = Vec::new();
-    let mut current = Cell::new();
-    let mut current_width = 0;
-
-    for span in word {
-        for g in span.text.graphemes(true) {
-            let gw = g.width();
-            if current_width + gw > max_width && !current.is_empty() {
-                parts.push(std::mem::take(&mut current));
-                current_width = 0;
-            }
-            push_span(&mut current, g, &span.style);
-            current_width += gw;
+    let mut start = 0;
+    while start < clusters.len() {
+        // As many clusters as fit, and always at least one.
+        let mut end = start;
+        let mut width = 0;
+        while end < clusters.len() && (end == start || width + clusters[end].0.width() <= max_width)
+        {
+            width += clusters[end].0.width();
+            end += 1;
         }
-    }
-    if !current.is_empty() {
-        parts.push(current);
+        if end < clusters.len() {
+            let mut used = 0;
+            let mut cut = None;
+            for (k, (g, _)) in clusters[start..end].iter().enumerate() {
+                used += g.width();
+                if is_break_after(g) && k + 1 < end - start && used * 2 >= max_width {
+                    cut = Some(start + k + 1);
+                }
+            }
+            if let Some(cut) = cut {
+                end = cut;
+            }
+        }
+        let mut part = Cell::new();
+        for (g, style) in &clusters[start..end] {
+            push_span(&mut part, g, style);
+        }
+        parts.push(part);
+        start = end;
     }
     parts
+}
+
+/// Characters a long URL, path, host name or identifier may break after.
+fn is_break_after(g: &str) -> bool {
+    matches!(g, "/" | "?" | "&" | "=" | "_" | "-" | ".")
 }
 
 /// Render a multi-line table row (each cell may have multiple wrapped lines).
@@ -587,7 +740,7 @@ fn render_row_lines(
             let mut style = SpanStyle::default();
             if let Some(c) = text_color {
                 style.fg = Some(c.clone());
-                style.bold = row_line == 0; // Only bold the first line of header
+                style.bold = true;
             }
             if alt_row {
                 style.bg = Some(theme.colors.code_block_bg.clone());
@@ -952,6 +1105,164 @@ mod tests {
         for part in force_break(&plain(&s), 4) {
             let w = spans_width(&part);
             assert!(w <= 4, "chunk {part:?} is {w} cols");
+        }
+    }
+    /// Column widths for the first table in `src` with `available` content
+    /// columns, `None` when it would be stacked.
+    fn widths(src: &str, available: usize) -> Option<Vec<usize>> {
+        with_table(src, |table, ctx| {
+            let (headers, rows) = extract_table_data(table, ctx);
+            column_widths(&headers, &rows, available)
+        })
+    }
+
+    const KEY_DESC: &str = "| Key | Description |\n|---|---|\n\
+        | timeout | The number of milliseconds to wait before the request is aborted. |\n\
+        | retries | How many times to retry. |\n";
+
+    #[test]
+    fn a_short_column_keeps_its_width_while_a_long_one_wraps() {
+        for available in [30, 50, 70] {
+            let w = widths(KEY_DESC, available).unwrap();
+            assert_eq!(w[0], "timeout".len(), "at {available}");
+            assert_eq!(w.iter().sum::<usize>(), available, "at {available}");
+        }
+    }
+
+    #[test]
+    fn natural_widths_are_used_when_they_fit() {
+        let w = widths("| a | bb |\n|---|---|\n| ccc | d |\n", 40).unwrap();
+        assert_eq!(w, vec![3, 2]);
+    }
+
+    #[test]
+    fn a_numeric_column_is_never_split() {
+        let src = "| Item | Amount |\n|---|--:|\n\
+            | A fairly long description of the item | 1,204.50 |\n\
+            | Another one | -998.00 |\n";
+        let w = widths(src, 20).unwrap();
+        assert_eq!(w[1], "1,204.50".len());
+        assert_eq!(w.iter().sum::<usize>(), 20);
+    }
+
+    #[test]
+    fn numbers_are_recognised() {
+        for n in [
+            "42",
+            "-3.5",
+            "1,204.50",
+            "$12",
+            "€3,000",
+            "15%",
+            "+7",
+            "\u{2212}4",
+        ] {
+            assert!(is_number(n), "{n}");
+        }
+        for n in ["", "-", "v1.2a", "1/2", "12 apples", "$", "."] {
+            assert!(!is_number(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn a_column_of_mostly_text_is_not_numeric() {
+        let cells: Vec<Cell> = ["1", "2", "n/a", "x", "3"]
+            .iter()
+            .map(|t| plain(t))
+            .collect();
+        assert!(!is_numeric_column(cells.iter()));
+        let cells: Vec<Cell> = ["1", "2", "", "4", "5", "?"]
+            .iter()
+            .map(|t| plain(t))
+            .collect();
+        assert!(is_numeric_column(cells.iter()));
+    }
+
+    #[test]
+    fn the_table_is_stacked_exactly_when_its_words_cannot_fit() {
+        let src = "| Name | Region | Status |\n|---|---|---|\n| Alpha | EMEA | active |\n";
+        // Longest words: Alpha/Name 5, Region 6, Status/active 6 = 17.
+        assert!(widths(src, 17).is_some());
+        assert!(widths(src, 16).is_none());
+    }
+
+    #[test]
+    fn a_long_url_does_not_force_the_stacked_layout() {
+        let src = "| Service | Endpoint |\n|---|---|\n\
+            | auth | https://auth.example.com/v2/oauth/token?grant_type=client_credentials |\n";
+        let w = widths(src, 30).unwrap();
+        assert!(w[1] >= WORD_CAP);
+        assert_eq!(w.iter().sum::<usize>(), 30);
+    }
+
+    #[test]
+    fn widths_always_fill_the_space_exactly() {
+        let src = "| a | b | c |\n|---|---|---|\n\
+            | one two three four five | six seven | eight nine ten eleven twelve thirteen |\n";
+        for available in 20..60 {
+            if let Some(w) = widths(src, available) {
+                assert_eq!(w.iter().sum::<usize>(), available, "at {available}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wide_character_column_is_measured_in_display_columns() {
+        let src = "| 名前 | Note |\n|---|---|\n| 日本語サービス | some longer text that wraps |\n";
+        let w = widths(src, 24).unwrap();
+        assert_eq!(w[0], "日本語サービス".width());
+    }
+
+    #[test]
+    fn a_long_url_breaks_after_a_separator() {
+        let url = "https://auth.example.com/v2/oauth/token?grant_type=client";
+        let parts: Vec<String> = force_break(&plain(url), 20)
+            .iter()
+            .map(|p| text(p))
+            .collect();
+        assert_eq!(parts.concat(), url);
+        for p in &parts[..parts.len() - 1] {
+            assert!(p.width() <= 20, "{p}");
+            assert!(
+                is_break_after(&p[p.len() - 1..]),
+                "{p:?} doesn't end at a separator"
+            );
+        }
+    }
+
+    #[test]
+    fn a_word_without_separators_still_breaks_at_the_width() {
+        let parts: Vec<String> = force_break(&plain(&"x".repeat(25)), 10)
+            .iter()
+            .map(|p| text(p))
+            .collect();
+        assert_eq!(parts, vec!["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
+    }
+
+    #[test]
+    fn every_line_of_a_wrapped_header_is_bold() {
+        let src = "| First line<br>second line | b |\n|---|---|\n| x | y |\n";
+        let lines = with_table(src, |table, ctx| {
+            let mut out = Vec::new();
+            layout_table(table, ctx, &mut out);
+            out
+        });
+        let header: Vec<_> = lines[1..]
+            .iter()
+            .take_while(|l| {
+                !l.spans
+                    .iter()
+                    .any(|s| s.text.contains('┼') || s.text.contains('+'))
+            })
+            .collect();
+        assert!(header.len() > 1, "header should wrap: {header:?}");
+        for line in header {
+            let text_spans: Vec<_> = line
+                .spans
+                .iter()
+                .filter(|s| s.text.trim().chars().any(char::is_alphanumeric))
+                .collect();
+            assert!(text_spans.iter().all(|s| s.style.bold), "{line:?}");
         }
     }
 }
