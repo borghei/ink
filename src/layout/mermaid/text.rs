@@ -7,11 +7,15 @@ use unicode_width::UnicodeWidthStr;
 
 /// The rest of `line` after the keyword `k`, trimmed, when `line` is that
 /// keyword alone or followed by whitespace: `keyword("title Foo", "title")`
-/// is `Some("Foo")`, `keyword("titled", "title")` is `None`.
+/// is `Some("Foo")`, `keyword("titled", "title")` is `None`. Case is ignored,
+/// as mermaid's lexers ignore it (`Title`, `SECTION`).
 pub fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
-    line.strip_prefix(k)
-        .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-        .map(str::trim)
+    let head = line.get(..k.len())?;
+    if !head.eq_ignore_ascii_case(k) {
+        return None;
+    }
+    let rest = &line[k.len()..];
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
 }
 
 /// Display width of `s` in terminal columns, summed per grapheme cluster

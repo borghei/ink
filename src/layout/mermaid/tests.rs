@@ -1121,6 +1121,9 @@ fn keyword_matches_a_whole_word_only() {
     assert_eq!(text::keyword("title\tX", "title"), Some("X"));
     assert_eq!(text::keyword("titled", "title"), None);
     assert_eq!(text::keyword("subtitle", "title"), None);
+    assert_eq!(text::keyword("Title Foo", "title"), Some("Foo"));
+    assert_eq!(text::keyword("SECTION A", "section"), Some("A"));
+    assert_eq!(text::keyword("tïtle", "title"), None);
 }
 
 #[test]

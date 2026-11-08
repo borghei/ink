@@ -35,16 +35,6 @@ fn strip_comment(line: &str) -> &str {
     line.find("%%").map_or(line, |i| &line[..i]).trim()
 }
 
-/// [`text::keyword`], ignoring case as mermaid does (`Section`, `TITLE`).
-fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
-    let head = line.get(..k.len())?;
-    if !head.eq_ignore_ascii_case(k) {
-        return None;
-    }
-    let rest = &line[k.len()..];
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
-}
-
 /// Split a timeline line at its separators. Like mermaid, only a `:`
 /// followed by whitespace (or ending the line) separates, so a time
 /// (`10:30`) or a URL (`https://…`) stays in one piece. Mermaid doesn't allow
@@ -79,7 +69,7 @@ fn parse(body: &[String]) -> Timeline {
         if line.is_empty() {
             continue;
         }
-        if let Some(rest) = keyword(line, "title") {
+        if let Some(rest) = text::keyword(line, "title") {
             // A bare `title` is rejected by mermaid; keep the default.
             if !rest.is_empty() {
                 t.title = Some(text::decode_label(rest));
@@ -91,7 +81,7 @@ fn parse(body: &[String]) -> Timeline {
             in_description = line.contains('{') && !line.contains('}');
             continue;
         }
-        if let Some(rest) = keyword(line, "section") {
+        if let Some(rest) = text::keyword(line, "section") {
             if !rest.is_empty() {
                 t.sections.push(text::decode_label(rest));
                 section = Some(t.sections.len() - 1);
