@@ -4,6 +4,7 @@
 
 ### Added
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
+- **Mermaid git graphs are drawn.** `gitGraph` blocks used to show their source. Commits run top to bottom with a lane per branch, like `git log --graph`: `├─┐ develop` where a branch starts, `●─┘ merge develop` where it comes back, with commit messages, ids and tags beside them and highlight and reverse commits marked. A finished branch's lane is reused. When there are too many branches for the width, the history is listed instead. Mermaid's random commit ids are not shown.
 - **Mermaid user journeys are drawn.** `journey` blocks used to show their source. Each task is a row under its section with its score as a bar and a number (`Make tea  █████ 5  Me`), coloured from bad to good, and the actors beside it. When the actors don't fit they are listed once at the end, and when a task's name has no room it goes on its own line.
 - **Mermaid timelines are drawn.** `timeline` blocks used to show their source. Each period is listed with its events beside it (`2004 ┬─ Facebook` / `└─ Google`), under its section's name. Long events wrap under their own text, and when a period's name is too long for a column the events hang below it instead. `<br>` in a label starts a new line.
 

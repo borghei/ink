@@ -43,6 +43,7 @@ fn escape_bytes_in_diagram_labels_are_stripped() {
         format!("mindmap\n  root{esc}[31m\n    child{esc}]2;x"),
         format!("journey\n  title {esc}[2J"),
         format!("timeline\n  title {esc}[2J\n  section {esc}[31ms\n  20{esc}24 : ev{esc}]0;x : two\n    : {esc}[1mmore"),
+        format!("gitGraph\n  commit msg: \"{esc}[2J\" tag: \"{esc}]0;t\"\n  branch b{esc}[31m\n  commit\n  checkout main\n  merge b{esc}[31m"),
         format!("sequenceDiagram\n  A->>B: {esc}[2Jhi"),
     ] {
         let md = format!("```mermaid\n{body}\n```\n");

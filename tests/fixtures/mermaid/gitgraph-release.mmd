@@ -1,0 +1,20 @@
+---
+title: Release flow
+---
+gitGraph LR:
+    commit id: "init"
+    branch develop
+    commit msg: "add parser"
+    branch feature/tables
+    commit msg: "column widths"
+    commit type: HIGHLIGHT
+    checkout develop
+    merge feature/tables
+    checkout main
+    merge develop tag: "v1.0"
+    branch hotfix
+    commit type: REVERSE
+    checkout main
+    merge hotfix tag: "v1.0.1"
+    checkout develop
+    cherry-pick id: "init"
