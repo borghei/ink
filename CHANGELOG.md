@@ -4,6 +4,7 @@
 
 ### Added
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
+- **Mermaid git graphs are drawn.** `gitGraph` blocks used to show their source. Commits run top to bottom with a lane per branch, like `git log --graph`: `├─┐ develop` where a branch starts, `●─┘ merge develop` where it comes back, with commit messages, ids and tags beside them and highlight and reverse commits marked. A finished branch's lane is reused. When there are too many branches for the width, the history is listed instead. Mermaid's random commit ids are not shown.
 
 ### Fixed
 - **Pie charts have a right border.** The frame was open on the right, and slices 7 and 8 reused the colours of slices 1 and 4 in most themes. Slices now take the six heading colours in turn, which stay distinct in 16-colour terminals too, and the frame fits the chart.

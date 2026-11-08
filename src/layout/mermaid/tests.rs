@@ -412,14 +412,14 @@ fn gantt_bars_on_a_scaled_axis() {
 #[test]
 fn unsupported_types_show_their_source_in_a_titled_box() {
     expect(
-        "gitGraph\n    commit\n    branch develop",
-        40,
+        "quadrantChart\n    title Reach\n    x-axis Low --> High",
+        50,
         r"
-╭─ mermaid: gitGraph (not rendered) ─╮
-│ gitGraph                           │
-│     commit                         │
-│     branch develop                 │
-╰────────────────────────────────────╯",
+╭─ mermaid: quadrantChart (not rendered) ─╮
+│ quadrantChart                           │
+│     title Reach                         │
+│     x-axis Low --> High                 │
+╰─────────────────────────────────────────╯",
     );
     let out = render("somethingNew\nfoo --> bar", 40);
     assert!(

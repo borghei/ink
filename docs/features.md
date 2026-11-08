@@ -80,6 +80,7 @@ Blank or garbled images? See [Troubleshooting](troubleshooting.md#images).
 | State, class, ER | The same box-and-arrow layout |
 | Gantt | Bars on a scaled time axis |
 | Mindmap | A tree |
+| Git graph | Commits top to bottom with one lane per branch, as `git log --graph` draws them: forks, merges, cherry-picks, tags and commit types. A lane is reused once its branch is done. When the lanes leave no room for labels, the history is listed event by event |
 | Sequence | Participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, `autonumber`, and `loop`, `alt`, `opt`, `par`, `critical`, `break` and `rect` blocks as frames. A diagram too wide for the terminal is listed message by message |
 | Pie | A compact text form |
 | Anything else | The source, in a titled box |
