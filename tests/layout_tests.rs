@@ -610,3 +610,21 @@ fn without_the_room_a_wide_table_wraps_as_before() {
         .collect::<Vec<_>>()
     });
 }
+
+#[test]
+fn a_table_too_wide_even_for_the_window_is_stacked_in_the_text_column() {
+    // 40 columns of 12-letter words can't sit side by side in 196 columns.
+    let header: String = (0..40)
+        .map(|i| format!("| header{i:02}word "))
+        .collect::<String>()
+        + "|\n";
+    let rule: String = "|---".repeat(40) + "|\n";
+    let row: String = "| abcdefghijkl ".repeat(40) + "|\n";
+    let out = layout_wide(&format!("prose\n\n{header}{rule}{row}"), true);
+    let record = out.iter().find(|l| l.contains("header00word")).unwrap();
+    assert!(
+        indent(record) >= 40,
+        "stacked at {}: {record}",
+        indent(record)
+    );
+}

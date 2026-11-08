@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Changed
-- **Wide tables can use the whole window.** The reader keeps text to 120 columns by default, and tables were held to that too, so on a wide terminal a table that needed 150 columns wrapped while 80 columns sat empty. A top-level table now takes the room it needs, up to the window's width, centred, and the text around it keeps its width. An explicit `-w`/`--width`, tables inside lists and quotes, and `--plain` output are unchanged.
+- **Wide tables can use the whole window.** The reader keeps text to 120 columns by default, and tables were held to that too, so on a wide terminal a table that needed 150 columns wrapped while 80 columns sat empty. A top-level table now takes the room it needs, up to the window's width, centred, and the text around it keeps its width. An explicit `-w`/`--width`, slides, tables inside lists and quotes, tables that would be shown as records anyway, and `--plain` output are unchanged.
 - **Library API: `layout_document_with_source` takes a `wide_tables: Option<WideTables>`** argument at the end. Pass `None` for the old behaviour.
 
 ## 0.14.0 — 2026-11-08

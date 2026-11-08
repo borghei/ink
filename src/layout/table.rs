@@ -30,8 +30,16 @@ pub(super) fn layout_table<'a>(
                                                 // A top-level table wider than the text column may use the room the
                                                 // reader offers beyond it, centred there; see `WideTables`.
     let natural = ideal_widths(&headers, &rows).iter().sum::<usize>() + overhead;
+    // Only when the grid then fits: a table stacked as records gains nothing
+    // from the room and stays in the text column.
     let (max_width, margin) = match ctx.wide_tables {
-        Some(wide) if ctx.record_headings && natural > ctx.width && wide.width > ctx.width => {
+        Some(wide)
+            if ctx.record_headings
+                && natural > ctx.width
+                && wide.width > ctx.width
+                && column_widths(&headers, &rows, wide.width.saturating_sub(overhead))
+                    .is_some() =>
+        {
             let w = natural.min(wide.width);
             (w, wide.left + (wide.width - w) / 2)
         }
