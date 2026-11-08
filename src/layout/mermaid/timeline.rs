@@ -1,0 +1,472 @@
+//! Timelines: periods in order, each with its events, grouped under
+//! optional sections. Drawn as a vertical list, since mermaid's horizontal
+//! layout doesn't fit a terminal:
+//!
+//! ```text
+//! 2002-2006
+//!   2002 ── LinkedIn
+//!   2004 ┬─ Facebook
+//!        └─ Google
+//! ```
+//!
+//! When the period column would leave too little room for the events, each
+//! period goes on its own line with its events hanging below it.
+
+use super::canvas::{Class, Row};
+use super::text;
+
+#[derive(Debug, Default, PartialEq)]
+struct Period {
+    name: String,
+    events: Vec<String>,
+    /// Index into `Timeline::sections`, if the period sits in one.
+    section: Option<usize>,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct Timeline {
+    title: Option<String>,
+    sections: Vec<String>,
+    periods: Vec<Period>,
+}
+
+/// `line` without a trailing `%% comment`.
+fn strip_comment(line: &str) -> &str {
+    line.find("%%").map_or(line, |i| &line[..i]).trim()
+}
+
+/// [`text::keyword`], ignoring case as mermaid does (`Section`, `TITLE`).
+fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
+    let head = line.get(..k.len())?;
+    if !head.eq_ignore_ascii_case(k) {
+        return None;
+    }
+    let rest = &line[k.len()..];
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
+/// Split a timeline line at its separators. Like mermaid, only a `:`
+/// followed by whitespace (or ending the line) separates, so a time
+/// (`10:30`) or a URL (`https://…`) stays in one piece. Mermaid doesn't allow
+/// a colon in a period's name at all; here `09:00 : standup` keeps its time.
+fn split_fields(line: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b':' && bytes.get(i + 1).is_none_or(|n| n.is_ascii_whitespace()) {
+            fields.push(&line[start..i]);
+            start = i + 1;
+        }
+    }
+    fields.push(&line[start..]);
+    fields
+}
+
+/// Parse a timeline body: `title …`, `section …`, `period : event : event`
+/// and continuation lines `: event` that add to the period above.
+fn parse(body: &[String]) -> Timeline {
+    let mut t = Timeline::default();
+    let mut section = None;
+    // Inside an `accDescr { … }` block, which can span several lines.
+    let mut in_description = false;
+    for raw in body {
+        let line = strip_comment(raw.trim());
+        if in_description {
+            in_description = !line.contains('}');
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = keyword(line, "title") {
+            // A bare `title` is rejected by mermaid; keep the default.
+            if !rest.is_empty() {
+                t.title = Some(text::decode_label(rest));
+            }
+            continue;
+        }
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("acctitle") || lower.starts_with("accdescr") {
+            in_description = line.contains('{') && !line.contains('}');
+            continue;
+        }
+        if let Some(rest) = keyword(line, "section") {
+            if !rest.is_empty() {
+                t.sections.push(text::decode_label(rest));
+                section = Some(t.sections.len() - 1);
+            }
+            continue;
+        }
+        let fields = split_fields(line);
+        let name = fields[0].trim();
+        let events: Vec<String> = fields[1..]
+            .iter()
+            .map(|e| text::decode_label(e))
+            .filter(|e| !e.is_empty())
+            .collect();
+        if name.is_empty() {
+            // `: event` adds to the period above, even across a section
+            // header; before any period it starts one with no name.
+            match t.periods.last_mut() {
+                Some(p) => p.events.extend(events),
+                None => t.periods.push(Period {
+                    name: String::new(),
+                    events,
+                    section,
+                }),
+            }
+            continue;
+        }
+        t.periods.push(Period {
+            name: text::decode_label(name),
+            events,
+            section,
+        });
+    }
+    t
+}
+
+/// The narrowest the event column may get beside the period column before
+/// the stacked form is used instead.
+const MIN_EVENT: usize = 12;
+
+/// The timeline's title and rows at most `inner` columns wide. `title` is a
+/// frontmatter title, which an inline `title` line replaces.
+pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, Vec<Row>) {
+    let t = parse(body);
+    let title = t
+        .title
+        .clone()
+        .or(title)
+        .unwrap_or_else(|| "timeline".to_string());
+    if t.periods.is_empty() {
+        return (title, vec![vec![("(no events)".to_string(), Class::Label)]]);
+    }
+    let inner = inner.max(8);
+    let indent = if t.sections.is_empty() { 0 } else { 2 };
+    // Every line of a period's name, so a `<br>` in it lines up too.
+    let period_w = t
+        .periods
+        .iter()
+        .flat_map(|p| p.name.split('\n'))
+        .map(text::width)
+        .max()
+        .unwrap_or(0);
+    // `name ┬─ event`: the name column, a space, the connector and a space.
+    let side_by_side = indent + period_w + 4 + MIN_EVENT <= inner && period_w <= inner / 3;
+
+    let mut rows = Vec::new();
+    // Sections are numbered in order; `shown` is how many have a header so
+    // far, so a section with no periods still gets one.
+    let mut shown = 0;
+    let mut headers_up_to = |rows: &mut Vec<Row>, last: usize| {
+        while shown <= last && shown < t.sections.len() {
+            for l in text::wrap(&t.sections[shown], inner) {
+                rows.push(vec![(l, Class::Title)]);
+            }
+            shown += 1;
+        }
+    };
+    for p in &t.periods {
+        if let Some(s) = p.section {
+            headers_up_to(&mut rows, s);
+        }
+        // Periods before the first section aren't under a header.
+        let indent = if p.section.is_some() { indent } else { 0 };
+        if side_by_side {
+            push_side_by_side(&mut rows, p, indent, period_w, inner);
+        } else {
+            push_stacked(&mut rows, p, indent, inner);
+        }
+    }
+    headers_up_to(&mut rows, usize::MAX);
+    (title, rows)
+}
+
+/// `  2004 ┬─ Facebook` / `       └─ Google`: the period's name in a fixed
+/// column, its events beside it. A wrapped event continues under its own
+/// text, behind a `│` while more events follow.
+fn push_side_by_side(
+    rows: &mut Vec<Row>,
+    p: &Period,
+    indent: usize,
+    period_w: usize,
+    inner: usize,
+) {
+    let lead = " ".repeat(indent);
+    let names: Vec<&str> = p.name.split('\n').collect();
+    let room = inner.saturating_sub(indent + period_w + 4).max(1);
+    let mut lines: Vec<(String, String)> = Vec::new();
+    let n = p.events.len();
+    for (i, event) in p.events.iter().enumerate() {
+        let (first, rest) = match (n, i) {
+            (1, _) => ("──", "  "),
+            (_, 0) => ("┬─", "│ "),
+            _ if i + 1 == n => ("└─", "  "),
+            _ => ("├─", "│ "),
+        };
+        for (k, l) in text::wrap(event, room).into_iter().enumerate() {
+            let conn = if k == 0 { first } else { rest };
+            lines.push((conn.to_string(), l));
+        }
+    }
+    let height = lines.len().max(names.len()).max(1);
+    for row in 0..height {
+        let name = names.get(row).copied().unwrap_or("");
+        let pad = period_w.saturating_sub(text::width(name));
+        let mut r: Row = vec![(format!("{lead}{name}{}", " ".repeat(pad)), Class::Text)];
+        if let Some((conn, event)) = lines.get(row) {
+            r.push((format!(" {conn} "), Class::Edge));
+            r.push((event.clone(), Class::Plain));
+        }
+        rows.push(r);
+    }
+}
+
+/// The period on its own line, its events hanging below it:
+/// `2004` / `├─ Facebook` / `└─ Google`.
+fn push_stacked(rows: &mut Vec<Row>, p: &Period, indent: usize, inner: usize) {
+    let lead = " ".repeat(indent);
+    if !p.name.is_empty() {
+        for l in text::wrap(&p.name, inner.saturating_sub(indent).max(1)) {
+            rows.push(vec![(format!("{lead}{l}"), Class::Text)]);
+        }
+    }
+    let room = inner.saturating_sub(indent + 3).max(1);
+    let n = p.events.len();
+    for (i, event) in p.events.iter().enumerate() {
+        let last = i + 1 == n;
+        let (first, rest) = if last {
+            ("└─ ", "   ")
+        } else {
+            ("├─ ", "│  ")
+        };
+        for (k, l) in text::wrap(event, room).into_iter().enumerate() {
+            let conn = if k == 0 { first } else { rest };
+            rows.push(vec![
+                (format!("{lead}{conn}"), Class::Edge),
+                (l, Class::Plain),
+            ]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lines(src: &str) -> Vec<String> {
+        src.lines().map(str::to_string).collect()
+    }
+
+    fn plain(rows: &[Row]) -> String {
+        rows.iter()
+            .map(|r| {
+                r.iter()
+                    .map(|(t, _)| t.as_str())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn periods_events_and_sections_are_parsed() {
+        let t = parse(&lines(
+            "  title Social media\n  section Early\n    2002 : LinkedIn\n    2004 : Facebook : Google\n  section Later\n    2007 : iPhone\n         : Tweets\n",
+        ));
+        assert_eq!(t.title.as_deref(), Some("Social media"));
+        assert_eq!(t.sections, ["Early", "Later"]);
+        assert_eq!(t.periods.len(), 3);
+        assert_eq!(t.periods[1].events, ["Facebook", "Google"]);
+        assert_eq!(t.periods[2].events, ["iPhone", "Tweets"]);
+        assert_eq!(t.periods[2].section, Some(1));
+    }
+
+    #[test]
+    fn an_event_before_any_period_starts_an_unnamed_one() {
+        let t = parse(&lines(": orphan\n2001 : x\n"));
+        assert_eq!(t.periods[0].name, "");
+        assert_eq!(t.periods[0].events, ["orphan"]);
+        assert_eq!(t.periods[1].name, "2001");
+    }
+
+    #[test]
+    fn a_period_with_no_events_keeps_its_place() {
+        let t = parse(&lines("2001\n2002 : x\n"));
+        assert_eq!(t.periods[0].events, Vec::<String>::new());
+        let (_, rows) = render(None, &lines("2001\n2002 : x\n"), 40);
+        assert_eq!(plain(&rows), "2001\n2002 ── x");
+    }
+
+    #[test]
+    fn side_by_side_with_sections() {
+        let (title, rows) = render(
+            None,
+            &lines("title Social media\nsection Early\n2002 : LinkedIn\n2004 : Facebook : Google : MySpace\nsection Later\n2007 : iPhone\n"),
+            40,
+        );
+        assert_eq!(title, "Social media");
+        assert_eq!(
+            plain(&rows),
+            "Early
+  2002 ── LinkedIn
+  2004 ┬─ Facebook
+       ├─ Google
+       └─ MySpace
+Later
+  2007 ── iPhone"
+        );
+    }
+
+    #[test]
+    fn a_long_event_wraps_under_its_own_text() {
+        let (_, rows) = render(
+            None,
+            &lines("2004 : the year a great many things happened at once : next\n"),
+            30,
+        );
+        assert_eq!(
+            plain(&rows),
+            "2004 ┬─ the year a great many
+     │  things happened at
+     │  once
+     └─ next"
+        );
+    }
+
+    #[test]
+    fn long_periods_stack_with_their_events_below() {
+        let (_, rows) = render(
+            None,
+            &lines("The early years of the web : Mosaic : Netscape\n"),
+            30,
+        );
+        assert_eq!(
+            plain(&rows),
+            "The early years of the web
+├─ Mosaic
+└─ Netscape"
+        );
+    }
+
+    #[test]
+    fn wide_characters_line_up() {
+        let (_, rows) = render(None, &lines("平成 : a\n2000 : b\n"), 40);
+        let out = plain(&rows);
+        let cols: Vec<usize> = out
+            .lines()
+            .map(|l| text::width(&l[..l.find('─').unwrap()]))
+            .collect();
+        assert!(cols.iter().all(|&c| c == cols[0]), "{out}");
+    }
+
+    #[test]
+    fn a_frontmatter_title_is_replaced_by_an_inline_one() {
+        let (t, _) = render(Some("front".into()), &lines("2000 : x\n"), 40);
+        assert_eq!(t, "front");
+        let (t, _) = render(Some("front".into()), &lines("title inline\n2000 : x\n"), 40);
+        assert_eq!(t, "inline");
+    }
+
+    #[test]
+    fn an_empty_timeline_says_so() {
+        let (title, rows) = render(None, &lines("title Nothing yet\n"), 40);
+        assert_eq!(title, "Nothing yet");
+        assert_eq!(plain(&rows), "(no events)");
+    }
+
+    #[test]
+    fn rows_stay_within_the_width() {
+        let body = lines(
+            "title t\nsection A section name that is long enough to wrap around\n\
+             1999-2001 : an event with quite a lot of words in it : x\n\
+             平成時代の終わり : 令和 : y\n: z\n",
+        );
+        for inner in [8, 12, 20, 30, 50, 80] {
+            let (_, rows) = render(None, &body, inner);
+            for r in &rows {
+                let w: usize = r.iter().map(|(t, _)| text::width(t)).sum();
+                assert!(w <= inner.max(8), "{w} > {inner}: {r:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_colon_before_a_space_separates_events() {
+        let t = parse(&lines(
+            "2024 : standup at 10:30 : lunch\n2025 : see https://example.com/a : x\n2026 : last:\n09:00 : coffee\n",
+        ));
+        assert_eq!(t.periods[0].events, ["standup at 10:30", "lunch"]);
+        assert_eq!(t.periods[3].name, "09:00");
+        assert_eq!(t.periods[3].events, ["coffee"]);
+        assert_eq!(t.periods[1].events, ["see https://example.com/a", "x"]);
+        assert_eq!(t.periods[2].events, ["last"]);
+    }
+
+    #[test]
+    fn an_accessible_description_block_is_skipped() {
+        let t = parse(&lines(
+            "accTitle: Title\naccDescr {\n  This is the description\n  more\n}\naccDescr: one line\n2001 : a\n",
+        ));
+        assert_eq!(t.periods.len(), 1);
+        assert_eq!(t.periods[0].name, "2001");
+    }
+
+    #[test]
+    fn keywords_ignore_case_and_comments_are_dropped() {
+        let t = parse(&lines(
+            "Title Hi\nSECTION Early\n2001 : a %% a note\n%% whole line\n",
+        ));
+        assert_eq!(t.title.as_deref(), Some("Hi"));
+        assert_eq!(t.sections, ["Early"]);
+        assert_eq!(t.periods[0].events, ["a"]);
+    }
+
+    #[test]
+    fn a_continuation_after_a_section_header_joins_the_period_above() {
+        let t = parse(&lines("2001 : a\nsection S\n: b\n2002 : c\n"));
+        assert_eq!(t.periods.len(), 2);
+        assert_eq!(t.periods[0].events, ["a", "b"]);
+    }
+
+    #[test]
+    fn empty_sections_are_shown_and_periods_before_any_section_are_not_indented() {
+        let (_, rows) = render(
+            None,
+            &lines("2000 : a\nsection A\nsection B\n2001 : b\nsection C\n"),
+            40,
+        );
+        assert_eq!(plain(&rows), "2000 ── a\nA\nB\n  2001 ── b\nC");
+    }
+
+    #[test]
+    fn a_bare_title_or_section_line_is_ignored() {
+        let (title, rows) = render(None, &lines("title\nsection\n2001 : a\n"), 40);
+        assert_eq!(title, "timeline");
+        assert_eq!(plain(&rows), "2001 ── a");
+    }
+
+    #[test]
+    fn hostile_input_stays_quick() {
+        let mut big = String::new();
+        for i in 0..20_000 {
+            big.push_str(&format!(
+                "section S{i}\n{i} : an event with a few words in it : two\n: three\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        let (_, rows) = render(None, &lines(&big), 40);
+        assert!(rows.len() > 60_000);
+        let long = format!("{} : {}\n", "p".repeat(200_000), "e ".repeat(200_000));
+        render(None, &lines(&long), 40);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
+    }
+}

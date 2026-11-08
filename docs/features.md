@@ -80,6 +80,7 @@ Blank or garbled images? See [Troubleshooting](troubleshooting.md#images).
 | State, class, ER | The same box-and-arrow layout |
 | Gantt | Bars on a scaled time axis |
 | Mindmap | A tree |
+| Timeline | Periods in order with their events branching beside them, grouped under their sections. When a period's name is too long for a column, its events hang below it |
 | User journey | One row per task under its section: the 1–5 score as a bar and a number, coloured from bad to good, then who was involved. On a narrow terminal the actors are listed once at the end |
 | Sequence | Participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, `autonumber`, and `loop`, `alt`, `opt`, `par`, `critical`, `break` and `rect` blocks as frames. A diagram too wide for the terminal is listed message by message |
 | Pie | A compact text form |
