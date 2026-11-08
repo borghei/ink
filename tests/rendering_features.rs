@@ -105,10 +105,9 @@ fn table_alignment_applies_to_each_wrapped_line() {
     assert_eq!(
         table_rows(&out),
         [
-            "│ k     │            value │",
-            "│ a     │    one two three │",
-            "│       │    four five six │",
-            "│       │      seven eight │",
+            "│ k │                value │",
+            "│ a │   one two three four │",
+            "│   │ five six seven eight │",
         ]
     );
 }
