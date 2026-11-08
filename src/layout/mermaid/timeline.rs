@@ -30,39 +30,84 @@ struct Timeline {
     periods: Vec<Period>,
 }
 
+/// `line` without a trailing `%% comment`.
+fn strip_comment(line: &str) -> &str {
+    line.find("%%").map_or(line, |i| &line[..i]).trim()
+}
+
+/// [`text::keyword`], ignoring case as mermaid does (`Section`, `TITLE`).
+fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
+    let head = line.get(..k.len())?;
+    if !head.eq_ignore_ascii_case(k) {
+        return None;
+    }
+    let rest = &line[k.len()..];
+    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
+}
+
+/// Split a timeline line at its separators. Like mermaid, only a `:`
+/// followed by whitespace (or ending the line) separates, so a time
+/// (`10:30`) or a URL (`https://…`) stays in one piece. Mermaid doesn't allow
+/// a colon in a period's name at all; here `09:00 : standup` keeps its time.
+fn split_fields(line: &str) -> Vec<&str> {
+    let mut fields = Vec::new();
+    let mut start = 0;
+    let bytes = line.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b':' && bytes.get(i + 1).is_none_or(|n| n.is_ascii_whitespace()) {
+            fields.push(&line[start..i]);
+            start = i + 1;
+        }
+    }
+    fields.push(&line[start..]);
+    fields
+}
+
 /// Parse a timeline body: `title …`, `section …`, `period : event : event`
 /// and continuation lines `: event` that add to the period above.
 fn parse(body: &[String]) -> Timeline {
     let mut t = Timeline::default();
     let mut section = None;
+    // Inside an `accDescr { … }` block, which can span several lines.
+    let mut in_description = false;
     for raw in body {
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with("%%") {
+        let line = strip_comment(raw.trim());
+        if in_description {
+            in_description = !line.contains('}');
             continue;
         }
-        if let Some(rest) = text::keyword(line, "title") {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(rest) = keyword(line, "title") {
             t.title = Some(text::decode_label(rest));
             continue;
         }
-        if line.starts_with("accTitle") || line.starts_with("accDescr") {
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("acctitle") || lower.starts_with("accdescr") {
+            in_description = line.contains('{') && !line.contains('}');
             continue;
         }
-        if let Some(rest) = text::keyword(line, "section") {
+        if let Some(rest) = keyword(line, "section") {
             t.sections.push(text::decode_label(rest));
             section = Some(t.sections.len() - 1);
             continue;
         }
-        let mut parts = line.split(':');
-        let name = parts.next().unwrap_or("").trim();
-        let events = parts.map(text::decode_label).filter(|e| !e.is_empty());
+        let fields = split_fields(line);
+        let name = fields[0].trim();
+        let events: Vec<String> = fields[1..]
+            .iter()
+            .map(|e| text::decode_label(e))
+            .filter(|e| !e.is_empty())
+            .collect();
         if name.is_empty() {
-            // `: event` continues the period above; before any period it
-            // starts one with no name.
+            // `: event` adds to the period above, even across a section
+            // header; before any period it starts one with no name.
             match t.periods.last_mut() {
-                Some(p) if p.section == section => p.events.extend(events),
-                _ => t.periods.push(Period {
+                Some(p) => p.events.extend(events),
+                None => t.periods.push(Period {
                     name: String::new(),
-                    events: events.collect(),
+                    events,
                     section,
                 }),
             }
@@ -70,7 +115,7 @@ fn parse(body: &[String]) -> Timeline {
         }
         t.periods.push(Period {
             name: text::decode_label(name),
-            events: events.collect(),
+            events,
             section,
         });
     }
@@ -107,22 +152,30 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
     let side_by_side = indent + period_w + 4 + MIN_EVENT <= inner && period_w <= inner / 3;
 
     let mut rows = Vec::new();
-    let mut current_section = None;
-    for p in &t.periods {
-        if p.section != current_section {
-            current_section = p.section;
-            if let Some(s) = p.section {
-                for l in text::wrap(&t.sections[s], inner) {
-                    rows.push(vec![(l, Class::Title)]);
-                }
+    // Sections are numbered in order; `shown` is how many have a header so
+    // far, so a section with no periods still gets one.
+    let mut shown = 0;
+    let mut headers_up_to = |rows: &mut Vec<Row>, last: usize| {
+        while shown <= last && shown < t.sections.len() {
+            for l in text::wrap(&t.sections[shown], inner) {
+                rows.push(vec![(l, Class::Title)]);
             }
+            shown += 1;
         }
+    };
+    for p in &t.periods {
+        if let Some(s) = p.section {
+            headers_up_to(&mut rows, s);
+        }
+        // Periods before the first section aren't under a header.
+        let indent = if p.section.is_some() { indent } else { 0 };
         if side_by_side {
             push_side_by_side(&mut rows, p, indent, period_w, inner);
         } else {
             push_stacked(&mut rows, p, indent, inner);
         }
     }
+    headers_up_to(&mut rows, usize::MAX);
     (title, rows)
 }
 
@@ -335,5 +388,53 @@ Later
                 assert!(w <= inner.max(8), "{w} > {inner}: {r:?}");
             }
         }
+    }
+
+    #[test]
+    fn only_a_colon_before_a_space_separates_events() {
+        let t = parse(&lines(
+            "2024 : standup at 10:30 : lunch\n2025 : see https://example.com/a : x\n2026 : last:\n09:00 : coffee\n",
+        ));
+        assert_eq!(t.periods[0].events, ["standup at 10:30", "lunch"]);
+        assert_eq!(t.periods[3].name, "09:00");
+        assert_eq!(t.periods[3].events, ["coffee"]);
+        assert_eq!(t.periods[1].events, ["see https://example.com/a", "x"]);
+        assert_eq!(t.periods[2].events, ["last"]);
+    }
+
+    #[test]
+    fn an_accessible_description_block_is_skipped() {
+        let t = parse(&lines(
+            "accTitle: Title\naccDescr {\n  This is the description\n  more\n}\naccDescr: one line\n2001 : a\n",
+        ));
+        assert_eq!(t.periods.len(), 1);
+        assert_eq!(t.periods[0].name, "2001");
+    }
+
+    #[test]
+    fn keywords_ignore_case_and_comments_are_dropped() {
+        let t = parse(&lines(
+            "Title Hi\nSECTION Early\n2001 : a %% a note\n%% whole line\n",
+        ));
+        assert_eq!(t.title.as_deref(), Some("Hi"));
+        assert_eq!(t.sections, ["Early"]);
+        assert_eq!(t.periods[0].events, ["a"]);
+    }
+
+    #[test]
+    fn a_continuation_after_a_section_header_joins_the_period_above() {
+        let t = parse(&lines("2001 : a\nsection S\n: b\n2002 : c\n"));
+        assert_eq!(t.periods.len(), 2);
+        assert_eq!(t.periods[0].events, ["a", "b"]);
+    }
+
+    #[test]
+    fn empty_sections_are_shown_and_periods_before_any_section_are_not_indented() {
+        let (_, rows) = render(
+            None,
+            &lines("2000 : a\nsection A\nsection B\n2001 : b\nsection C\n"),
+            40,
+        );
+        assert_eq!(plain(&rows), "2000 ── a\nA\nB\n  2001 ── b\nC");
     }
 }
