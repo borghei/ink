@@ -112,6 +112,48 @@ fn table_alignment_applies_to_each_wrapped_line() {
     );
 }
 
+/// Every line of `out` fits in `width` display columns.
+fn assert_fits(out: &str, width: usize) {
+    for line in out.lines() {
+        assert!(
+            line.width() <= width,
+            "{} cols > {width}: {line:?}",
+            line.width()
+        );
+    }
+}
+
+#[test]
+fn an_empty_column_beside_a_long_one_keeps_the_grid() {
+    // An all-empty column used to underflow the width arithmetic and crash.
+    let src = "| a | b |  |\n|---|---|---|\n\
+        | x | the quick brown fox jumps over the lazy dog again and again | |\n";
+    let out = render_with(src, |a| a.width = ink_md::Width::Columns(40));
+    assert_fits(&out, 40);
+    let rows = table_rows(&out);
+    assert!(rows.len() > 2, "expected a wrapped grid: {out}");
+    assert!(rows.iter().all(|r| r.ends_with("│  │")), "{rows:?}");
+}
+
+#[test]
+fn a_text_note_in_a_number_column_wraps_instead_of_stacking_the_table() {
+    let src = "| Item | Amount |\n|---|--:|\n| a | 12.00 |\n| b | 14.50 |\n\
+        | c | 3.25 |\n| d | 7.00 |\n| e | not applicable because this item was refunded |\n";
+    let out = render_with(src, |a| a.width = ink_md::Width::Columns(30));
+    assert_fits(&out, 30);
+    assert!(
+        table_rows(&out).iter().any(|r| r.contains("12.00")),
+        "{out}"
+    );
+}
+
+#[test]
+fn a_table_of_empty_cells_fits_a_narrow_view() {
+    let src = "| | | | | | | |\n|-|-|-|-|-|-|-|\n| | | | | | | |\n";
+    let out = render_with(src, |a| a.width = ink_md::Width::Columns(20));
+    assert_fits(&out, 20);
+}
+
 #[test]
 fn table_alignment_measures_wide_characters() {
     let out = render("| 名前 | v |\n|:----:|--:|\n| 日本 | 1 |\n| a | 22 |\n");

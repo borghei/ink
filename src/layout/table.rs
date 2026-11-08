@@ -37,7 +37,13 @@ pub(super) fn layout_table<'a>(
     let overhead = num_cols + 1 + num_cols * 2; // borders + padding
     let available = max_width.saturating_sub(overhead);
 
-    let col_widths = match column_widths(&headers, &rows, available) {
+    // Borders and padding alone can be wider than a very narrow view.
+    let grid = if overhead > max_width {
+        None
+    } else {
+        column_widths(&headers, &rows, available)
+    };
+    let col_widths = match grid {
         Some(widths) => widths,
         // Even each column's narrowest readable width doesn't fit side by
         // side: lay the rows out as key/value records (like `psql -x`),
@@ -151,9 +157,18 @@ fn min_widths(headers: &[Cell], rows: &[Vec<Cell>], ideal: &[usize]) -> Vec<usiz
                 .max()
                 .unwrap_or(0);
             if is_numeric_column(body()) {
-                min = min.max(body().map(|c| cell_width(c)).max().unwrap_or(0));
+                // Only the numbers stay whole; a text note in the column
+                // ("n/a, refunded") still wraps.
+                let widest_number = body()
+                    .filter(|c| is_number(cell_text(c).trim()))
+                    .map(|c| cell_width(c))
+                    .max()
+                    .unwrap_or(0);
+                min = min.max(widest_number);
             }
-            min.clamp(1, ideal[i].max(1))
+            // An all-empty column has an ideal width of 0, and its minimum
+            // must not exceed that.
+            min.min(ideal[i])
         })
         .collect()
 }
@@ -235,7 +250,7 @@ fn longest_word(cell: &[StyledSpan]) -> usize {
 fn is_numeric_column<'c>(cells: impl Iterator<Item = &'c Cell>) -> bool {
     let (mut filled, mut numeric) = (0usize, 0usize);
     for cell in cells {
-        let text: String = cell.iter().map(|s| s.text.as_str()).collect();
+        let text = cell_text(cell);
         let text = text.trim();
         if text.is_empty() {
             continue;
@@ -246,6 +261,11 @@ fn is_numeric_column<'c>(cells: impl Iterator<Item = &'c Cell>) -> bool {
         }
     }
     filled > 0 && numeric as f64 >= filled as f64 * NUMERIC_SHARE
+}
+
+/// A cell's text with its styles dropped.
+fn cell_text(cell: &[StyledSpan]) -> String {
+    cell.iter().map(|s| s.text.as_str()).collect()
 }
 
 fn is_number(s: &str) -> bool {
