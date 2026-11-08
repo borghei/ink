@@ -1154,6 +1154,32 @@ fn the_link_hint_overlay_copies_a_url_after_y() {
     assert!(!contains(after, b"ARRIVED"), "copying followed the link");
 }
 
+// At the end of a document, short last sections never reach the top of the
+// view, so `Y` used to copy the section at the top (here, all of "Top")
+// while "## Last" was on screen.
+#[test]
+fn y_at_the_end_copies_the_last_section_on_screen() {
+    let mut doc = String::from("# Top\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+    }
+    doc.push_str("## Penultimate\n\nshort\n\n## Last\n\nLAST BODY\n");
+    let doc = md_file(&doc);
+    let config = osc52_only_config();
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        keys(&[b"G", b"Y"]),
+    );
+    let after = &out[m[1]..];
+    assert!(
+        contains(after, b"\x1b]52;c;IyMgTGFzdAoKTEFTVCBCT0RZ\x07"),
+        "Y did not copy the Last section: {}",
+        String::from_utf8_lossy(after)
+    );
+}
+
 // `Y` switched the link hints to copying and the switch outlived the
 // overlay, so every later `f` copied instead of following.
 #[test]

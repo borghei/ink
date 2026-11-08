@@ -11,6 +11,10 @@ pub struct TocState {
     /// What the reader is doing in the sidebar: focus, cursor, filter,
     /// folded subtrees, how far it is scrolled.
     pub nav: TocNav,
+    /// The heading an explicit jump (TOC, `n`/`N`) landed on, and the scroll
+    /// it left the view at. While the view stays there, that heading is the
+    /// current one; see [`Self::current_in_view`].
+    pub pinned: Option<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +115,7 @@ impl TocState {
             selected: 0,
             width: 30,
             nav: TocNav::default(),
+            pinned: None,
         }
     }
 
@@ -121,6 +126,7 @@ impl TocState {
             selected: 0,
             width: 30,
             nav: TocNav::default(),
+            pinned: None,
         }
     }
 
@@ -138,6 +144,37 @@ impl TocState {
     /// sidebar used to mark the heading before it.
     pub fn update_selection(&mut self, current_line: usize) {
         self.selected = self.current_heading(current_line).unwrap_or(0);
+    }
+
+    /// [`Self::update_selection`] for a view `height` rows tall over a
+    /// document `total` lines long; see [`Self::current_in_view`].
+    pub fn update_selection_in(&mut self, top: usize, height: usize, total: usize) {
+        self.selected = self.current_in_view(top, height, total).unwrap_or(0);
+    }
+
+    /// The section the reader is in, for a view whose top is `top`.
+    ///
+    /// Usually the heading at the top of the view ([`Self::current_heading`]).
+    /// But at the end of a document that scrolls, the last sections can be
+    /// too short ever to reach the top, so there the last heading on screen
+    /// counts instead, as a web page's scrollspy does. And a heading the
+    /// reader jumped to stays current while the view hasn't moved since,
+    /// so jumping to the second-last heading doesn't mark the last.
+    pub fn current_in_view(&self, top: usize, height: usize, total: usize) -> Option<usize> {
+        let bottom = top + height;
+        if let Some((h, at)) = self.pinned {
+            let on_screen = |e: &TocEntry| e.line_index + 1 >= top && e.line_index < bottom;
+            if at == top && self.headings.get(h).is_some_and(on_screen) {
+                return Some(h);
+            }
+        }
+        let at_end = total > height && bottom >= total;
+        if at_end {
+            if let Some(i) = self.headings.iter().rposition(|e| e.line_index < bottom) {
+                return Some(i);
+            }
+        }
+        self.current_heading(top)
     }
 
     /// The heading a viewport whose top is `line` is in: the last one at or
@@ -568,5 +605,46 @@ mod tests {
         nav.collapsed.insert(5);
         fresh.inherit(nav);
         assert_eq!(fresh.nav.collapsed, HashSet::from([0]));
+    }
+
+    // The toc() headings sit at lines 0, 10, …, 60. With a 20-row view over
+    // a 65-line document the view can't scroll past 45, so Beta one (50)
+    // and Gamma (60) never reach the top.
+
+    #[test]
+    fn at_the_end_the_last_heading_on_screen_is_current() {
+        let t = toc();
+        assert_eq!(t.current_heading(45), Some(4)); // Beta, at the top
+        assert_eq!(t.current_in_view(45, 20, 65), Some(6)); // Gamma, on screen
+    }
+
+    #[test]
+    fn away_from_the_end_the_heading_at_the_top_is_current() {
+        let t = toc();
+        assert_eq!(t.current_in_view(21, 20, 65), Some(2));
+        assert_eq!(t.current_in_view(0, 20, 65), Some(0));
+    }
+
+    #[test]
+    fn a_document_that_fits_on_screen_is_not_at_its_end() {
+        // Nothing scrolls, so the top rule still applies.
+        let t = toc();
+        assert_eq!(t.current_in_view(0, 80, 65), Some(0));
+    }
+
+    #[test]
+    fn a_jump_stays_current_until_the_view_moves() {
+        let mut t = toc();
+        // Jumped to Beta one; the view stopped at 45, the end.
+        t.pinned = Some((5, 45));
+        assert_eq!(t.current_in_view(45, 20, 65), Some(5));
+        // Scrolled away and back by other means: the pin no longer applies
+        // once the top differs.
+        assert_eq!(t.current_in_view(44, 20, 65), Some(4));
+        // A pin whose heading is off screen is ignored.
+        t.pinned = Some((0, 45));
+        assert_eq!(t.current_in_view(45, 20, 65), Some(6));
+        t.update_selection_in(45, 20, 65);
+        assert_eq!(t.selected, 6);
     }
 }
