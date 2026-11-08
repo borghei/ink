@@ -165,6 +165,12 @@ Clicking works too. A plain click on a link does what its letter would, and drag
 
 Only `http`, `https` and `mailto` links are ever opened.
 
+## Footnotes
+
+A footnote reference like `[^1]` opens its note in a box along the bottom of the window, so you can read it without losing your place. Click the reference, or press `f`: footnotes get letters after the links, each shown with the start of its note.
+
+In the box, `j` `k`, the arrows, `Space`, the page keys and the mouse wheel scroll a long note, `Y` copies it, and any other key closes it. Code blocks and lists in a note are laid out as they are in the document. The notes are still printed at the end of the document too, and `--plain` output is unchanged.
+
 ## Selecting and copying
 
 ink captures the mouse so the wheel scrolls the document. It makes up for taking over your terminal's selection by doing a better job of it: it knows where a code block starts and where its own decoration ends.

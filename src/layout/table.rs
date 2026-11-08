@@ -545,6 +545,7 @@ fn with_base(spans: &[StyledSpan], base: &SpanStyle) -> Cell {
             strikethrough: s.strikethrough || base.strikethrough,
             dim: s.dim || base.dim,
             link_url: s.link_url.clone().or_else(|| base.link_url.clone()),
+            footnote: s.footnote.clone().or_else(|| base.footnote.clone()),
         };
         push_span(&mut out, &span.text, &style);
     }

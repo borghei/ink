@@ -858,6 +858,64 @@ pub fn render_link_hints(
     frame.render_widget(Paragraph::new(lines).block(block), popup_area);
 }
 
+/// Where the footnote popup goes in `area` (the document pane): along the
+/// bottom, as wide as the note (`width` columns) plus its border and a space
+/// each side, at most the pane; as tall as its `lines` plus the border, at
+/// most two fifths of the pane but never under five rows.
+pub fn footnote_rect(area: Rect, width: usize, lines: usize) -> Rect {
+    let w = ((width + 4).max(30) as u16).min(area.width);
+    let most = (area.height * 2 / 5).max(5);
+    let h = ((lines + 2) as u16).min(most).min(area.height);
+    let x = area.x + (area.width - w) / 2;
+    let y = area.y + area.height - h;
+    Rect::new(x, y, w, h)
+}
+
+/// A footnote's text in a box along the bottom of the document pane,
+/// scrolled `scroll` rows; the title says how far, when it doesn't all fit.
+pub fn render_footnote(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    lines: &[Line<'static>],
+    width: usize,
+    scroll: usize,
+    t: &theme::Theme,
+) {
+    let rect = footnote_rect(area, width, lines.len());
+    let rows = rect.height.saturating_sub(2) as usize;
+    // A resize can leave the scroll past the end until the next key.
+    let scroll = scroll.min(lines.len().saturating_sub(rows));
+    let title = if lines.len() > rows {
+        let last = (scroll + rows).min(lines.len());
+        format!(" {title}  {}-{last} of {} ", scroll + 1, lines.len())
+    } else {
+        format!(" {title} ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme::hex_to_color(&t.colors.table_border)))
+        .border_set(popup_border())
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(theme::hex_to_color(&t.colors.link))
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().bg(theme::hex_to_color(&t.colors.code_block_bg)));
+    let inner = block.inner(rect);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(block, rect);
+    let shown: Vec<Line<'static>> = lines.iter().skip(scroll).take(rows).cloned().collect();
+    let pad = Rect::new(
+        inner.x + 1,
+        inner.y,
+        inner.width.saturating_sub(2),
+        inner.height,
+    );
+    frame.render_widget(Paragraph::new(shown), pad);
+}
+
 /// Fit a link-hint row's caption and URL into `budget` display columns
 /// (the caption, two spaces, the URL). The caption gives way first, down to
 /// about 40% of the budget; the URL is then cut to whatever is left. An empty

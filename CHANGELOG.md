@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+- **Footnotes open in a popup.** A footnote reference like `[^1]` was plain text that did nothing. Click it, or press `f` (footnotes get letters after the links, each with the start of its note), and the note opens in a box along the bottom of the window, without moving the document. `j`/`k`, the page keys and the wheel scroll a long note, `Y` copies it, any other key closes it. Code blocks and lists in a note keep their layout.
+- **Library API:** `SpanStyle` has a `footnote` field naming the note a reference points to, and `LayoutResult` a `footnotes` list with each note laid out on its own.
+
 ### Changed
 - **Wide tables can use the whole window.** The reader keeps text to 120 columns by default, and tables were held to that too, so on a wide terminal a table that needed 150 columns wrapped while 80 columns sat empty. A top-level table now takes the room it needs, up to the window's width, centred, and the text around it keeps its width. An explicit `-w`/`--width`, slides, tables inside lists and quotes, tables that would be shown as records anyway, and `--plain` output are unchanged.
 - **Library API: `layout_document_with_source` takes a `wide_tables: Option<WideTables>`** argument at the end. Pass `None` for the old behaviour.
