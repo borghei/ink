@@ -186,6 +186,7 @@ pub fn layout_document<'a>(
         base_dir,
         images,
         graphics_font,
+        None,
     )
 }
 
@@ -204,6 +205,7 @@ pub fn layout_document_with_source<'a>(
     base_dir: Option<&std::path::Path>,
     images: ImageMode,
     graphics_font: Option<(u16, u16)>,
+    wide_tables: Option<WideTables>,
 ) -> LayoutResult {
     let mut lines: Vec<StyledLine> = Vec::new();
     let headings = std::cell::RefCell::new(Vec::new());
@@ -230,6 +232,7 @@ pub fn layout_document_with_source<'a>(
         record_headings: true,
         in_note: false,
         source,
+        wide_tables,
     };
     layout_node(root, &ctx, &mut lines);
     sanitize_lines(&mut lines);
@@ -302,6 +305,19 @@ struct LayoutContext<'a> {
     in_note: bool,
     /// The parsed markdown, when the caller has it; see `heading_anchor_text`.
     source: Option<&'a str>,
+    /// Room a top-level table may take beyond `width`; see [`WideTables`].
+    wide_tables: Option<WideTables>,
+}
+
+/// Room for a table wider than the text column. The reader keeps prose to a
+/// readable width, but a table that needs more columns than that can use the
+/// whole window: it is laid out against `width` columns instead, centred in
+/// them, starting no further left than column `left`. Only top-level tables
+/// do; one inside a list or quote keeps the width of what holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WideTables {
+    pub width: usize,
+    pub left: usize,
 }
 
 impl<'a> LayoutContext<'a> {
@@ -474,6 +490,8 @@ fn record_footnote<'a>(node: &'a AstNode<'a>, name: &str, ctx: &LayoutContext) {
         graphics_font: None,
         record_headings: false,
         in_note: true,
+        // A note's tables fit the popup, not the window.
+        wide_tables: None,
         source: ctx.source,
     };
     let mut body = Vec::new();
@@ -1361,6 +1379,7 @@ fn layout_blockquote<'a>(
         record_headings: false,
         in_note: ctx.in_note,
         source: ctx.source,
+        wide_tables: None,
     };
     let mut inner_lines = Vec::new();
     // Header: the icon and the custom title, or the type when there is none.
@@ -1591,6 +1610,7 @@ fn layout_list<'a>(
         record_headings: false,
         in_note: ctx.in_note,
         source: ctx.source,
+        wide_tables: None,
     };
 
     for (i, item) in node.children().enumerate() {
@@ -1715,6 +1735,7 @@ fn layout_description_list<'a>(
         record_headings: false,
         in_note: ctx.in_note,
         source: ctx.source,
+        wide_tables: None,
     };
     let term_style = SpanStyle {
         bold: true,
@@ -2610,6 +2631,7 @@ fn with_test_ctx<R>(f: impl FnOnce(&LayoutContext) -> R) -> R {
         record_headings: true,
         in_note: false,
         source: None,
+        wide_tables: None,
     };
     f(&ctx)
 }

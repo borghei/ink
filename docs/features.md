@@ -42,7 +42,7 @@ Headings, emphasis, strikethrough, links, blockquotes, nested lists, task lists,
 
 A few details worth knowing:
 
-- **Tables** follow their column alignment (`:--`, `:-:`, `--:`), with wide CJK and emoji cells measured correctly. Links, bold, italic and code work inside cells, and table links are clickable and show up in `f`. A table wider than the window wraps its cells: short columns, numbers and words keep their full width and the long columns wrap, and long URLs break at a `/`, `.` or `=`. When even that can't fit, each row is shown as a list of `Header  value` lines instead.
+- **Tables** follow their column alignment (`:--`, `:-:`, `--:`), with wide CJK and emoji cells measured correctly. Links, bold, italic and code work inside cells, and table links are clickable and show up in `f`. A table wider than the window wraps its cells: short columns, numbers and words keep their full width and the long columns wrap, and long URLs break at a `/`, `.` or `=`. When even that can't fit, each row is shown as a list of `Header  value` lines instead. In the reader, a table that needs more room than the 120-column text width uses the whole window, centred, while the text around it stays at its width.
 - **`<sup>` and `<sub>`** become real superscript and subscript when every character has a Unicode form: `x<sup>2</sup>` is `x²` and `H<sub>2</sub>O` is `H₂O`. With `--ascii` they read `x^(2)` and `H_(2)O`. Anything else is shown as written.
 - **Strikethrough** works with one or two tildes, as on GitHub. Carets and double bars in prose (`2^10`, `a||b`) stay as typed, since `^x^` and `||x||` aren't GitHub markdown.
 - **Definition lists** (`Term`, then `: definition`) get a bold term with the definitions indented underneath.

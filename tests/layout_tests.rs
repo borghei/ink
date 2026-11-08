@@ -510,3 +510,121 @@ fn inline_html_img_is_visible() {
         "inline img placeholder: {text:?}"
     );
 }
+
+// ── Tables wider than the text column ──
+
+/// Lay out `source` as the reader does on a 200-column terminal: prose at
+/// 120 columns from margin 40, tables allowed 196 columns from column 2.
+fn layout_wide(source: &str, wide: bool) -> Vec<String> {
+    let arena = Arena::new();
+    let root = parse_document(&arena, source, &parser::options());
+    let theme = resolve_theme("dark");
+    let wide = wide.then_some(ink_md::layout::WideTables {
+        width: 196,
+        left: 2,
+    });
+    ink_md::layout::layout_document_with_source(
+        root,
+        Some(source),
+        &theme,
+        120,
+        Spacing::Normal,
+        40,
+        None,
+        ink_md::image::ImageMode::Off,
+        None,
+        wide,
+    )
+    .lines
+    .iter()
+    .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect())
+    .collect()
+}
+
+/// A table whose natural width is 156 columns: 5 columns of 28 characters,
+/// plus 16 for borders and padding.
+fn wide_table() -> String {
+    let cell = "x".repeat(28);
+    let row = format!("| {cell} | {cell} | {cell} | {cell} | {cell} |\n");
+    format!("{row}|---|---|---|---|---|\n{row}")
+}
+
+fn indent(line: &str) -> usize {
+    line.len() - line.trim_start().len()
+}
+
+#[test]
+fn a_table_wider_than_the_text_uses_the_window_centred() {
+    use unicode_width::UnicodeWidthStr;
+    let prose = "word ".repeat(60);
+    let out = layout_wide(&format!("{prose}\n\n{}", wide_table()), true);
+    let border = out.iter().find(|l| l.contains('╭')).unwrap();
+    // 156 columns, centred in 196 from column 2: (196 - 156) / 2 + 2 = 22.
+    assert_eq!(border.trim().width(), 156, "{border}");
+    assert_eq!(indent(border), 22);
+    // Every cell fits on one line: no row wraps.
+    let rows: Vec<_> = out.iter().filter(|l| l.contains("xxx")).collect();
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    // The prose stays in its 120-column column at margin 40.
+    let text = out.iter().find(|l| l.contains("word")).unwrap();
+    assert_eq!(indent(text), 40);
+    assert!(text.trim_end().width() <= 160, "{text}");
+}
+
+#[test]
+fn a_table_that_fits_the_text_column_stays_in_it() {
+    let out = layout_wide("| a | b |\n|---|---|\n| 1 | 2 |\n", true);
+    let border = out.iter().find(|l| l.contains('╭')).unwrap();
+    assert_eq!(indent(border), 40);
+}
+
+#[test]
+fn a_table_in_a_list_keeps_the_width_of_the_list() {
+    use unicode_width::UnicodeWidthStr;
+    let item: String = wide_table().lines().map(|l| format!("  {l}\n")).collect();
+    let out = layout_wide(&format!("- item\n\n{item}"), true);
+    for line in &out {
+        assert!(line.width() <= 160, "{} cols: {line}", line.width());
+    }
+}
+
+#[test]
+fn without_the_room_a_wide_table_wraps_as_before() {
+    let src = wide_table();
+    assert_eq!(layout_wide(&src, false), {
+        let arena = Arena::new();
+        let root = parse_document(&arena, &src, &parser::options());
+        ink_md::layout::layout_document(
+            root,
+            &resolve_theme("dark"),
+            120,
+            Spacing::Normal,
+            40,
+            None,
+            ink_md::image::ImageMode::Off,
+            None,
+        )
+        .lines
+        .iter()
+        .map(|l| l.spans.iter().map(|s| s.text.as_str()).collect::<String>())
+        .collect::<Vec<_>>()
+    });
+}
+
+#[test]
+fn a_table_too_wide_even_for_the_window_is_stacked_in_the_text_column() {
+    // 40 columns of 12-letter words can't sit side by side in 196 columns.
+    let header: String = (0..40)
+        .map(|i| format!("| header{i:02}word "))
+        .collect::<String>()
+        + "|\n";
+    let rule: String = "|---".repeat(40) + "|\n";
+    let row: String = "| abcdefghijkl ".repeat(40) + "|\n";
+    let out = layout_wide(&format!("prose\n\n{header}{rule}{row}"), true);
+    let record = out.iter().find(|l| l.contains("header00word")).unwrap();
+    assert!(
+        indent(record) >= 40,
+        "stacked at {}: {record}",
+        indent(record)
+    );
+}

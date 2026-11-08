@@ -2878,6 +2878,16 @@ fn build_tab(
         2
     };
 
+    // At the default width, prose stops at 120 columns but a table that
+    // needs more may use the whole window. An explicit width is kept.
+    // Slides keep tables in the text column: a deck is laid out on purpose.
+    let wide_tables =
+        (args.width == Width::Auto && !args.slides && available_width > max_content_width)
+            .then_some(layout::WideTables {
+                width: available_width as usize,
+                left: 2,
+            });
+
     // Resolve base directory for relative image paths
     let base_dir = std::path::Path::new(filename).parent();
 
@@ -2897,6 +2907,7 @@ fn build_tab(
         base_dir,
         args.images,
         graphics.font_size(),
+        wide_tables,
     );
     // Turn reserved image specs into renderable placements (graphics mode only).
     let images: Vec<ImagePlacement> = image_specs
