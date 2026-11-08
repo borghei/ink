@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+### Fixed
+- **The last sections of a document can be current.** Near the end, short last sections can't scroll to the top of the window, and the section at the top was always taken as the one being read. So after `G`, `Y` copied an earlier section (often the whole document) while the last heading was on screen, and jumping to one of the last headings from the table of contents highlighted a different one. At the end of a document the last heading on screen now counts, and a heading you jump to (table of contents, `n`/`N`) stays current until you scroll.
+
 ### Security
 - **Bidi override characters are stripped.** A right-to-left override or a bidi isolate (U+202A–202E, U+2066–2069) in a document, written directly or as an entity like `&#8238;`, could make a line display in a different order than it reads, so a code block could look like one command and copy as another. They are removed from the screen and from everything copied to the clipboard, which also loses any terminal control bytes. Direction marks and zero-width joiners, which right-to-left scripts and emoji need, are kept.
 

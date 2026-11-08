@@ -727,10 +727,12 @@ impl<'g> Reader<'g> {
             return Ok(Some(exit));
         }
 
-        let current_offset = self.tabs[self.active_tab].scroll_offset;
-        self.tabs[self.active_tab]
-            .toc
-            .update_selection(current_offset);
+        let tab = &mut self.tabs[self.active_tab];
+        tab.toc.update_selection_in(
+            tab.scroll_offset,
+            view.viewport_height as usize,
+            tab.ratatui_lines.len(),
+        );
         Ok(None)
     }
 
@@ -1052,9 +1054,15 @@ impl<'g> Reader<'g> {
                 } else {
                     let tab = &mut self.tabs[self.active_tab];
                     let current = tab.scroll_offset;
-                    if let Some(next) = tab.toc.headings.iter().find(|h| h.line_index > current + 1)
+                    if let Some(next) = tab
+                        .toc
+                        .headings
+                        .iter()
+                        .position(|h| h.line_index > current + 1)
                     {
-                        tab.scroll_offset = next.line_index.saturating_sub(1).min(max_scroll);
+                        let line = tab.toc.headings[next].line_index.saturating_sub(1);
+                        tab.scroll_offset = line.min(max_scroll);
+                        tab.toc.pinned = Some((next, tab.scroll_offset));
                     }
                 }
             }
@@ -1071,10 +1079,11 @@ impl<'g> Reader<'g> {
                         .toc
                         .headings
                         .iter()
-                        .rev()
-                        .find(|h| h.line_index + 1 < current)
+                        .rposition(|h| h.line_index + 1 < current)
                     {
-                        tab.scroll_offset = prev.line_index.saturating_sub(1).min(max_scroll);
+                        let line = tab.toc.headings[prev].line_index.saturating_sub(1);
+                        tab.scroll_offset = line.min(max_scroll);
+                        tab.toc.pinned = Some((prev, tab.scroll_offset));
                     }
                 }
             }
@@ -2140,7 +2149,11 @@ fn jump_to_heading(tab: &mut Tab, nav: &mut NavHistory, i: usize, viewport: usiz
         nav.record(NavEntry::of(tab));
         tab.scroll_offset = line;
     }
-    tab.toc.update_selection(line);
+    // Near the end the view can't scroll this heading to the top; it is
+    // still the one the reader asked for.
+    tab.toc.pinned = Some((i, line));
+    tab.toc
+        .update_selection_in(line, viewport, tab.ratatui_lines.len());
 }
 
 /// The markdown source of the section the viewport currently starts in, plus a
