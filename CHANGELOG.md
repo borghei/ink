@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Security
+- **Bidi override characters are stripped.** A right-to-left override or a bidi isolate (U+202A–202E, U+2066–2069) in a document, written directly or as an entity like `&#8238;`, could make a line display in a different order than it reads, so a code block could look like one command and copy as another. They are removed from the screen and from everything copied to the clipboard, which also loses any terminal control bytes. Direction marks and zero-width joiners, which right-to-left scripts and emoji need, are kept.
+
 ## 0.14.0 — 2026-11-08
 
 ### Added

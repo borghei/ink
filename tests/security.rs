@@ -320,3 +320,23 @@ fn math_text_cannot_inject_escapes() {
     assert_only_ink_escapes(&out);
     assert!(!out.contains("\x1b[2J") && !out.contains("\x1b]0") && !out.contains("\x1b]52"));
 }
+
+/// A right-to-left override can make a line look like something it isn't.
+/// Neither a raw one, nor one written as an entity, nor one in a diagram
+/// label, nor one in a code block reaches the screen.
+#[test]
+fn bidi_overrides_never_reach_the_output() {
+    let doc = "# Title\u{202E}evil\n\n\
+        Text with &#8238;an entity override&#8236; and \u{2066}an isolate\u{2069}.\n\n\
+        ```sh\nrm -rf /tmp/x \u{202E}#safe\n```\n\n\
+        ```mermaid\nflowchart LR\n  A[a&#8238;b] --> B[\u{202E}c]\n```\n\n\
+        | a | b |\n|---|---|\n| \u{202E}x | &#8238;y |\n";
+    let out = render_plain(doc, &args()).unwrap();
+    for c in [
+        '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}', '\u{2066}', '\u{2067}',
+        '\u{2068}', '\u{2069}',
+    ] {
+        assert!(!out.contains(c), "U+{:04X} reached the output", c as u32);
+    }
+    assert!(out.contains("an entity override"));
+}
