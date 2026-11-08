@@ -47,6 +47,19 @@ fn snapshot_diagrams_fixture() {
 }
 
 #[test]
+fn snapshot_wide_tables_at_three_widths() {
+    let source = std::fs::read_to_string("tests/fixtures/wide_tables.md").unwrap();
+    for width in [40, 60, 100] {
+        let args = Args {
+            width: ink_md::Width::Columns(width),
+            ..test_args()
+        };
+        let rendered = render_plain(&source, &args).unwrap();
+        insta::assert_snapshot!(format!("plain_wide_tables_{width}"), rendered);
+    }
+}
+
+#[test]
 fn snapshot_core_constructs() {
     let source = "# Title\n\nSome **bold** and *italic* and `code`.\n\n\
         - item one\n- item two\n  - nested\n\n\
