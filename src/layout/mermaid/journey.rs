@@ -20,8 +20,8 @@ struct Task {
     name: String,
     /// The score as written (`5`, `x`), shown beside the bar.
     score: String,
-    /// The score as a number, when it is one.
-    value: Option<i64>,
+    /// The score as a number, when it is one (`4.5` counts, as in mermaid).
+    value: Option<f64>,
     actors: Vec<String>,
     section: Option<usize>,
 }
@@ -36,7 +36,9 @@ struct Journey {
 /// The highest score; the bar has one cell per point.
 const MAX_SCORE: i64 = 5;
 
-/// [`text::keyword`], ignoring case as mermaid does.
+/// The text after keyword `k`, ignoring case as mermaid does. A bare
+/// keyword with nothing after it (`title`) is `Some("")`; mermaid rejects it,
+/// and the caller skips the line.
 fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
     let head = line.get(..k.len())?;
     if !head.eq_ignore_ascii_case(k) {
@@ -63,7 +65,9 @@ fn parse(body: &[String]) -> Journey {
             continue;
         }
         if let Some(rest) = keyword(line, "title") {
-            j.title = Some(text::decode_label(rest));
+            if !rest.is_empty() {
+                j.title = Some(text::decode_label(rest));
+            }
             continue;
         }
         let lower = line.to_ascii_lowercase();
@@ -72,11 +76,15 @@ fn parse(body: &[String]) -> Journey {
             continue;
         }
         if let Some(rest) = keyword(line, "section") {
-            j.sections.push(text::decode_label(rest));
-            section = Some(j.sections.len() - 1);
+            if !rest.is_empty() {
+                j.sections.push(text::decode_label(rest));
+                section = Some(j.sections.len() - 1);
+            }
             continue;
         }
-        let mut parts = line.splitn(3, ':');
+        // `name: score: actors`; like mermaid, anything after a third `:`
+        // is dropped.
+        let mut parts = line.split(':');
         let name = text::decode_label(parts.next().unwrap_or(""));
         let score = parts.next().map(str::trim).unwrap_or("").to_string();
         let actors = parts
@@ -91,7 +99,7 @@ fn parse(body: &[String]) -> Journey {
         }
         j.tasks.push(Task {
             name,
-            value: score.parse().ok(),
+            value: score.parse::<f64>().ok().filter(|v| v.is_finite()),
             score,
             actors,
             section,
@@ -100,11 +108,12 @@ fn parse(body: &[String]) -> Journey {
     j
 }
 
-/// The colour class for a score: low scores warn, high ones are good.
-fn score_class(value: Option<i64>) -> Class {
+/// The colour class for a score, in mermaid's bands: above 3 is good,
+/// exactly 3 is middling, below 3 is bad.
+fn score_class(value: Option<f64>) -> Class {
     match value {
-        Some(v) if v >= 4 => Class::Good,
-        Some(3) => Class::Fair,
+        Some(v) if v > 3.0 => Class::Good,
+        Some(v) if v == 3.0 => Class::Fair,
         Some(_) => Class::Bad,
         None => Class::Label,
     }
@@ -113,7 +122,11 @@ fn score_class(value: Option<i64>) -> Class {
 /// `█████ 5`: one filled cell per point, clamped to 0..=5, then the score as
 /// written (`?` when there is none).
 fn score_cells(task: &Task, score_w: usize) -> (String, String) {
-    let filled = task.value.unwrap_or(0).clamp(0, MAX_SCORE) as usize;
+    let filled = task
+        .value
+        .unwrap_or(0.0)
+        .round()
+        .clamp(0.0, MAX_SCORE as f64) as usize;
     let bar = format!(
         "{}{}",
         "█".repeat(filled),
@@ -173,7 +186,9 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
     } else {
         name_max.min(name_room)
     };
-    let stacked = name_room < 8 && name_max > name_room;
+    // Stacked when names have no room, or when even an empty name's bar and
+    // score don't fit beside the indent.
+    let stacked = name_room < 8 && (name_max > name_room || indent + fixed > inner);
 
     let mut rows = Vec::new();
     let mut shown = 0;
@@ -193,8 +208,10 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
         let (bar, score) = score_cells(t, score_w);
         let class = score_class(t.value);
         if stacked {
-            for l in text::wrap(&t.name, inner.saturating_sub(lead.len()).max(1)) {
-                rows.push(vec![(format!("{lead}{l}"), Class::Text)]);
+            if !t.name.is_empty() {
+                for l in text::wrap(&t.name, inner.saturating_sub(lead.len()).max(1)) {
+                    rows.push(vec![(format!("{lead}{l}"), Class::Text)]);
+                }
             }
             // The score sits a little in under its name when there's room.
             let nudge = if lead.len() + 2 + fixed - 2 <= inner {
@@ -226,14 +243,14 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
 
     // Actors that didn't fit beside the tasks: every one, once, at the end.
     if !with_actors {
-        let mut all: Vec<&str> = Vec::new();
-        for t in &j.tasks {
-            for a in &t.actors {
-                if !all.contains(&a.as_str()) {
-                    all.push(a);
-                }
-            }
-        }
+        let mut seen = std::collections::HashSet::new();
+        let all: Vec<&str> = j
+            .tasks
+            .iter()
+            .flat_map(|t| &t.actors)
+            .map(String::as_str)
+            .filter(|a| seen.insert(*a))
+            .collect();
         if !all.is_empty() {
             for l in text::wrap(&format!("Actors: {}", all.join(", ")), inner) {
                 rows.push(vec![(l, Class::Label)]);
@@ -273,7 +290,7 @@ mod tests {
         assert_eq!(j.sections, ["Go to work", "Go home"]);
         assert_eq!(j.tasks.len(), 5);
         assert_eq!(j.tasks[2].name, "Do work");
-        assert_eq!(j.tasks[2].value, Some(1));
+        assert_eq!(j.tasks[2].value, Some(1.0));
         assert_eq!(j.tasks[2].actors, ["Me", "Cat"]);
         assert_eq!(j.tasks[4].section, Some(1));
     }
@@ -330,10 +347,11 @@ Go home
 
     #[test]
     fn scores_are_coloured_by_band() {
-        assert_eq!(score_class(Some(5)), Class::Good);
-        assert_eq!(score_class(Some(4)), Class::Good);
-        assert_eq!(score_class(Some(3)), Class::Fair);
-        assert_eq!(score_class(Some(1)), Class::Bad);
+        assert_eq!(score_class(Some(5.0)), Class::Good);
+        assert_eq!(score_class(Some(3.5)), Class::Good);
+        assert_eq!(score_class(Some(3.0)), Class::Fair);
+        assert_eq!(score_class(Some(2.9)), Class::Bad);
+        assert_eq!(score_class(Some(-2.0)), Class::Bad);
         assert_eq!(score_class(None), Class::Label);
     }
 
@@ -379,5 +397,58 @@ Go home
                 assert!(w <= inner, "{w} > {inner}: {r:?}");
             }
         }
+    }
+
+    #[test]
+    fn like_mermaid_a_third_colon_ends_the_actors_and_fractions_count() {
+        let j = parse(&lines("Colon: 2: Me: extra\nFrac: 4.5: You\nBig: 1e1\n"));
+        assert_eq!(j.tasks[0].actors, ["Me"]);
+        assert_eq!(j.tasks[1].value, Some(4.5));
+        assert_eq!(score_class(j.tasks[1].value), Class::Good);
+        let (_, rows) = render(None, &lines("Frac: 4.5\n"), 30);
+        assert_eq!(plain(&rows), "Frac  █████ 4.5");
+    }
+
+    #[test]
+    fn a_bare_title_or_section_line_is_ignored() {
+        let j = parse(&lines("title\nsection\nTask: 3\n"));
+        assert_eq!(j.title, None);
+        assert!(j.sections.is_empty());
+        assert_eq!(j.tasks[0].section, None);
+    }
+
+    #[test]
+    fn an_unnamed_task_with_a_wide_score_still_fits() {
+        let body = lines("section S\n: 12345\n");
+        for inner in [12, 13, 14] {
+            let (_, rows) = render(None, &body, inner);
+            for r in &rows {
+                let w: usize = r.iter().map(|(t, _)| text::width(t)).sum();
+                assert!(w <= inner, "{w} > {inner}: {r:?}");
+                assert!(
+                    !r.iter().all(|(t, _)| t.trim().is_empty()),
+                    "blank row: {rows:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn many_tasks_and_actors_stay_quick() {
+        let mut big = String::from("section S\n");
+        for i in 0..20_000 {
+            big.push_str(&format!("Task {i}: 3: a{i}, b{i}, c{i}\n"));
+        }
+        let body = lines(&big);
+        let start = std::time::Instant::now();
+        let (_, rows) = render(None, &body, 30);
+        assert!(rows.len() > 20_000);
+        let actors: String = (0..50_000).map(|i| format!("x{i}, ")).collect();
+        render(None, &lines(&format!("One: 4: {actors}\n")), 30);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }
