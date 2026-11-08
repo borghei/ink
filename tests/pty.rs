@@ -1154,6 +1154,22 @@ fn the_link_hint_overlay_copies_a_url_after_y() {
     assert!(!contains(after, b"ARRIVED"), "copying followed the link");
 }
 
+// `Y` switched the link hints to copying and the switch outlived the
+// overlay, so every later `f` copied instead of following.
+#[test]
+fn each_link_hint_overlay_starts_out_following_links() {
+    let doc = long_doc_with_anchor_link();
+    let steps = keys(&[b"f", b"Y", b"\x1b", b"f"]);
+    let (out, m) = run_steps(&[], &[doc.path()], &[], steps);
+    assert!(String::from_utf8_lossy(&out[m[1]..m[2]]).contains("link URL"));
+    let again = String::from_utf8_lossy(&out[m[3]..]);
+    assert!(again.contains("Follow link"), "second f: {again}");
+    assert!(
+        !again.contains("Copy link URL"),
+        "second f still copies: {again}"
+    );
+}
+
 #[test]
 fn enter_follows_a_link_and_brackets_walk_the_history() {
     let doc = long_doc_with_anchor_link();
