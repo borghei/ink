@@ -4,6 +4,7 @@
 
 ### Added
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
+- **Mermaid user journeys are drawn.** `journey` blocks used to show their source. Each task is a row under its section with its score as a bar and a number (`Make tea  █████ 5  Me`), coloured from bad to good, and the actors beside it. When the actors don't fit they are listed once at the end, and when a task's name has no room it goes on its own line.
 
 ### Fixed
 - **Pie charts have a right border.** The frame was open on the right, and slices 7 and 8 reused the colours of slices 1 and 4 in most themes. Slices now take the six heading colours in turn, which stay distinct in 16-colour terminals too, and the frame fits the chart.
