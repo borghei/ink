@@ -4,8 +4,8 @@
 //! ([`graph`]) and drawn by a layered layout engine ([`engine`]) on a
 //! character grid ([`canvas`]). Sequence diagrams are drawn on the same grid
 //! by a layout of their own ([`sequence`]): lifelines, arrows, notes and
-//! block frames. Pie and Gantt charts and mindmaps have renderers of their
-//! own; other diagram types are shown as their source in a labelled box.
+//! block frames. Pie and Gantt charts, mindmaps and timelines have renderers
+//! of their own; other diagram types are shown as their source in a labelled box.
 //!
 //! Every renderer must fit the width it is given, finish quickly on hostile
 //! input, and produce the same output for the same input.
@@ -21,6 +21,7 @@ mod mindmap;
 mod sequence;
 mod state;
 mod text;
+mod timeline;
 
 #[cfg(test)]
 mod tests;
@@ -182,7 +183,6 @@ fn split_source(src: &str) -> Source {
 const UNSUPPORTED: &[&str] = &[
     "journey",
     "gitGraph",
-    "timeline",
     "quadrantChart",
     "sankey-beta",
     "sankey",
@@ -260,6 +260,11 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
             let (title, rows) =
                 gantt::render(src.title.clone(), &src.body, width.saturating_sub(4));
             framed(&title, &rows, &[], theme, width, margin)
+        }
+        "timeline" => {
+            let (title, rows) =
+                timeline::render(src.title.clone(), &src.body, width.saturating_sub(4));
+            framed_left(&title, &rows, theme, width, margin)
         }
         "mindmap" => {
             let rows = mindmap::render(&src.body, width.saturating_sub(4));
