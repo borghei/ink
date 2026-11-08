@@ -904,21 +904,30 @@ mod tests {
 
     #[test]
     fn hostile_input_stays_quick() {
-        let mut src = String::new();
-        for i in 0..40_000 {
-            src.push_str(&format!("branch b{i}\ncommit\ncheckout main\ncommit\n"));
-        }
-        for i in 0..40_000 {
-            src.push_str(&format!("merge b{i}\n"));
-        }
-        let start = std::time::Instant::now();
-        render(None, &lines(&src), 80);
-        let linear: String = (0..20_000).map(|_| "commit\n").collect();
-        render(None, &lines(&linear), 80);
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(5),
-            "{:?}",
-            start.elapsed()
-        );
+        // Many branches that all stay open until merged at the end. Time it at
+        // two sizes and compare, so the check holds on fast and slow machines
+        // alike: four times the input should take about four times as long,
+        // where a quadratic lookup would take about sixteen.
+        let branches = |n: usize| {
+            let mut src = String::new();
+            for i in 0..n {
+                src.push_str(&format!("branch b{i}\ncommit\ncheckout main\ncommit\n"));
+            }
+            for i in 0..n {
+                src.push_str(&format!("merge b{i}\n"));
+            }
+            lines(&src)
+        };
+        let time = |body: &[String]| {
+            let start = std::time::Instant::now();
+            render(None, body, 80);
+            start.elapsed().as_secs_f64()
+        };
+        let (small, big) = (branches(5_000), branches(20_000));
+        time(&small); // warm up allocations
+        let ratio = time(&big) / time(&small).max(1e-3);
+        assert!(ratio < 9.0, "4x the branches took {ratio:.1}x as long");
+        let linear: Vec<String> = (0..20_000).map(|_| "commit".to_string()).collect();
+        assert!(time(&linear) < 30.0);
     }
 }
