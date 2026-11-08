@@ -679,10 +679,24 @@ mod tests {
         KeyEvent::new(code, modifiers)
     }
 
+    /// Normal-mode keys go through the process-wide pending-chord slot, and
+    /// tests run in parallel: a key pressed by one test between another
+    /// test's `g` and `g` would take the pending prefix. Tests that press
+    /// normal-mode keys hold this lock.
+    fn normal_keys() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        let guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(mut pending) = PENDING_CHORD.lock() {
+            *pending = None;
+        }
+        guard
+    }
+
     // crossterm reports Shift+Tab as BackTab with SHIFT set; the default
     // `prev_tab` binding is a plain `backtab`, so it never fired.
     #[test]
     fn shift_tab_switches_to_the_previous_tab() {
+        let _keys = normal_keys();
         init_keymap(None);
         for (code, mods) in [
             (KeyCode::BackTab, KeyModifiers::SHIFT),
@@ -702,6 +716,7 @@ mod tests {
 
     #[test]
     fn g_g_goes_to_the_top_and_a_stray_g_passes_the_next_key_through() {
+        let _keys = normal_keys();
         init_keymap(None);
         let g = || Event::Key(press(KeyCode::Char('g'), KeyModifiers::NONE));
         assert_eq!(map_event(g(), InputMode::Normal), Action::None);
