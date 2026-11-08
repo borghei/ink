@@ -37,6 +37,10 @@ pub enum Class {
     Series(u8),
     /// [`Class::Series`] in bold, for a series' own label.
     SeriesLabel(u8),
+    /// A good, middling or bad score (journey tasks).
+    Good,
+    Fair,
+    Bad,
 }
 
 /// How many distinct series colours there are before they repeat.

@@ -5,8 +5,9 @@
 //! character grid ([`canvas`]). Sequence diagrams are drawn on the same grid
 //! by a layout of their own ([`sequence`]): lifelines, arrows, notes and
 //! block frames. Git graphs ([`gitgraph`]) are drawn on it too, one lane per
-//! branch. Pie and Gantt charts and mindmaps have renderers of their own;
-//! other diagram types are shown as their source in a labelled box.
+//! branch. Pie and Gantt charts, mindmaps, timelines and user journeys have
+//! renderers of their own; other diagram types are shown as their source in
+//! a labelled box.
 //!
 //! Every renderer must fit the width it is given, finish quickly on hostile
 //! input, and produce the same output for the same input.
@@ -19,10 +20,12 @@ mod flowchart;
 mod gantt;
 mod gitgraph;
 mod graph;
+mod journey;
 mod mindmap;
 mod sequence;
 mod state;
 mod text;
+mod timeline;
 
 #[cfg(test)]
 mod tests;
@@ -182,8 +185,6 @@ fn split_source(src: &str) -> Source {
 
 /// Diagram types mermaid knows that are not drawn here: shown as source.
 const UNSUPPORTED: &[&str] = &[
-    "journey",
-    "timeline",
     "quadrantChart",
     "sankey-beta",
     "sankey",
@@ -265,6 +266,16 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
         "gitGraph" => {
             let (title, rows) =
                 gitgraph::render(src.title.clone(), &src.body, width.saturating_sub(4));
+            framed_left(&title, &rows, theme, width, margin)
+        }
+        "journey" => {
+            let (title, rows) =
+                journey::render(src.title.clone(), &src.body, width.saturating_sub(4));
+            framed_left(&title, &rows, theme, width, margin)
+        }
+        "timeline" => {
+            let (title, rows) =
+                timeline::render(src.title.clone(), &src.body, width.saturating_sub(4));
             framed_left(&title, &rows, theme, width, margin)
         }
         "mindmap" => {
@@ -414,6 +425,9 @@ fn class_style(theme: &Theme, class: Class) -> SpanStyle {
         Class::Alert => (&c.admonition_warning, true, false),
         Class::Series(i) => (series_color(theme, i), false, false),
         Class::SeriesLabel(i) => (series_color(theme, i), true, false),
+        Class::Good => (&c.admonition_tip, false, false),
+        Class::Fair => (&c.admonition_warning, false, false),
+        Class::Bad => (&c.admonition_caution, false, false),
     };
     SpanStyle {
         fg: Some(fg.clone()),
