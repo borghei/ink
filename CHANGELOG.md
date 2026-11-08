@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+- **Footnotes open in a popup.** A footnote reference like `[^1]` was plain text that did nothing. Click it, or press `f` (footnotes get letters after the links, each with the start of its note), and the note opens in a box along the bottom of the window, without moving the document. `j`/`k`, the page keys and the wheel scroll a long note, `Y` copies it, any other key closes it. Code blocks and lists in a note keep their layout.
+- **Library API:** `SpanStyle` has a `footnote` field naming the note a reference points to, and `LayoutResult` a `footnotes` list with each note laid out on its own.
+
 ### Fixed
 - **Each `f` starts out following links.** Pressing `Y` in the link hints switched them to copying URLs, and the switch stuck: every later `f` copied instead of following until ink was restarted.
 - **The mouse wheel no longer scrolls the sidebar under the link or code hints.** With hints showing, the wheel over the table of contents scrolled it underneath them. It now closes the hints, as the wheel over the document already did.

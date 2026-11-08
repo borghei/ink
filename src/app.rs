@@ -45,6 +45,8 @@ struct Tab {
     plain: Vec<String>,
     /// Fenced code blocks and their raw source, for `c` (copy code block).
     code_blocks: Vec<crate::layout::CodeBlockSpec>,
+    /// Every footnote's text, for the footnote popup.
+    footnotes: Vec<crate::layout::FootnoteSpec>,
     /// Per-line text, lowercased once, for allocation-free search scans.
     lowered: Vec<String>,
     scroll_offset: usize,
@@ -146,7 +148,12 @@ impl NavHistory {
 /// A labeled link in the current viewport for hint-mode selection.
 struct LinkHint {
     label: char,
+    /// What the hint goes to: a link destination, or `[^name]` for a
+    /// footnote reference (see `footnote`).
     url: String,
+    /// A footnote reference's name: the hint opens that note instead of
+    /// following a link.
+    footnote: Option<String>,
     /// The link's visible text, whitespace-collapsed. Empty when it would
     /// only repeat the URL (autolinks, bare URLs).
     caption: String,
@@ -463,6 +470,11 @@ enum Overlay {
     },
     /// Labeled code blocks on screen; a label copies that block.
     CodeHints(Vec<CodeHint>),
+    /// A footnote's text in a box over the document, scrolled `scroll` rows.
+    Footnote {
+        name: String,
+        scroll: usize,
+    },
 }
 
 impl Overlay {
@@ -620,7 +632,10 @@ impl<'g> Reader<'g> {
     /// focused sidebar, slides, or ordinary reading.
     fn input_mode(&self) -> input::InputMode {
         let open = &self.overlays.open;
-        let modal_popup = matches!(open, Overlay::Help | Overlay::ThemePicker);
+        let modal_popup = matches!(
+            open,
+            Overlay::Help | Overlay::ThemePicker | Overlay::Footnote { .. }
+        );
         if self.search.active {
             input::InputMode::Search
         } else if matches!(open, Overlay::LinkHints { .. } | Overlay::CodeHints(_)) {
@@ -708,6 +723,10 @@ impl<'g> Reader<'g> {
                 self.theme_picker_action(action, terminal, view)?;
                 return Ok(None);
             }
+            Overlay::Footnote { .. } => {
+                self.footnote_action(action);
+                return Ok(None);
+            }
         }
 
         // Visual mode is modal: motions move the cursor end of the
@@ -749,6 +768,55 @@ impl<'g> Reader<'g> {
         Ok(None)
     }
 
+    /// A key in the footnote popup: scroll it, copy the note (`Y`), or close
+    /// it with anything else.
+    fn footnote_action(&mut self, action: Action) {
+        let Overlay::Footnote { name, scroll } = &mut self.overlays.open else {
+            return;
+        };
+        let tab = &self.tabs[self.active_tab];
+        let Some(note) = tab.footnotes.iter().find(|f| &f.name == name) else {
+            self.overlays.open = Overlay::None;
+            return;
+        };
+        let rows = render::footnote_rect(self.doc_rect, note_width(note), note.lines.len())
+            .height
+            .saturating_sub(2) as usize;
+        let max_scroll = note.lines.len().saturating_sub(rows);
+        let page = rows.max(1);
+        match action {
+            Action::ScrollDown(n) => *scroll = (*scroll + n as usize).min(max_scroll),
+            Action::ScrollUp(n) => *scroll = scroll.saturating_sub(n as usize),
+            Action::PageDown => *scroll = (*scroll + page).min(max_scroll),
+            Action::PageUp => *scroll = scroll.saturating_sub(page),
+            Action::Home => *scroll = 0,
+            Action::End => *scroll = max_scroll,
+            Action::CopySection => {
+                let text = note_text(note);
+                let what = format!("footnote [^{name}]");
+                self.flash = Some((copy_text(&text, self.args.clipboard, &what), Instant::now()));
+                self.overlays.open = Overlay::None;
+            }
+            // Resizing re-lays out the note; keep it open.
+            Action::Resize(..) | Action::None => {}
+            _ => self.overlays.open = Overlay::None,
+        }
+    }
+
+    /// Open the popup for footnote `name`, if the document has that note.
+    fn open_footnote(&mut self, name: &str) {
+        if self.tabs[self.active_tab]
+            .footnotes
+            .iter()
+            .any(|f| f.name == name)
+        {
+            self.overlays.open = Overlay::Footnote {
+                name: name.to_string(),
+                scroll: 0,
+            };
+        }
+    }
+
     /// A key in the code-block hint overlay. Any key closes it.
     fn pick_code_hint(&mut self, action: Action) {
         let Overlay::CodeHints(hints) = std::mem::take(&mut self.overlays.open) else {
@@ -783,6 +851,14 @@ impl<'g> Reader<'g> {
                 };
             }
             Action::LinkHint(c) => {
+                if let Some(name) = hints
+                    .iter()
+                    .find(|h| h.label == c)
+                    .and_then(|h| h.footnote.clone())
+                {
+                    self.open_footnote(&name);
+                    return;
+                }
                 if let Some(hint) = hints.iter().find(|h| h.label == c) {
                     match kind {
                         HintKind::Open => {
@@ -1061,7 +1137,8 @@ impl<'g> Reader<'g> {
                 let len = tab.styled_lines.len();
                 let offset = tab.scroll_offset.min(len);
                 let end = (offset + viewport_height as usize).min(len);
-                let hints = collect_link_hints(&tab.styled_lines[offset..end]);
+                let mut hints = collect_link_hints(&tab.styled_lines[offset..end]);
+                add_footnote_hints(&mut hints, &tab.styled_lines[offset..end], &tab.footnotes);
                 // Each `f` starts out following links, whatever the last
                 // one switched to with `Y`.
                 if !hints.is_empty() {
@@ -1419,6 +1496,16 @@ impl<'g> Reader<'g> {
             None => {}
         }
         self.selection.drag_moved = false;
+        // A click on a footnote reference opens its note.
+        let note = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row)
+            .filter(|_| clicked)
+            .and_then(|pos| footnote_at(&self.tabs[self.active_tab], pos))
+            .map(str::to_string);
+        if let Some(name) = note {
+            self.selection.last_click = None;
+            self.open_footnote(&name);
+            return;
+        }
         // A click on a link follows it, the way `f` would.
         let link = screen_to_doc(self.doc_rect, &self.tabs[self.active_tab], col, row)
             .filter(|_| clicked)
@@ -1747,6 +1834,21 @@ impl<'g> Reader<'g> {
                 render::render_code_hints(frame, doc_area, &labels, t);
             }
             Overlay::Help => render::render_help(frame, main_area, t),
+            Overlay::Footnote { name, scroll } => {
+                let tab = &self.tabs[self.active_tab];
+                if let Some(note) = tab.footnotes.iter().find(|f| &f.name == name) {
+                    let lines = render::styled_lines_to_ratatui(&note.lines, &self.args.theme);
+                    render::render_footnote(
+                        frame,
+                        doc_area,
+                        &format!("[^{name}]"),
+                        &lines,
+                        note_width(note),
+                        *scroll,
+                        t,
+                    );
+                }
+            }
         }
     }
 
@@ -2150,6 +2252,74 @@ fn link_at(tab: &Tab, pos: Pos) -> Option<&str> {
     None
 }
 
+/// The footnote reference under a document position, if any.
+fn footnote_at(tab: &Tab, pos: Pos) -> Option<&str> {
+    use unicode_width::UnicodeWidthStr;
+    let mut start = 0;
+    for span in &tab.styled_lines.get(pos.line)?.spans {
+        let end = start + span.text.width();
+        if pos.col < end {
+            return span.style.footnote.as_deref();
+        }
+        start = end;
+    }
+    None
+}
+
+/// The widest line of a laid-out footnote, in columns.
+fn note_width(note: &crate::layout::FootnoteSpec) -> usize {
+    note.lines.iter().map(|l| l.width()).max().unwrap_or(0)
+}
+
+/// A footnote's text as plain lines, for the clipboard.
+fn note_text(note: &crate::layout::FootnoteSpec) -> String {
+    note.lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.text.as_str())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Label the footnote references on screen after the links, one hint per
+/// note, with the start of the note as its caption.
+fn add_footnote_hints(
+    hints: &mut Vec<LinkHint>,
+    lines: &[crate::layout::StyledLine],
+    notes: &[crate::layout::FootnoteSpec],
+) {
+    let mut label = hints.last().map_or(b'a', |h| h.label as u8 + 1);
+    for span in lines.iter().flat_map(|l| &l.spans) {
+        let Some(name) = span.style.footnote.as_deref() else {
+            continue;
+        };
+        if label > b'z' {
+            break;
+        }
+        if hints.iter().any(|h| h.footnote.as_deref() == Some(name)) {
+            continue;
+        }
+        let Some(note) = notes.iter().find(|n| n.name == name) else {
+            continue;
+        };
+        let text = note_text(note);
+        let caption = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        hints.push(LinkHint {
+            label: label as char,
+            url: format!("[^{name}]"),
+            footnote: Some(name.to_string()),
+            caption,
+        });
+        label += 1;
+    }
+}
+
 /// Scroll to heading `i` of the TOC, framed the way `n`/`N` frame a heading,
 /// and record where the reader was so `[` comes back.
 fn jump_to_heading(tab: &mut Tab, nav: &mut NavHistory, i: usize, viewport: usize) {
@@ -2257,6 +2427,7 @@ fn collect_link_hints(lines: &[crate::layout::StyledLine]) -> Vec<LinkHint> {
                 hints.push(LinkHint {
                     label: labels as char,
                     url: url.to_string(),
+                    footnote: None,
                     caption: span.text.clone(),
                 });
                 labels += 1;
@@ -2676,6 +2847,7 @@ fn build_tab(
         headings,
         images: image_specs,
         code_blocks,
+        footnotes,
     } = layout::layout_document_with_source(
         root,
         Some(&content),
@@ -2755,6 +2927,7 @@ fn build_tab(
         ratatui_lines,
         plain,
         code_blocks,
+        footnotes,
         lowered,
         scroll_offset: 0,
         toc,
@@ -2969,6 +3142,7 @@ mod section_tests {
             ratatui_lines: Vec::new(),
             plain,
             code_blocks: Vec::new(),
+            footnotes: Vec::new(),
             lowered: Vec::new(),
             scroll_offset: scroll,
             toc,

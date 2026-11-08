@@ -1170,6 +1170,66 @@ fn each_link_hint_overlay_starts_out_following_links() {
     );
 }
 
+/// A document whose first line has two footnote references; the notes are
+/// far below the first screen. On the 100x30 test terminal "[^n]" is drawn
+/// on row 2, columns 20-23.
+fn doc_with_footnotes() -> tempfile::NamedTempFile {
+    let mut doc = String::from("Intro with a note[^n] and another[^long].\n\n");
+    for i in 0..60 {
+        doc.push_str(&format!("filler {i}\n\n"));
+    }
+    doc.push_str("[^n]: NOTEONE text.\n\n[^long]: NOTETWO part.\n\n    - LISTITEM in it\n");
+    md_file(&doc)
+}
+
+#[test]
+fn f_labels_footnotes_and_a_label_opens_the_note() {
+    let doc = doc_with_footnotes();
+    let (out, m) = run_steps(&[], &[doc.path()], &[], keys(&[b"f", b"b", b"\x1b"]));
+    let hints = String::from_utf8_lossy(&out[m[0]..m[1]]);
+    assert!(
+        hints.contains("[^n]") && hints.contains("NOTEONE"),
+        "{hints}"
+    );
+    assert!(hints.contains("[^long]"), "{hints}");
+    let popup = String::from_utf8_lossy(&out[m[1]..m[2]]);
+    assert!(popup.contains("NOTETWO"), "no popup: {popup}");
+    assert!(popup.contains("LISTITEM"), "list missing: {popup}");
+    assert!(
+        !popup.contains("filler 59"),
+        "the document scrolled: {popup}"
+    );
+}
+
+#[test]
+fn a_click_on_a_footnote_reference_opens_the_note() {
+    let doc = doc_with_footnotes();
+    let mut click = mouse(0, 21, 2, true);
+    click.extend(mouse(0, 21, 2, false));
+    let (out, m) = run_steps(&[], &[doc.path()], &[], vec![Reply::Type(click)]);
+    let after = String::from_utf8_lossy(&out[m[0]..]);
+    assert!(after.contains("NOTEONE"), "no popup: {after}");
+    assert!(after.contains("[^n]"));
+}
+
+#[test]
+fn y_in_a_footnote_copies_the_note() {
+    let doc = doc_with_footnotes();
+    let config = osc52_only_config();
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        keys(&[b"f", b"a", b"Y"]),
+    );
+    // "NOTEONE text." as OSC 52 base64.
+    assert!(
+        contains(&out[m[2]..], b"\x1b]52;c;Tk9URU9ORSB0ZXh0Lg==\x07"),
+        "{}",
+        String::from_utf8_lossy(&out[m[2]..])
+    );
+}
+
 #[test]
 fn enter_follows_a_link_and_brackets_walk_the_history() {
     let doc = long_doc_with_anchor_link();

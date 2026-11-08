@@ -72,6 +72,9 @@ pub struct SpanStyle {
     pub strikethrough: bool,
     pub dim: bool,
     pub link_url: Option<String>,
+    /// On a footnote reference: the footnote's name, whose text
+    /// [`LayoutResult::footnotes`] holds.
+    pub footnote: Option<String>,
 }
 
 /// Merge adjacent spans that share a style into one, so a run of same-styled
@@ -140,7 +143,22 @@ pub struct LayoutResult {
     pub headings: Vec<LayoutHeading>,
     pub images: Vec<ImageSpec>,
     pub code_blocks: Vec<CodeBlockSpec>,
+    /// Every footnote's text, laid out to be shown on its own (a popup)
+    /// rather than at the end of the document.
+    pub footnotes: Vec<FootnoteSpec>,
 }
+
+/// A footnote's text, laid out [`FOOTNOTE_INSET`] columns narrower than the
+/// document, with no margin, so it fits a box drawn across the text column.
+#[derive(Debug, Clone)]
+pub struct FootnoteSpec {
+    pub name: String,
+    pub lines: Vec<StyledLine>,
+}
+
+/// How much narrower than the document a footnote is laid out: a border and
+/// a space each side.
+pub const FOOTNOTE_INSET: usize = 4;
 
 /// Convert a comrak AST into a flat list of styled lines for rendering.
 ///
@@ -191,6 +209,7 @@ pub fn layout_document_with_source<'a>(
     let headings = std::cell::RefCell::new(Vec::new());
     let image_specs = std::cell::RefCell::new(Vec::new());
     let code_blocks = std::cell::RefCell::new(Vec::new());
+    let footnotes = std::cell::RefCell::new(Vec::new());
     let ctx = LayoutContext {
         theme,
         width: width as usize,
@@ -207,16 +226,22 @@ pub fn layout_document_with_source<'a>(
         headings: &headings,
         image_specs: &image_specs,
         code_blocks: &code_blocks,
+        footnotes: &footnotes,
         record_headings: true,
         source,
     };
     layout_node(root, &ctx, &mut lines);
     sanitize_lines(&mut lines);
+    let mut footnotes = footnotes.into_inner();
+    for f in &mut footnotes {
+        sanitize_lines(&mut f.lines);
+    }
     LayoutResult {
         lines,
         headings: headings.into_inner(),
         images: image_specs.into_inner(),
         code_blocks: code_blocks.into_inner(),
+        footnotes,
     }
 }
 
@@ -257,6 +282,7 @@ struct LayoutContext<'a> {
     headings: &'a std::cell::RefCell<Vec<LayoutHeading>>,
     image_specs: &'a std::cell::RefCell<Vec<ImageSpec>>,
     code_blocks: &'a std::cell::RefCell<Vec<CodeBlockSpec>>,
+    footnotes: &'a std::cell::RefCell<Vec<FootnoteSpec>>,
     // Only the top-level walk writes into the shared `lines`, so only it can
     // record correct absolute line indices. Nested walks (blockquotes, list
     // items) build into their own buffers, so they don't record headings.
@@ -372,6 +398,7 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         NodeValue::FootnoteDefinition(ref fd) => {
             let name = fd.name.clone();
             drop(data);
+            record_footnote(node, &name, ctx);
             let label = StyledSpan {
                 text: format!("[^{name}]: "),
                 style: SpanStyle {
@@ -407,6 +434,47 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
             }
         }
     }
+}
+
+/// Lay out a footnote definition's blocks again on their own, narrower and
+/// with no margin, so the reader can show the note in a box over the text.
+/// Its references inside are kept, so a note can lead to another.
+fn record_footnote<'a>(node: &'a AstNode<'a>, name: &str, ctx: &LayoutContext) {
+    let body_ctx = LayoutContext {
+        theme: ctx.theme,
+        width: ctx.width.saturating_sub(FOOTNOTE_INSET).max(8),
+        indent: 0,
+        list_depth: 0,
+        block_depth: ctx.block_depth + 1,
+        spacing: ctx.spacing,
+        margin: 0,
+        syntax_set: ctx.syntax_set,
+        theme_set: ctx.theme_set,
+        base_dir: ctx.base_dir,
+        // Pictures belong in the document; in a note their alt text shows.
+        images: ImageMode::Off,
+        headings: ctx.headings,
+        image_specs: ctx.image_specs,
+        code_blocks: ctx.code_blocks,
+        footnotes: ctx.footnotes,
+        graphics_font: None,
+        record_headings: false,
+        source: ctx.source,
+    };
+    let mut body = Vec::new();
+    for child in node.children() {
+        layout_node(child, &body_ctx, &mut body);
+    }
+    while body
+        .last()
+        .is_some_and(|l| l.spans.iter().all(|s| s.text.trim().is_empty()))
+    {
+        body.pop();
+    }
+    ctx.footnotes.borrow_mut().push(FootnoteSpec {
+        name: name.to_string(),
+        lines: body,
+    });
 }
 
 fn layout_heading<'a>(
@@ -1273,6 +1341,7 @@ fn layout_blockquote<'a>(
         headings: ctx.headings,
         image_specs: ctx.image_specs,
         code_blocks: ctx.code_blocks,
+        footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
         source: ctx.source,
@@ -1501,6 +1570,7 @@ fn layout_list<'a>(
         headings: ctx.headings,
         image_specs: ctx.image_specs,
         code_blocks: ctx.code_blocks,
+        footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
         source: ctx.source,
@@ -1623,6 +1693,7 @@ fn layout_description_list<'a>(
         headings: ctx.headings,
         image_specs: ctx.image_specs,
         code_blocks: ctx.code_blocks,
+        footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
         source: ctx.source,
@@ -1872,6 +1943,7 @@ fn collect_inline_seq<'a>(
                     text: format!("[^{}]", fr.name),
                     style: SpanStyle {
                         fg: Some(ctx.theme.colors.link.clone()),
+                        footnote: Some(fr.name.clone()),
                         ..Default::default()
                     },
                 });
@@ -2499,6 +2571,7 @@ fn with_test_ctx<R>(f: impl FnOnce(&LayoutContext) -> R) -> R {
     let headings = std::cell::RefCell::new(Vec::new());
     let image_specs = std::cell::RefCell::new(Vec::new());
     let code_blocks = std::cell::RefCell::new(Vec::new());
+    let footnotes = std::cell::RefCell::new(Vec::new());
     let ctx = LayoutContext {
         theme: &theme,
         width: 60,
@@ -2515,6 +2588,7 @@ fn with_test_ctx<R>(f: impl FnOnce(&LayoutContext) -> R) -> R {
         headings: &headings,
         image_specs: &image_specs,
         code_blocks: &code_blocks,
+        footnotes: &footnotes,
         record_headings: true,
         source: None,
     };
@@ -2920,5 +2994,79 @@ mod deep_nesting {
             lines.iter().any(|l| l.trim() == "│   │   │ c"),
             "{lines:#?}"
         );
+    }
+}
+
+/// Footnotes: what the reader's footnote popup is given.
+#[cfg(test)]
+mod footnotes {
+    use super::*;
+    use comrak::{parse_document, Arena};
+
+    fn layout(src: &str) -> LayoutResult {
+        let arena = Arena::new();
+        let root = parse_document(&arena, src, &crate::parser::options());
+        let theme = crate::theme::resolve_theme("dark");
+        layout_document(
+            root,
+            &theme,
+            60,
+            Spacing::Normal,
+            2,
+            None,
+            ImageMode::Off,
+            None,
+        )
+    }
+
+    fn text(line: &StyledLine) -> String {
+        line.spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    const DOC: &str = "Read this[^a] and that[^b].\n\n[^a]: Short note.\n\n[^b]: First para.\n\n    ```sh\n    echo hi\n    ```\n\n    - item\n";
+
+    #[test]
+    fn a_reference_carries_its_footnote_even_when_wrapped() {
+        let r = layout(DOC);
+        let names: Vec<_> = r.lines[0]
+            .spans
+            .iter()
+            .filter_map(|s| s.style.footnote.clone())
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        // Ordinary text and the definitions' labels carry none.
+        assert!(r.lines[0].spans[0].style.footnote.is_none());
+    }
+
+    #[test]
+    fn each_note_is_laid_out_on_its_own_narrower_and_without_margin() {
+        let r = layout(DOC);
+        assert_eq!(r.footnotes.len(), 2);
+        assert_eq!(r.footnotes[0].name, "a");
+        assert_eq!(text(&r.footnotes[0].lines[0]), "Short note.");
+        let b: Vec<String> = r.footnotes[1].lines.iter().map(text).collect();
+        assert_eq!(b[0], "First para.");
+        assert!(b.iter().any(|l| l.contains("echo hi")), "{b:?}");
+        assert!(b.iter().any(|l| l.contains("item")), "{b:?}");
+        for line in &r.footnotes[1].lines {
+            assert!(line.width() <= 60 - FOOTNOTE_INSET, "{}", text(line));
+        }
+        // No trailing blank lines.
+        assert!(!b.last().unwrap().trim().is_empty());
+    }
+
+    #[test]
+    fn note_text_is_sanitized_like_the_document() {
+        let r = layout("x[^e]\n\n[^e]: bad \u{1b}]0;title\u{7} \u{202E}rev\n");
+        let t = text(&r.footnotes[0].lines[0]);
+        assert!(
+            !t.contains('\u{1b}') && !t.contains('\u{7}') && !t.contains('\u{202E}'),
+            "{t:?}"
+        );
+    }
+
+    #[test]
+    fn a_document_without_footnotes_has_none() {
+        assert!(layout("# Just text\n\nno notes\n").footnotes.is_empty());
     }
 }
