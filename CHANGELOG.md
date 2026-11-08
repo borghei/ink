@@ -6,9 +6,6 @@
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
 - **Mermaid timelines are drawn.** `timeline` blocks used to show their source. Each period is listed with its events beside it (`2004 ┬─ Facebook` / `└─ Google`), under its section's name. Long events wrap under their own text, and when a period's name is too long for a column the events hang below it instead. `<br>` in a label starts a new line.
 
-### Fixed
-- **Pie charts have a right border.** The frame was open on the right, and slices 7 and 8 reused the colours of slices 1 and 4 in most themes. Slices now take the six heading colours in turn, which stay distinct in 16-colour terminals too, and the frame fits the chart.
-
 ### Changed
 - **Wide tables wrap where there is room.** A table too wide for the window used to shrink every column by the same share, so short columns broke mid-word (`timeo`/`ut`) and numbers split into what looked like two (`1,204` over `.50`). Now each column keeps at least its longest word, numeric columns keep their full width, and the spare room goes to the long columns. A table that can't fit even that way is shown one row at a time as `Header  value` lines, as very narrow tables already were. Long URLs and paths in cells break after a `/ ? & = _ - .` instead of anywhere. Every line of a header that wraps is bold, not just the first.
 
