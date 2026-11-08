@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.15.0 — 2026-11-08
 
 ### Added
 - **Footnotes open in a popup.** A footnote reference like `[^1]` was plain text that did nothing. Click it, or press `f` (footnotes get letters after the links, each with the start of its note), and the note opens in a box along the bottom of the window, without moving the document. `j`/`k`, the page keys and the wheel scroll a long note, `Y` copies it, any other key closes it. Code blocks and lists in a note keep their layout.

@@ -32,7 +32,7 @@ ink renders markdown in your terminal: code, tables, images, diagrams and math, 
 - **Inline images.** Real pixels on Kitty, iTerm2, WezTerm, Ghostty and Sixel terminals, half-blocks everywhere else. SVG too.
 - **Mermaid diagrams.** Flowcharts, state, class and ER diagrams drawn as boxes and arrows, and sequence diagrams with lifelines. Git graphs, Gantt charts, timelines, user journeys, mindmaps and pie charts too.
 - **Math and emoji.** LaTeX renders as Unicode (`√(b² - 4ac)`) and `:rocket:` becomes 🚀.
-- **Made for reading.** Search, a table of contents you can filter, tabs, a file browser, link hints and watch mode.
+- **Made for reading.** Search, a table of contents you can filter, tabs, a file browser, link hints, footnotes that open in a popup, and watch mode.
 - **Select and copy.** Keyboard or mouse selection, copy a section as markdown, and it works over SSH and tmux.
 - **9 themes.** Including `terminal`, which follows your terminal's own color scheme. Or write your own.
 - **Pager mode.** `ink --plain` pages long output, prints clean text into pipes and handles `--line-range`, fzf previews and git diffs.

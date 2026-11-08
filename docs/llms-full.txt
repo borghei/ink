@@ -12,7 +12,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Bold, italic, strikethrough, inline code
 - Links with OSC 8 hyperlink support (Cmd+Click / Ctrl+Click in supported terminals)
 - Syntax-highlighted code blocks using syntect (supports all major programming languages)
-- Tables with auto-sized columns, word wrapping and column alignment (:--, :-:, --:); links, bold, italic and code inside cells. A table wider than the window keeps each column's longest word and numbers whole and wraps the long columns; one that still cannot fit is shown as Header/value records
+- Tables with auto-sized columns, word wrapping and column alignment (:--, :-:, --:); links, bold, italic and code inside cells. A table wider than the window keeps each column's longest word and numbers whole and wraps the long columns; one that still cannot fit is shown as Header/value records. In the reader, a table needing more than the 120-column text width uses the whole window, centred
 - Blockquotes with nested support and depth-based coloring
 - Ordered and unordered lists with nesting
 - Task lists with checkbox rendering
@@ -53,6 +53,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Multi-tab: open multiple files, switch with Tab/Shift+Tab
 - In-document search with highlighted matches; press Enter then n/N to cycle results, Esc to clear
 - Keyboard link opening: press f to label on-screen links, then a letter to open web/mail links or follow a relative .md link
+- Footnotes: a footnote reference opens its note in a popup at the bottom of the window (click it, or pick it from the f labels); j/k, page keys and the wheel scroll the note, Y copies it, any other key closes it
 - Help overlay: press ? for a popup of the active keybindings
 - Table of contents sidebar showing heading structure, tracks scroll position
 - Interactive TOC: o focuses it (opening it if closed); j/k/arrows move, g/G first/last, Ctrl+d/Ctrl+u page, Enter jumps (recorded in back/forward history), h/l fold subheadings, / filters headings as you type, Esc returns; click a heading to jump, the wheel over the sidebar scrolls it
