@@ -31,7 +31,19 @@ pub enum Class {
     Plain,
     /// Highlighted items (critical Gantt tasks).
     Alert,
+    /// One of a set of data series (pie slices, branches, scores), coloured
+    /// from a small palette that stays distinct in 16-colour terminals.
+    /// Wraps at [`SERIES`].
+    Series(u8),
+    /// [`Class::Series`] in bold, for a series' own label.
+    SeriesLabel(u8),
 }
+
+/// How many distinct series colours there are before they repeat.
+pub const SERIES: u8 = 6;
+
+/// A drawn row of text: runs of text, each with its class.
+pub type Row = Vec<(String, Class)>;
 
 #[derive(Debug, Clone)]
 enum Cell {
@@ -211,7 +223,7 @@ impl Canvas {
 
     /// The finished rows: each a list of (text, class) runs, with trailing
     /// blanks kept so every row is exactly `cols` wide.
-    pub fn render(&self) -> Vec<Vec<(String, Class)>> {
+    pub fn render(&self) -> Vec<Row> {
         let mut out = Vec::with_capacity(self.rows);
         for r in 0..self.rows {
             let mut runs: Vec<(String, Class)> = Vec::new();

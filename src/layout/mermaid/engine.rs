@@ -52,7 +52,7 @@ pub enum Fail {
 
 /// A drawn diagram.
 pub struct Drawn {
-    pub rows: Vec<Vec<(String, Class)>>,
+    pub rows: Vec<super::canvas::Row>,
     /// Subgraph frames could not be drawn without overlapping other nodes;
     /// membership is listed in `notes` instead.
     pub notes: Vec<String>,

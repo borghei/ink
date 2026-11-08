@@ -14,12 +14,10 @@
 //! when nothing fits, [`layout`] gives up and the caller lists the messages
 //! instead. Work is linear in the statements times the participants.
 
-use super::canvas::{Canvas, Class};
+use super::canvas::{Canvas, Class, Row};
 use super::graph::LineStyle;
 use super::text;
 use std::collections::HashMap;
-
-type Row = Vec<(String, Class)>;
 
 /// More participants than this cannot be drawn at any terminal width.
 const MAX_PARTICIPANTS: usize = 64;

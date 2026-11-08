@@ -27,7 +27,7 @@ mod tests;
 
 use super::{SpanStyle, StyledLine, StyledSpan};
 use crate::theme::Theme;
-use canvas::Class;
+use canvas::{Class, Row};
 use graph::{Dir, Graph, Marker};
 use unicode_width::UnicodeWidthStr;
 
@@ -159,7 +159,8 @@ fn split_source(src: &str) -> Source {
                 Some((k, r)) => (k, format!(";{r} {rest}")),
                 None => (k, rest.to_string()),
             };
-            keyword = k.to_string();
+            // `gitGraph:` and `gitGraph LR:` are valid mermaid.
+            keyword = k.strip_suffix(':').unwrap_or(k).to_string();
             header = rest.trim().to_string();
             continue;
         }
@@ -250,7 +251,7 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
                 ),
             }
         }
-        "pie" => render_pie(&legacy(), theme, &margin_str, chart_width),
+        "pie" => render_pie(&legacy(), theme, chart_width, margin),
         "gantt" => {
             let (title, rows) =
                 gantt::render(src.title.clone(), &src.body, width.saturating_sub(4));
@@ -280,7 +281,7 @@ fn unsupported(src: &Source, theme: &Theme, width: usize, margin: usize) -> Vec<
         text::truncate(&src.keyword, 24)
     };
     let title = format!("mermaid: {kind} (not rendered)");
-    let mut rows: Vec<Vec<(String, Class)>> = Vec::new();
+    let mut rows: Vec<Row> = Vec::new();
     let header = format!("{} {}", src.keyword, src.header);
     for line in std::iter::once(header.trim_end()).chain(src.body.iter().map(|l| l.trim_end())) {
         // Hard-wrap, keeping indentation (this is code, not prose).
@@ -374,6 +375,21 @@ fn parse_graph(src: &Source) -> Option<(Graph, String)> {
     Some((g, src.title.clone().unwrap_or_else(|| kind.to_string())))
 }
 
+/// The colour of data series `i`: the six heading colours, which every
+/// built-in theme keeps distinct (and which map to six different colours in
+/// a 16-colour terminal), repeating after [`canvas::SERIES`].
+fn series_color(theme: &Theme, i: u8) -> &String {
+    let c = &theme.colors;
+    match i % canvas::SERIES {
+        0 => &c.heading1,
+        1 => &c.heading2,
+        2 => &c.heading3,
+        3 => &c.heading4,
+        4 => &c.heading5,
+        _ => &c.heading6,
+    }
+}
+
 /// Colour and attributes for a canvas cell class.
 fn class_style(theme: &Theme, class: Class) -> SpanStyle {
     let c = &theme.colors;
@@ -386,6 +402,8 @@ fn class_style(theme: &Theme, class: Class) -> SpanStyle {
         Class::Title => (&c.heading2, true, false),
         Class::Plain => (&c.code_fg, false, false),
         Class::Alert => (&c.admonition_warning, true, false),
+        Class::Series(i) => (series_color(theme, i), false, false),
+        Class::SeriesLabel(i) => (series_color(theme, i), true, false),
     };
     SpanStyle {
         fg: Some(fg.clone()),
@@ -455,36 +473,35 @@ fn edge_list(
     margin: usize,
 ) -> Vec<StyledLine> {
     let inner = width.saturating_sub(4).max(8);
-    let mut out: Vec<Vec<(String, Class)>> = Vec::new();
+    let mut out: Vec<Row> = Vec::new();
     let one_line = |s: &str| s.replace('\n', " ");
-    let push_wrapped =
-        |out: &mut Vec<Vec<(String, Class)>>, indent: usize, parts: Vec<(String, Class)>| {
-            // Wrap the concatenated text, keeping the first part's class for
-            // the arrow and the last for the target.
-            let full: String = parts.iter().map(|(t, _)| t.as_str()).collect();
-            let lines = text::wrap(&full, inner.saturating_sub(indent).max(4));
-            for (i, l) in lines.into_iter().enumerate() {
-                let pad = " ".repeat(if i == 0 { indent } else { indent + 2 });
-                let class = if i == 0 {
-                    parts[0].1
-                } else {
-                    parts[parts.len() - 1].1
-                };
-                if i == 0 && parts.len() > 1 {
-                    // Re-split the first line at the arrow boundary when it is intact.
-                    let head = &parts[0].0;
-                    if let Some(rest) = l.strip_prefix(head.as_str()) {
-                        out.push(vec![
-                            (pad, Class::Frame),
-                            (head.clone(), parts[0].1),
-                            (rest.to_string(), parts[1].1),
-                        ]);
-                        continue;
-                    }
+    let push_wrapped = |out: &mut Vec<Row>, indent: usize, parts: Vec<(String, Class)>| {
+        // Wrap the concatenated text, keeping the first part's class for
+        // the arrow and the last for the target.
+        let full: String = parts.iter().map(|(t, _)| t.as_str()).collect();
+        let lines = text::wrap(&full, inner.saturating_sub(indent).max(4));
+        for (i, l) in lines.into_iter().enumerate() {
+            let pad = " ".repeat(if i == 0 { indent } else { indent + 2 });
+            let class = if i == 0 {
+                parts[0].1
+            } else {
+                parts[parts.len() - 1].1
+            };
+            if i == 0 && parts.len() > 1 {
+                // Re-split the first line at the arrow boundary when it is intact.
+                let head = &parts[0].0;
+                if let Some(rest) = l.strip_prefix(head.as_str()) {
+                    out.push(vec![
+                        (pad, Class::Frame),
+                        (head.clone(), parts[0].1),
+                        (rest.to_string(), parts[1].1),
+                    ]);
+                    continue;
                 }
-                out.push(vec![(pad, Class::Frame), (l, class)]);
             }
-        };
+            out.push(vec![(pad, Class::Frame), (l, class)]);
+        }
+    };
     let mut has_edges = vec![false; g.nodes.len()];
     let mut outgoing_of: Vec<Vec<&graph::Edge>> = vec![Vec::new(); g.nodes.len()];
     for e in &g.edges {
@@ -552,7 +569,7 @@ fn edge_list(
 /// [`framed`] with the rows left-aligned (text, not a drawing).
 fn framed_left(
     title: &str,
-    rows: &[Vec<(String, Class)>],
+    rows: &[Row],
     theme: &Theme,
     width: usize,
     margin: usize,
@@ -565,7 +582,7 @@ fn framed_left(
 /// follow the rows inside the frame.
 fn framed(
     title: &str,
-    rows: &[Vec<(String, Class)>],
+    rows: &[Row],
     notes: &[String],
     theme: &Theme,
     width: usize,
@@ -576,7 +593,7 @@ fn framed(
 
 fn framed_impl(
     title: &str,
-    rows: &[Vec<(String, Class)>],
+    rows: &[Row],
     notes: &[String],
     theme: &Theme,
     width: usize,
@@ -585,7 +602,7 @@ fn framed_impl(
 ) -> Vec<StyledLine> {
     let border = &theme.colors.table_border;
     let margin_str = " ".repeat(margin);
-    let row_w = |r: &Vec<(String, Class)>| r.iter().map(|(t, _)| text::width(t)).sum::<usize>();
+    let row_w = |r: &Row| r.iter().map(|(t, _)| text::width(t)).sum::<usize>();
     let content_w = rows.iter().map(row_w).max().unwrap_or(0);
     let note_lines: Vec<String> = notes
         .iter()
@@ -855,20 +872,10 @@ fn wrap_spans(spans: Vec<StyledSpan>, avail: usize, cont: usize) -> Vec<Vec<Styl
     rows
 }
 
-fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<StyledLine> {
-    let mut lines = Vec::new();
-    let border_color = &theme.colors.table_border;
-    let colors = [
-        &theme.colors.heading1,
-        &theme.colors.heading2,
-        &theme.colors.heading3,
-        &theme.colors.heading4,
-        &theme.colors.heading5,
-        &theme.colors.heading6,
-        &theme.colors.admonition_note,
-        &theme.colors.admonition_tip,
-    ];
-
+/// A pie chart, drawn as horizontal bars in the diagram frame: one row per
+/// slice, `label bar percent`, each slice in its own series colour. `width`
+/// is the frame's width.
+fn render_pie(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
     let mut title = "Pie Chart".to_string();
     let mut slices: Vec<(String, f64)> = Vec::new();
 
@@ -888,82 +895,45 @@ fn render_pie(source: &str, theme: &Theme, margin: &str, width: usize) -> Vec<St
     }
 
     let total: f64 = slices.iter().map(|(_, v)| v).sum();
+    let inner = width.saturating_sub(4);
 
-    lines.push(make_header(
-        &title,
-        border_color,
-        &theme.colors.heading2,
-        margin,
-        width,
-    ));
-
-    // Render as horizontal bar chart. The label column is as wide as the
-    // widest label (at least 12), so every bar starts in the same column; a
-    // fixed `{:>12}` let longer labels push their bar right. Labels are cut
-    // only when the chart is too narrow to hold them beside a 10-cell bar.
-    // "│  " + label + " " + bar + " 100.0%"
-    const FIXED: usize = 3 + 1 + 7;
+    // The label column is as wide as the widest label (at least 12), so
+    // every bar starts in the same column. Labels are cut only when the
+    // chart is too narrow to hold them beside a 10-cell bar.
+    // label + " " + bar + " 100.0%"
+    const FIXED: usize = 1 + 7;
     let widest = slices
         .iter()
         .map(|(l, _)| text::width(l))
         .max()
         .unwrap_or(0);
-    let label_w = widest.max(12).min(width.saturating_sub(FIXED + 10)).max(1);
+    let label_w = widest.max(12).min(inner.saturating_sub(FIXED + 10)).max(1);
     // 30 cells at the usual 56-column chart width; less when narrower.
-    let max_bar = 30usize
-        .min(width.saturating_sub(FIXED + label_w + 1))
-        .max(1);
-    for (i, (label, value)) in slices.iter().enumerate() {
-        let pct = if total > 0.0 {
-            value / total * 100.0
-        } else {
-            0.0
-        };
-        let bar_len = ((pct / 100.0) * max_bar as f64) as usize;
-        let color = colors[i % colors.len()];
-
-        let mut line = StyledLine::new();
-        push_margin(&mut line, margin);
-        line.push(StyledSpan {
-            text: "│  ".to_string(),
-            style: SpanStyle {
-                fg: Some(border_color.to_string()),
-                ..Default::default()
-            },
-        });
-        line.push(StyledSpan {
-            text: {
-                let label = text::truncate(label, label_w);
-                let pad = label_w.saturating_sub(text::width(&label));
-                format!("{}{label} ", " ".repeat(pad))
-            },
-            style: SpanStyle {
-                fg: Some(color.clone()),
-                bold: true,
-                ..Default::default()
-            },
-        });
-        line.push(StyledSpan {
-            text: "█".repeat(bar_len),
-            style: SpanStyle {
-                fg: Some(color.clone()),
-                ..Default::default()
-            },
-        });
-        line.push(StyledSpan {
-            text: format!(" {:.1}%", pct),
-            style: SpanStyle {
-                fg: Some(color.clone()),
-                ..Default::default()
-            },
-        });
-        lines.push(line);
-    }
-
-    lines.push(make_footer(border_color, margin, width));
-    lines.push(StyledLine::empty());
-
-    lines
+    let max_bar = 30usize.min(inner.saturating_sub(FIXED + label_w)).max(1);
+    let rows: Vec<Row> = slices
+        .iter()
+        .enumerate()
+        .map(|(i, (label, value))| {
+            let pct = if total > 0.0 {
+                value / total * 100.0
+            } else {
+                0.0
+            };
+            let bar_len = ((pct / 100.0) * max_bar as f64) as usize;
+            let series = (i % usize::from(canvas::SERIES)) as u8;
+            let label = text::truncate(label, label_w);
+            let pad = label_w.saturating_sub(text::width(&label));
+            vec![
+                (
+                    format!("{}{label} ", " ".repeat(pad)),
+                    Class::SeriesLabel(series),
+                ),
+                ("█".repeat(bar_len), Class::Series(series)),
+                (format!(" {pct:.1}%"), Class::Series(series)),
+            ]
+        })
+        .collect();
+    framed_left(&title, &rows, theme, width, margin)
 }
 
 // --- Helpers ---

@@ -479,10 +479,10 @@ fn sequence_and_pie_wrap_when_narrow_and_keep_their_form_when_not() {
         pie,
         60,
         r"
-╭─ Pets ───────────────────────────────────────────────╮
-│          Dogs ██████████████████████ 75.0%
-│          Cats ███████ 25.0%
-╰──────────────────────────────────────────────────────╯",
+╭─ Pets ────────────────────────────────────╮
+│         Dogs ██████████████████████ 75.0% │
+│         Cats ███████ 25.0%                │
+╰───────────────────────────────────────────╯",
     );
 }
 
@@ -1055,4 +1055,70 @@ fn hostile_flowcharts_return_quickly() {
         "graph TD\nA[[[(((\"\nB --> --> -->\n-->\n|||\nC{{{{ --> D",
         limit,
     );
+}
+
+#[test]
+fn a_pie_chart_has_both_side_borders() {
+    let pie = "pie title Pets\n  \"Dogs\" : 386\n  \"Cats\" : 85\n";
+    for w in [30, 60, 100] {
+        let out = render(pie, w);
+        let rows: Vec<&str> = out.lines().skip(1).take(2).collect();
+        assert_eq!(rows.len(), 2, "{out}");
+        for row in rows {
+            assert!(
+                row.starts_with('│') && row.ends_with('│'),
+                "width {w}: {row:?}"
+            );
+        }
+        let widths: Vec<usize> = out.lines().map(text::width).collect();
+        assert!(widths.iter().all(|&x| x == widths[0]), "width {w}:\n{out}");
+    }
+}
+
+#[test]
+fn pie_slices_take_distinct_colours_until_the_palette_runs_out() {
+    let mut pie = String::from("pie\n");
+    for i in 0..8 {
+        pie.push_str(&format!("  \"s{i}\" : 1\n"));
+    }
+    for name in [
+        "dark",
+        "light",
+        "dracula",
+        "catppuccin",
+        "nord",
+        "gruvbox",
+        "solarized",
+    ] {
+        let theme = crate::theme::resolve_theme(name);
+        let lines = render_mermaid_with(&pie, &theme, 60, 0, false);
+        let bar_colour = |line: &StyledLine| {
+            line.spans
+                .iter()
+                .find(|s| s.text.contains('█'))
+                .and_then(|s| s.style.fg.clone())
+        };
+        let colours: Vec<String> = lines.iter().filter_map(bar_colour).collect();
+        assert_eq!(colours.len(), 8, "{name}");
+        let first: std::collections::HashSet<_> = colours[..6].iter().collect();
+        assert_eq!(first.len(), 6, "{name}: {colours:?}");
+        assert_eq!(colours[6], colours[0], "{name}: the palette wraps after 6");
+    }
+}
+
+#[test]
+fn a_keyword_line_may_end_in_a_colon() {
+    for header in ["gitGraph:", "gitGraph LR:", "gitGraph"] {
+        let src = split_source(&format!("{header}\n  commit\n"));
+        assert_eq!(src.keyword, "gitGraph", "{header}");
+    }
+}
+
+#[test]
+fn keyword_matches_a_whole_word_only() {
+    assert_eq!(text::keyword("title Foo bar", "title"), Some("Foo bar"));
+    assert_eq!(text::keyword("title", "title"), Some(""));
+    assert_eq!(text::keyword("title\tX", "title"), Some("X"));
+    assert_eq!(text::keyword("titled", "title"), None);
+    assert_eq!(text::keyword("subtitle", "title"), None);
 }

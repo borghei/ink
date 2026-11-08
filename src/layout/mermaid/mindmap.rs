@@ -1,9 +1,7 @@
 //! Mindmaps: an indentation tree, drawn with `├─` / `└─` branches.
 
-use super::canvas::Class;
+use super::canvas::{Class, Row};
 use super::text;
-
-type Row = Vec<(String, Class)>;
 
 struct Node {
     label: String,

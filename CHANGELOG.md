@@ -5,6 +5,9 @@
 ### Added
 - **`gg` goes to the top.** Like `Home`, it jumps to the top of the document, as in vim. Thanks to @marcelmanz. (#46)
 
+### Fixed
+- **Pie charts have a right border.** The frame was open on the right, and slices 7 and 8 reused the colours of slices 1 and 4 in most themes. Slices now take the six heading colours in turn, which stay distinct in 16-colour terminals too, and the frame fits the chart.
+
 ## 0.13.0 — 2026-10-23
 
 ### Added
