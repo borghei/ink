@@ -113,7 +113,7 @@ fn parse(body: &[String]) -> Journey {
 fn score_class(value: Option<f64>) -> Class {
     match value {
         Some(v) if v > 3.0 => Class::Good,
-        Some(v) if v == 3.0 => Class::Fair,
+        Some(3.0) => Class::Fair,
         Some(_) => Class::Bad,
         None => Class::Label,
     }
