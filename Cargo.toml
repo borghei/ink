@@ -6,7 +6,7 @@ edition = "2021"
 # ratatui-image). CI's msrv job builds with exactly this toolchain.
 rust-version = "1.90"
 authors = ["Amin Borghei <borghei.mohammadamin@gmail.com>"]
-description = "The most advanced terminal markdown reader"
+description = "A terminal markdown reader that actually looks good: code, tables, images, mermaid diagrams and math, with search, tabs and a pager mode"
 license-file = "LICENSE"
 repository = "https://github.com/borghei/ink"
 keywords = ["markdown", "terminal", "reader", "tui", "cli"]

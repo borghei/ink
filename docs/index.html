@@ -759,9 +759,15 @@
         <p>Mermaid flowcharts, state, class and ER diagrams come out as real boxes and routed arrows, sized to your window. Git graphs get a lane per branch, Gantt charts a time axis, timelines and user journeys a row per event, mindmaps a tree.</p>
         <p>LaTeX turns into Unicode you can read: <code>\sqrt{b^2-4ac}</code> is <code>√(b² - 4ac)</code>. No browser, no plugins, no external tools.</p>
       </div>
-      <div class="term reveal">
-        <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>mermaid flowchart</span></div>
-        <img src="assets/shot-mermaid.png" alt="A mermaid flowchart rendered by ink as boxes connected with arrows" width="1200" height="720" loading="lazy" decoding="async">
+      <div class="shots reveal">
+        <div class="term">
+          <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>mermaid flowchart</span></div>
+          <img src="assets/shot-mermaid.png" alt="A mermaid flowchart rendered by ink as boxes connected with arrows" width="1200" height="720" loading="lazy" decoding="async">
+        </div>
+        <div class="term">
+          <div class="term-bar" aria-hidden="true"><i></i><i></i><i></i><span>git graph and user journey</span></div>
+          <img src="assets/shot-diagrams.png" alt="A mermaid git graph drawn with a lane per branch, and a user journey with each task's score as a coloured bar" width="1200" height="720" loading="lazy" decoding="async">
+        </div>
       </div>
     </div>
   </section>
@@ -859,10 +865,14 @@
         <div class="reveal"><dt>Frontmatter and wikilinks</dt><dd>YAML and TOML hidden or shown as a box. <code>[[page]]</code> links for Obsidian vaults.</dd></div>
         <div class="reveal"><dt>Your keys</dt><dd>Vim-flavored by default, an emacs preset, and per-action overrides with chords.</dd></div>
         <div class="reveal"><dt>Safe by default</dt><dd>Escape sequences are stripped and remote images stay off, so an untrusted file can't phone home.</dd></div>
+        <div class="reveal"><dt>Tables that fit</dt><dd>Short columns, numbers and words stay whole and the long columns wrap. Too wide even so, and each row becomes a list.</dd></div>
+        <div class="reveal"><dt>Runs anywhere</dt><dd>macOS, Linux (glibc or musl, ARM included) and Windows. ASCII mode and 16-color terminals too.</dd></div>
+        <div class="reveal"><dt><code>ink doctor</code></dt><dd>One command reports what your terminal supports for images and color, ready to paste into a bug report.</dd></div>
       </dl>
 
       <ul class="keys" aria-label="Common keys">
         <li><kbd>j</kbd><kbd>k</kbd> scroll</li>
+        <li><kbd>g</kbd><kbd>g</kbd> top</li>
         <li><kbd>Space</kbd> page</li>
         <li><kbd>/</kbd> search</li>
         <li><kbd>t</kbd> contents</li>
