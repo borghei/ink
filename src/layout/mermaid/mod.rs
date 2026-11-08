@@ -183,7 +183,6 @@ fn split_source(src: &str) -> Source {
 /// Diagram types mermaid knows that are not drawn here: shown as source.
 const UNSUPPORTED: &[&str] = &[
     "journey",
-    "gitGraph",
     "timeline",
     "quadrantChart",
     "sankey-beta",

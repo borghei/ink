@@ -49,66 +49,146 @@ enum Event {
 
 #[derive(Debug, Default)]
 struct Graph {
+    title: Option<String>,
     branches: Vec<String>,
     events: Vec<Event>,
 }
 
-/// `key: value` options after a command: `id: "a b" tag: v1 type: HIGHLIGHT`.
-/// A value is quoted (`"…"`) or runs to the next whitespace.
-fn options(rest: &str) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    let mut s = rest.trim_start();
-    while !s.is_empty() {
-        let Some(colon) = s.find(':') else { break };
-        let key = s[..colon].trim().to_ascii_lowercase();
-        let after = s[colon + 1..].trim_start();
-        let (value, next) = match after.strip_prefix('"') {
-            Some(q) => match q.find('"') {
-                Some(end) => (&q[..end], &q[end + 1..]),
-                None => (q, ""),
-            },
-            None => {
-                let end = after.find(char::is_whitespace).unwrap_or(after.len());
-                (&after[..end], &after[end..])
-            }
-        };
-        // A key may only be one word; anything else before the colon is
-        // dropped (`commit junk id: x`).
-        let key = key
-            .rsplit(char::is_whitespace)
-            .next()
-            .unwrap_or("")
-            .to_string();
-        if !key.is_empty() {
-            out.insert(key, value.to_string());
+/// A piece of a command line: a quoted string, a bare word, or `key:`.
+#[derive(Debug, PartialEq)]
+enum Tok {
+    Str(String),
+    Word(String),
+    Key(String),
+}
+
+/// Split the text after a command into tokens. Strings are `"…"` or `'…'`
+/// with `\` escapes, as in mermaid; `key:value` and `key: value` both give
+/// a key and its value.
+fn tokens(rest: &str) -> Vec<Tok> {
+    let mut out = Vec::new();
+    let mut chars = rest.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_whitespace() {
+            chars.next();
+            continue;
         }
-        s = next.trim_start();
+        if c == '"' || c == '\'' {
+            chars.next();
+            let mut s = String::new();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => {
+                        if let Some(esc) = chars.next() {
+                            s.push(esc);
+                        }
+                    }
+                    ch if ch == c => break,
+                    ch => s.push(ch),
+                }
+            }
+            out.push(Tok::Str(s));
+            continue;
+        }
+        let mut word = String::new();
+        while let Some(&ch) = chars.peek() {
+            if ch.is_whitespace() || ch == '"' || ch == '\'' {
+                break;
+            }
+            word.push(ch);
+            chars.next();
+            if ch == ':' {
+                break;
+            }
+        }
+        match word.strip_suffix(':') {
+            Some(key) if !key.is_empty() => out.push(Tok::Key(key.to_ascii_lowercase())),
+            _ => out.push(Tok::Word(word)),
+        }
     }
     out
 }
 
-fn kind_of(opts: &HashMap<String, String>) -> Kind {
-    match opts.get("type").map(|t| t.to_ascii_uppercase()) {
-        Some(t) if t == "HIGHLIGHT" => Kind::Highlight,
-        Some(t) if t == "REVERSE" => Kind::Reverse,
+/// The options of a command: each `key: value`, every `tag:` kept in order.
+/// A leading string with no key is the commit message (`commit "fix"`).
+#[derive(Debug, Default)]
+struct Options {
+    msg: Option<String>,
+    id: Option<String>,
+    tags: Vec<String>,
+    kind: Option<String>,
+    /// The first bare word or string: a branch name.
+    name: Option<String>,
+}
+
+fn options(toks: &[Tok]) -> Options {
+    let mut o = Options::default();
+    let mut i = 0;
+    while i < toks.len() {
+        match &toks[i] {
+            Tok::Key(k) => {
+                let value = match toks.get(i + 1) {
+                    Some(Tok::Str(v) | Tok::Word(v)) => {
+                        i += 1;
+                        v.clone()
+                    }
+                    _ => String::new(),
+                };
+                match k.as_str() {
+                    "msg" => o.msg = Some(value),
+                    "id" => o.id = Some(value),
+                    "tag" => o.tags.push(value),
+                    "type" => o.kind = Some(value),
+                    _ => {}
+                }
+            }
+            Tok::Str(v) | Tok::Word(v) => {
+                if o.name.is_none() {
+                    o.name = Some(v.clone());
+                }
+                if o.msg.is_none() && matches!(toks[i], Tok::Str(_)) {
+                    o.msg = Some(v.clone());
+                }
+            }
+        }
+        i += 1;
+    }
+    o
+}
+
+fn kind_of(o: &Options) -> Kind {
+    match o.kind.as_deref().map(str::to_ascii_uppercase).as_deref() {
+        Some("HIGHLIGHT") => Kind::Highlight,
+        Some("REVERSE") => Kind::Reverse,
         _ => Kind::Normal,
     }
 }
 
-fn tag_of(opts: &HashMap<String, String>) -> Option<String> {
-    opts.get("tag")
+fn tag_of(o: &Options) -> Option<String> {
+    let tags: Vec<String> = o
+        .tags
+        .iter()
         .map(|t| text::decode_label(t))
         .filter(|t| !t.is_empty())
+        .collect();
+    (!tags.is_empty()).then(|| tags.join(", "))
 }
 
-/// A branch name as written: bare or quoted.
-fn name_of(rest: &str) -> String {
-    let rest = rest.trim();
-    let name = match rest.strip_prefix('"') {
-        Some(q) => q.split('"').next().unwrap_or(""),
-        None => rest.split_whitespace().next().unwrap_or(""),
-    };
-    text::decode_label(name)
+/// `line` without a `%%` comment, ignoring `%%` inside a quoted string.
+fn strip_comment(line: &str) -> &str {
+    let mut quote = None;
+    let mut prev = '\0';
+    for (i, c) in line.char_indices() {
+        match quote {
+            Some(q) if c == q && prev != '\\' => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == '%' && line[i..].starts_with("%%") => return line[..i].trim(),
+            None => {}
+        }
+        prev = c;
+    }
+    line.trim()
 }
 
 /// The command word of a line and the rest, the word lower-cased.
@@ -117,29 +197,83 @@ fn command(line: &str) -> (String, &str) {
     (line[..end].to_ascii_lowercase(), &line[end..])
 }
 
+/// The default name of the main branch. Mermaid takes another from the
+/// `mainBranchName` setting, which is not passed down here; instead, when
+/// the source never mentions `main`, the first `checkout` or `merge` of a
+/// branch it never creates names it.
+const MAIN: &str = "main";
+
 /// Parse a gitGraph body. Unknown branches in `checkout` and `merge`, a
 /// second `branch` of an existing name and a branch merged into itself are
 /// mistakes mermaid rejects; here they are skipped.
 fn parse(body: &[String]) -> Graph {
     let mut g = Graph {
-        branches: vec!["main".to_string()],
+        title: None,
+        branches: vec![MAIN.to_string()],
         events: Vec::new(),
     };
+    let mut index: HashMap<String, usize> = HashMap::from([(MAIN.to_string(), 0)]);
+    // Every branch the source creates, so a checkout of any other name can
+    // only mean the main branch under the name its settings gave it.
+    let created: std::collections::HashSet<String> = body
+        .iter()
+        .filter_map(|raw| {
+            let (cmd, rest) = command(strip_comment(raw.trim()));
+            (cmd == "branch")
+                .then(|| options(&tokens(rest)).name)
+                .flatten()
+                .map(|n| text::decode_label(&n))
+        })
+        .collect();
+    // A source that names `main` itself uses the default name; only one
+    // that never does can have renamed it.
+    let mentions_main = body.iter().any(|raw| {
+        let (cmd, rest) = command(strip_comment(raw.trim()));
+        matches!(cmd.as_str(), "checkout" | "switch" | "merge")
+            && options(&tokens(rest)).name.as_deref() == Some(MAIN)
+    });
+    let mut main_renamed = mentions_main;
     let mut current = 0;
-    let index = |g: &Graph, name: &str| g.branches.iter().position(|b| b == name);
+    let mut in_description = false;
     for raw in body {
-        let line = raw.trim();
-        let line = line.find("%%").map_or(line, |i| &line[..i]).trim();
+        let line = strip_comment(raw.trim());
+        if in_description {
+            in_description = !line.contains('}');
+            continue;
+        }
         if line.is_empty() {
             continue;
         }
         let (cmd, rest) = command(line);
+        let o = options(&tokens(rest));
+        let mut lookup = |g: &mut Graph, name: &str| -> Option<usize> {
+            if let Some(&b) = index.get(name) {
+                return Some(b);
+            }
+            if !main_renamed && !created.contains(name) && !name.is_empty() {
+                main_renamed = true;
+                index.remove(&g.branches[0]);
+                g.branches[0] = name.to_string();
+                index.insert(name.to_string(), 0);
+                return Some(0);
+            }
+            None
+        };
         match cmd.as_str() {
+            "title" => {
+                let t = text::decode_label(rest);
+                if !t.is_empty() {
+                    g.title = Some(t);
+                }
+            }
+            "acctitle:" | "accdescr:" | "acctitle" | "accdescr" => {
+                in_description = line.contains('{') && !line.contains('}');
+            }
             "commit" => {
-                let o = options(rest);
                 let label = o
-                    .get("msg")
-                    .or_else(|| o.get("id"))
+                    .msg
+                    .as_ref()
+                    .or(o.id.as_ref())
                     .map(|l| text::decode_label(l))
                     .unwrap_or_default();
                 g.events.push(Event::Commit {
@@ -150,12 +284,17 @@ fn parse(body: &[String]) -> Graph {
                 });
             }
             "branch" => {
-                let name = name_of(rest);
-                if name.is_empty() || index(&g, &name).is_some() {
+                let name = o
+                    .name
+                    .as_deref()
+                    .map(text::decode_label)
+                    .unwrap_or_default();
+                if name.is_empty() || index.contains_key(&name) {
                     continue;
                 }
-                g.branches.push(name);
+                g.branches.push(name.clone());
                 let branch = g.branches.len() - 1;
+                index.insert(name, branch);
                 g.events.push(Event::Fork {
                     branch,
                     from: current,
@@ -163,26 +302,27 @@ fn parse(body: &[String]) -> Graph {
                 current = branch;
             }
             "checkout" | "switch" => {
-                if let Some(b) = index(&g, &name_of(rest)) {
+                let name = o
+                    .name
+                    .as_deref()
+                    .map(text::decode_label)
+                    .unwrap_or_default();
+                if let Some(b) = lookup(&mut g, &name) {
                     current = b;
                 }
             }
             "merge" => {
-                let Some(from) = index(&g, &name_of(rest)) else {
+                let name = o
+                    .name
+                    .as_deref()
+                    .map(text::decode_label)
+                    .unwrap_or_default();
+                let Some(from) = lookup(&mut g, &name) else {
                     continue;
                 };
                 if from == current {
                     continue;
                 }
-                // The options follow the branch name.
-                let after_name = rest.trim_start();
-                let after_name = match after_name.strip_prefix('"') {
-                    Some(q) => q.split_once('"').map_or("", |(_, r)| r),
-                    None => after_name
-                        .split_once(char::is_whitespace)
-                        .map_or("", |(_, r)| r),
-                };
-                let o = options(after_name);
                 g.events.push(Event::Merge {
                     from,
                     into: current,
@@ -191,11 +331,7 @@ fn parse(body: &[String]) -> Graph {
                 });
             }
             "cherry-pick" => {
-                let o = options(rest);
-                let id = o
-                    .get("id")
-                    .map(|i| text::decode_label(i))
-                    .unwrap_or_default();
+                let id = o.id.as_deref().map(text::decode_label).unwrap_or_default();
                 g.events.push(Event::Commit {
                     branch: current,
                     label: format!("cherry-pick {id}").trim_end().to_string(),
@@ -238,22 +374,32 @@ fn lanes(g: &Graph) -> Vec<Option<(usize, usize, usize)>> {
     if first[0].is_some() {
         first[0] = Some(0);
     }
-    // Lanes in order of first appearance; `busy[l]` is the last row lane
-    // `l` is held to.
+    // Branches in order of first appearance. `held` has each taken lane
+    // with the last row it is held to, soonest first; `free` the lanes
+    // released by then, lowest first.
+    use std::cmp::Reverse;
+    use std::collections::BinaryHeap;
     let mut order: Vec<usize> = (0..n).filter(|&b| first[b].is_some()).collect();
     order.sort_by_key(|&b| (first[b], b));
-    let mut busy: Vec<usize> = Vec::new();
+    let mut held: BinaryHeap<Reverse<(usize, usize)>> = BinaryHeap::new();
+    let mut free: BinaryHeap<Reverse<usize>> = BinaryHeap::new();
+    let mut lanes_used = 0;
     let mut out = vec![None; n];
     for b in order {
         let start = first[b].unwrap_or(0);
-        let lane = match busy.iter().position(|&end| end < start) {
-            Some(l) => l,
+        while held.peek().is_some_and(|Reverse((end, _))| *end < start) {
+            if let Some(Reverse((_, lane))) = held.pop() {
+                free.push(Reverse(lane));
+            }
+        }
+        let lane = match free.pop() {
+            Some(Reverse(l)) => l,
             None => {
-                busy.push(0);
-                busy.len() - 1
+                lanes_used += 1;
+                lanes_used - 1
             }
         };
-        busy[lane] = last[b];
+        held.push(Reverse((last[b], lane)));
         out[b] = Some((lane, start, last[b]));
     }
     out
@@ -266,12 +412,49 @@ const LANE: usize = 2;
 /// listed instead.
 const MIN_LABEL: usize = 10;
 
-fn lane_class(lane: usize) -> Class {
-    Class::Series((lane % usize::from(SERIES)) as u8)
+/// A branch's colour, by branch rather than lane, so a branch that reuses a
+/// lane doesn't look like the one before it.
+fn branch_class(branch: usize) -> Class {
+    Class::Series((branch % usize::from(SERIES)) as u8)
 }
 
-fn label_class(lane: usize) -> Class {
-    Class::SeriesLabel((lane % usize::from(SERIES)) as u8)
+fn label_class(branch: usize) -> Class {
+    Class::SeriesLabel((branch % usize::from(SERIES)) as u8)
+}
+
+/// The most cells the lane drawing may take before the graph is listed.
+const MAX_CELLS: usize = 2_000_000;
+
+/// The end of `s` in at most `max` columns, with `…` in front when cut:
+/// `…ature/login`. Branch names differ at the end more often than the start.
+fn truncate_start(s: &str, max: usize) -> String {
+    if text::width(s) <= max {
+        return s.to_string();
+    }
+    if max == 0 {
+        return String::new();
+    }
+    use unicode_segmentation::UnicodeSegmentation;
+    let mut tail: Vec<&str> = Vec::new();
+    let mut w = 1;
+    for g in s.graphemes(true).rev() {
+        let gw = text::width(g);
+        if w + gw > max {
+            break;
+        }
+        w += gw;
+        tail.push(g);
+    }
+    tail.reverse();
+    format!("…{}", tail.concat())
+}
+
+fn dot(kind: Kind) -> &'static str {
+    match kind {
+        Kind::Normal => "●",
+        Kind::Highlight => "◆",
+        Kind::Reverse => "○",
+    }
 }
 
 fn with_tag(label: &str, tag: &Option<String>) -> String {
@@ -286,7 +469,11 @@ fn with_tag(label: &str, tag: &Option<String>) -> String {
 /// title.
 pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, Vec<Row>) {
     let g = parse(body);
-    let title = title.unwrap_or_else(|| "git graph".to_string());
+    let title = g
+        .title
+        .clone()
+        .or(title)
+        .unwrap_or_else(|| "git graph".to_string());
     if g.events.is_empty() {
         return (
             title,
@@ -302,23 +489,26 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
         .max()
         .unwrap_or(1);
     let lanes_w = (width - 1) * LANE + 1;
-    if lanes_w + 1 + MIN_LABEL > inner {
+    let rows = g.events.len();
+    if lanes_w + 1 + MIN_LABEL > inner || rows.saturating_mul(lanes_w) > MAX_CELLS {
         return (title, listed(&g, inner));
     }
 
-    let rows = g.events.len();
-    let mut cv = Canvas::new(rows, inner);
+    // The canvas holds only the lanes; labels are added after it.
+    let mut cv = Canvas::new(rows, lanes_w);
     let col = |b: usize| lanes[b].map_or(0, |(l, _, _)| l * LANE);
     // Each branch's lane, top to bottom.
-    for &(l, start, end) in lanes.iter().flatten() {
-        cv.line(
-            start,
-            l * LANE,
-            end,
-            l * LANE,
-            LineStyle::Solid,
-            lane_class(l),
-        );
+    for (b, lane) in lanes.iter().enumerate() {
+        if let Some((l, start, end)) = *lane {
+            cv.line(
+                start,
+                l * LANE,
+                end,
+                l * LANE,
+                LineStyle::Solid,
+                branch_class(b),
+            );
+        }
     }
     // Each row's label starts just after the rightmost lane open on that
     // row, as `git log --graph` does, not after the widest row's lanes.
@@ -329,8 +519,8 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
         }
     }
     let mut main_named = false;
+    let mut labels: Vec<(String, Class)> = Vec::with_capacity(rows);
     for (r, ev) in g.events.iter().enumerate() {
-        let label_at = open[r] + 1;
         let (label, class) = match ev {
             Event::Commit {
                 branch,
@@ -338,13 +528,7 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
                 tag,
                 kind,
             } => {
-                let l = lanes[*branch].map_or(0, |(l, _, _)| l);
-                let dot = match kind {
-                    Kind::Normal => "●",
-                    Kind::Highlight => "◆",
-                    Kind::Reverse => "○",
-                };
-                cv.glyph(r, col(*branch), dot, lane_class(l));
+                cv.glyph(r, col(*branch), dot(*kind), branch_class(*branch));
                 // The main branch has no fork row to carry its name, so its
                 // first commit carries it, before any label of its own.
                 let mut text = with_tag(label, tag);
@@ -357,21 +541,20 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
                     } else {
                         format!("{name} · {text}")
                     };
-                    class = label_class(l);
+                    class = label_class(0);
                 }
                 (text, class)
             }
             Event::Fork { branch, from } => {
-                let l = lanes[*branch].map_or(0, |(l, _, _)| l);
                 cv.line(
                     r,
                     col(*from),
                     r,
                     col(*branch),
                     LineStyle::Solid,
-                    lane_class(l),
+                    branch_class(*branch),
                 );
-                (g.branches[*branch].clone(), label_class(l))
+                (g.branches[*branch].clone(), label_class(*branch))
             }
             Event::Merge {
                 from,
@@ -379,60 +562,66 @@ pub fn render(title: Option<String>, body: &[String], inner: usize) -> (String, 
                 tag,
                 kind,
             } => {
-                let l = lanes[*into].map_or(0, |(l, _, _)| l);
-                let lf = lanes[*from].map_or(0, |(l, _, _)| l);
                 cv.line(
                     r,
                     col(*into),
                     r,
                     col(*from),
                     LineStyle::Solid,
-                    lane_class(lf),
+                    branch_class(*from),
                 );
-                let dot = if *kind == Kind::Highlight {
-                    "◆"
-                } else {
-                    "●"
-                };
-                cv.glyph(r, col(*into), dot, lane_class(l));
+                cv.glyph(r, col(*into), dot(*kind), branch_class(*into));
                 (
                     with_tag(&format!("merge {}", g.branches[*from]), tag),
                     Class::Plain,
                 )
             }
         };
-        if !label.is_empty() {
-            let one_line = label.replace('\n', " ");
-            cv.text(
-                r,
-                label_at,
-                &text::truncate(&one_line, inner.saturating_sub(label_at)),
-                inner,
-                class,
-            );
-        }
+        labels.push((label, class));
     }
     let rows = cv
         .render()
         .into_iter()
-        .map(|mut r| {
-            // Drop the blank tail the canvas keeps so rows aren't padded
-            // out to the full width.
-            while r.last().is_some_and(|(t, _)| t.trim().is_empty()) {
-                r.pop();
+        .zip(labels)
+        .zip(&open)
+        .map(|((mut r, (label, class)), &open)| {
+            // Keep the lanes open on this row, then the label after them.
+            let mut kept = Vec::new();
+            let mut w = 0;
+            for (t, c) in r.drain(..) {
+                if w >= open {
+                    break;
+                }
+                let take: String = {
+                    use unicode_segmentation::UnicodeSegmentation;
+                    let mut out = String::new();
+                    for g in t.graphemes(true) {
+                        if w + text::width(g) > open {
+                            break;
+                        }
+                        w += text::width(g);
+                        out.push_str(g);
+                    }
+                    out
+                };
+                kept.push((take, c));
             }
-            if let Some((t, _)) = r.last_mut() {
-                let trimmed = t.trim_end().len();
-                t.truncate(trimmed);
+            if !label.is_empty() {
+                let room = inner.saturating_sub(open + 1);
+                let one_line = label.replace('\n', " ");
+                kept.push((format!(" {}", text::truncate(&one_line, room)), class));
             }
-            r
+            while kept.last().is_some_and(|(t, _)| t.trim().is_empty()) {
+                kept.pop();
+            }
+            kept
         })
         .collect();
     (title, rows)
 }
 
 /// The graph as a list, one event per line, for when the lanes don't fit:
-/// `develop  add parser`, `main  merge develop`.
+/// `develop  from main`, `develop  add parser`, `main  merge develop`.
 fn listed(g: &Graph, inner: usize) -> Vec<Row> {
     let name_w = g
         .branches
@@ -450,7 +639,9 @@ fn listed(g: &Graph, inner: usize) -> Vec<Row> {
                 let label = if label.is_empty() { "commit" } else { label };
                 (*branch, with_tag(label, tag))
             }
-            Event::Fork { branch, from } => (*from, format!("branch {}", g.branches[*branch])),
+            // Under the new branch's own name, so a long name sits in the
+            // name column (its end kept) rather than wrapping in the text.
+            Event::Fork { branch, from } => (*branch, format!("from {}", g.branches[*from])),
             Event::Merge {
                 from, into, tag, ..
             } => (
@@ -458,7 +649,7 @@ fn listed(g: &Graph, inner: usize) -> Vec<Row> {
                 with_tag(&format!("merge {}", g.branches[*from]), tag),
             ),
         };
-        let name = text::truncate(&g.branches[branch], name_w);
+        let name = truncate_start(&g.branches[branch], name_w);
         let pad = name_w.saturating_sub(text::width(&name));
         let room = inner.saturating_sub(name_w + 2).max(1);
         for (k, l) in text::wrap(&what.replace('\n', " "), room)
@@ -501,11 +692,111 @@ mod tests {
 
     #[test]
     fn options_take_quoted_and_bare_values() {
-        let o = options(r#" id: "a b" tag:v1 type: HIGHLIGHT msg: "fix: the bug""#);
-        assert_eq!(o["id"], "a b");
-        assert_eq!(o["tag"], "v1");
-        assert_eq!(o["type"], "HIGHLIGHT");
-        assert_eq!(o["msg"], "fix: the bug");
+        let o = options(&tokens(
+            r#" id: "a b" tag:v1 type: HIGHLIGHT msg: "fix: the bug" tag: 'two words'"#,
+        ));
+        assert_eq!(o.id.as_deref(), Some("a b"));
+        assert_eq!(o.tags, ["v1", "two words"]);
+        assert_eq!(o.kind.as_deref(), Some("HIGHLIGHT"));
+        assert_eq!(o.msg.as_deref(), Some("fix: the bug"));
+    }
+
+    #[test]
+    fn strings_take_either_quote_and_backslash_escapes() {
+        assert_eq!(
+            tokens(r#" "say \"hi\" now" 'it\'s' bare"#),
+            [
+                Tok::Str("say \"hi\" now".into()),
+                Tok::Str("it's".into()),
+                Tok::Word("bare".into())
+            ]
+        );
+        let o = options(&tokens(r#" "bare message""#));
+        assert_eq!(o.msg.as_deref(), Some("bare message"));
+    }
+
+    #[test]
+    fn a_comment_marker_inside_a_string_is_text() {
+        assert_eq!(
+            strip_comment(r#"commit msg: "50%% done" %% note"#),
+            r#"commit msg: "50%% done""#
+        );
+        assert_eq!(strip_comment("commit %% note"), "commit");
+    }
+
+    #[test]
+    fn quoted_names_tags_and_a_body_title() {
+        let src = "title Real title\ncommit id: 'single quoted' tag: 'v 1' tag: \"b\"\nbranch 'feat x'\ncommit\ncheckout main\nmerge 'feat x'\n";
+        let (title, rows) = render(None, &lines(src), 40);
+        assert_eq!(title, "Real title");
+        let out = plain(&rows);
+        assert!(out.starts_with("● main · single quoted [v 1, b]"), "{out}");
+        assert!(out.contains("feat x"), "{out}");
+        assert!(out.ends_with("merge feat x"), "{out}");
+    }
+
+    #[test]
+    fn a_main_branch_with_another_name_is_found_by_its_checkout() {
+        let src = "commit id: \"one\"\nbranch dev\ncommit id: \"two\"\ncheckout trunk\ncommit id: \"three\"\nmerge dev\n";
+        let (_, rows) = render(None, &lines(src), 40);
+        assert_eq!(
+            plain(&rows),
+            "● trunk · one
+├─┐ dev
+│ ● two
+● │ three
+●─┘ merge dev"
+        );
+    }
+
+    #[test]
+    fn a_reused_lane_keeps_the_colour_of_its_own_branch() {
+        // Main ends at the first fork, and b takes main's lane.
+        let src = "commit\nbranch a\ncommit\nbranch b\ncommit\ncheckout a\ncommit\n";
+        let (_, rows) = render(None, &lines(src), 40);
+        let dot_class = |row: &Row| row.iter().find(|(t, _)| t.contains('●')).map(|(_, c)| *c);
+        let classes: Vec<_> = rows.iter().filter_map(dot_class).collect();
+        assert_eq!(classes[0], branch_class(0));
+        assert!(classes.contains(&branch_class(2)), "{classes:?}");
+    }
+
+    #[test]
+    fn listed_branch_names_keep_their_distinguishing_end() {
+        assert_eq!(truncate_start("feature/login", 8), "…e/login");
+        assert_eq!(truncate_start("short", 8), "short");
+        let mut src = String::from("commit\n");
+        let names = [
+            "feature/login",
+            "feature/signup",
+            "feature/logout",
+            "feature/admin",
+            "feature/users",
+            "feature/billing",
+            "feature/search",
+        ];
+        for name in names {
+            src.push_str(&format!(
+                "checkout main\nbranch {name}\ncommit msg: \"work\"\n"
+            ));
+        }
+        // Merged only at the end, so every branch keeps a lane open.
+        for name in names {
+            src.push_str(&format!("checkout main\nmerge {name}\n"));
+        }
+        let (_, rows) = render(None, &lines(&src), 22);
+        let out = plain(&rows);
+        assert!(out.contains("…/login  from main\n…/login  work"), "{out}");
+        assert!(out.contains("…signup  work"), "{out}");
+    }
+
+    #[test]
+    fn many_commits_stay_small() {
+        let src: String = (0..100_000).map(|_| "commit\n").collect();
+        let (_, rows) = render(None, &lines(&src), 300);
+        assert_eq!(rows.len(), 100_000);
+        assert!(rows
+            .iter()
+            .all(|r| r.iter().map(|(t, _)| text::width(t)).sum::<usize>() <= 300));
     }
 
     #[test]
@@ -587,7 +878,7 @@ mod tests {
         let (_, rows) = render(None, &lines(&src), 24);
         let out = plain(&rows);
         assert!(
-            out.starts_with("main  commit\nmain  branch b0\nb0    commit"),
+            out.starts_with("main  commit\nb0    from main\nb0    commit"),
             "{out}"
         );
         assert!(out.contains("main  merge b7"), "{out}");
@@ -614,10 +905,10 @@ mod tests {
     #[test]
     fn hostile_input_stays_quick() {
         let mut src = String::new();
-        for i in 0..5_000 {
+        for i in 0..40_000 {
             src.push_str(&format!("branch b{i}\ncommit\ncheckout main\ncommit\n"));
         }
-        for i in 0..5_000 {
+        for i in 0..40_000 {
             src.push_str(&format!("merge b{i}\n"));
         }
         let start = std::time::Instant::now();
