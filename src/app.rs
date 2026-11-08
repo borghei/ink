@@ -441,14 +441,34 @@ pub fn run(source: String, args: Args) -> Result<AppExit> {
 /// The modal overlays drawn over the document. At most one takes input at a
 /// time; see [`Reader::input_mode`].
 struct Overlays {
-    theme_picker_open: bool,
+    /// The popup over the document, if any.
+    open: Overlay,
+    /// The theme the picker points at; kept between openings.
     theme_picker_index: usize,
-    help_open: bool,
-    // Active link-hint overlay: labeled links currently on screen.
-    link_hints: Vec<LinkHint>,
-    hint_kind: HintKind,
-    // Active code-block hint overlay.
-    code_hints: Vec<CodeHint>,
+}
+
+/// The popup over the document. Only one is ever open, so this is one value
+/// rather than a flag per popup: whatever reads keys, takes the wheel or
+/// draws on top asks this, and a new popup is one more variant.
+#[derive(Default)]
+enum Overlay {
+    #[default]
+    None,
+    Help,
+    ThemePicker,
+    /// Labeled links on screen, and what a label does: follow or copy.
+    LinkHints {
+        hints: Vec<LinkHint>,
+        kind: HintKind,
+    },
+    /// Labeled code blocks on screen; a label copies that block.
+    CodeHints(Vec<CodeHint>),
+}
+
+impl Overlay {
+    fn is_open(&self) -> bool {
+        !matches!(self, Overlay::None)
+    }
 }
 
 /// Text selection, from visual mode or the mouse.
@@ -575,12 +595,8 @@ impl<'g> Reader<'g> {
             search: SearchState::new(),
             nav: NavHistory::default(),
             overlays: Overlays {
-                theme_picker_open: false,
+                open: Overlay::None,
                 theme_picker_index,
-                help_open: false,
-                link_hints: Vec::new(),
-                hint_kind: HintKind::Open,
-                code_hints: Vec::new(),
             },
             selection: SelectionState {
                 sel: None,
@@ -603,23 +619,21 @@ impl<'g> Reader<'g> {
     /// How the next key is read: by the open overlay, visual mode, the
     /// focused sidebar, slides, or ordinary reading.
     fn input_mode(&self) -> input::InputMode {
-        let overlays = &self.overlays;
+        let open = &self.overlays.open;
+        let modal_popup = matches!(open, Overlay::Help | Overlay::ThemePicker);
         if self.search.active {
             input::InputMode::Search
-        } else if !overlays.link_hints.is_empty() || !overlays.code_hints.is_empty() {
+        } else if matches!(open, Overlay::LinkHints { .. } | Overlay::CodeHints(_)) {
             input::InputMode::LinkHint
         } else if self.selection.visual_mode {
             input::InputMode::Visual
-        } else if self.tabs[self.active_tab].toc.nav.focused
-            && !overlays.help_open
-            && !overlays.theme_picker_open
-        {
+        } else if self.tabs[self.active_tab].toc.nav.focused && !modal_popup {
             if self.tabs[self.active_tab].toc.nav.filter.is_some() {
                 input::InputMode::TocFilter
             } else {
                 input::InputMode::Toc
             }
-        } else if self.args.slides && !overlays.theme_picker_open && !overlays.help_open {
+        } else if self.args.slides && !modal_popup {
             input::InputMode::Slides
         } else {
             input::InputMode::Normal
@@ -638,12 +652,12 @@ impl<'g> Reader<'g> {
         self.dirty = true;
 
         // The wheel scrolls what is under the pointer: the sidebar, or
-        // (as an ordinary scroll) the document.
+        // (as an ordinary scroll) the document. With a popup open it goes to
+        // the popup as a scroll, never to the sidebar underneath.
         let action = match action {
             Action::WheelUp(col, row) | Action::WheelDown(col, row)
                 if self.toc_rect.contains(Position::new(col, row))
-                    && !self.overlays.help_open
-                    && !self.overlays.theme_picker_open =>
+                    && !self.overlays.open.is_open() =>
             {
                 let delta = if matches!(action, Action::WheelUp(..)) {
                     -3
@@ -669,30 +683,31 @@ impl<'g> Reader<'g> {
             self.resize_pending = Some(Instant::now());
         }
 
-        // Help overlay is modal: any key closes it.
-        if self.overlays.help_open {
-            if action != Action::None {
-                self.overlays.help_open = false;
+        // An open popup is modal: it takes the action, whatever it is.
+        match self.overlays.open {
+            Overlay::None => {}
+            // Any key closes help.
+            Overlay::Help => {
+                if action != Action::None {
+                    self.overlays.open = Overlay::None;
+                }
+                return Ok(None);
             }
-            return Ok(None);
-        }
-
-        // Code-block hint overlay is modal: a label copies that block.
-        if !self.overlays.code_hints.is_empty() {
-            self.pick_code_hint(action);
-            return Ok(None);
-        }
-
-        // Link-hint overlay is modal: a label opens (or copies) that link,
-        // Y switches between the two, Esc cancels.
-        if !self.overlays.link_hints.is_empty() {
-            self.pick_link_hint(action, terminal);
-            return Ok(None);
-        }
-        // Theme picker mode
-        if self.overlays.theme_picker_open {
-            self.theme_picker_action(action, terminal, view)?;
-            return Ok(None);
+            // A label copies that block.
+            Overlay::CodeHints(_) => {
+                self.pick_code_hint(action);
+                return Ok(None);
+            }
+            // A label opens (or copies) that link, Y switches between the
+            // two, Esc cancels.
+            Overlay::LinkHints { .. } => {
+                self.pick_link_hint(action, terminal);
+                return Ok(None);
+            }
+            Overlay::ThemePicker => {
+                self.theme_picker_action(action, terminal, view)?;
+                return Ok(None);
+            }
         }
 
         // Visual mode is modal: motions move the cursor end of the
@@ -738,8 +753,11 @@ impl<'g> Reader<'g> {
 
     /// A key in the code-block hint overlay. Any key closes it.
     fn pick_code_hint(&mut self, action: Action) {
+        let Overlay::CodeHints(hints) = std::mem::take(&mut self.overlays.open) else {
+            return;
+        };
         if let Action::LinkHint(c) = action {
-            if let Some(hint) = self.overlays.code_hints.iter().find(|h| h.label == c) {
+            if let Some(hint) = hints.iter().find(|h| h.label == c) {
                 let what = if hint.lang.is_empty() {
                     "code block".to_string()
                 } else {
@@ -751,18 +769,24 @@ impl<'g> Reader<'g> {
                 ));
             }
         }
-        self.overlays.code_hints.clear();
     }
 
     /// A key in the link-hint overlay. Anything but `Y` closes it.
     fn pick_link_hint(&mut self, action: Action, terminal: &mut Tui) {
+        // Taken out, so it is closed unless put back below.
+        let Overlay::LinkHints { hints, kind } = std::mem::take(&mut self.overlays.open) else {
+            return;
+        };
         match action {
             Action::HintCopyToggle => {
-                self.overlays.hint_kind = HintKind::CopyUrl;
+                self.overlays.open = Overlay::LinkHints {
+                    hints,
+                    kind: HintKind::CopyUrl,
+                };
             }
             Action::LinkHint(c) => {
-                if let Some(hint) = self.overlays.link_hints.iter().find(|h| h.label == c) {
-                    match self.overlays.hint_kind {
+                if let Some(hint) = hints.iter().find(|h| h.label == c) {
+                    match kind {
                         HintKind::Open => {
                             if let Some(msg) = open_link(
                                 &hint.url,
@@ -785,9 +809,8 @@ impl<'g> Reader<'g> {
                         }
                     }
                 }
-                self.overlays.link_hints.clear();
             }
-            _ => self.overlays.link_hints.clear(),
+            _ => {}
         }
     }
 
@@ -803,7 +826,7 @@ impl<'g> Reader<'g> {
         match action {
             Action::ExitApp | Action::CloseSearch => {
                 // Closing keeps the previewed theme — persist it.
-                overlays.theme_picker_open = false;
+                overlays.open = Overlay::None;
                 let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
             }
             Action::ScrollDown(_) => {
@@ -840,7 +863,7 @@ impl<'g> Reader<'g> {
             }
             Action::SearchConfirm => {
                 // Confirm theme selection and persist it to config.
-                overlays.theme_picker_open = false;
+                overlays.open = Overlay::None;
                 let _ = crate::config::set_theme(THEME_LIST[overlays.theme_picker_index]);
             }
             _ => {}
@@ -1026,12 +1049,12 @@ impl<'g> Reader<'g> {
 
             // Help overlay
             Action::Help => {
-                self.overlays.help_open = true;
+                self.overlays.open = Overlay::Help;
             }
 
             // Theme picker
             Action::ThemePicker => {
-                self.overlays.theme_picker_open = true;
+                self.overlays.open = Overlay::ThemePicker;
             }
 
             // Link-hint mode: label every link in the viewport.
@@ -1040,7 +1063,15 @@ impl<'g> Reader<'g> {
                 let len = tab.styled_lines.len();
                 let offset = tab.scroll_offset.min(len);
                 let end = (offset + viewport_height as usize).min(len);
-                self.overlays.link_hints = collect_link_hints(&tab.styled_lines[offset..end]);
+                let hints = collect_link_hints(&tab.styled_lines[offset..end]);
+                // Each `f` starts out following links, whatever the last
+                // one switched to with `Y`.
+                if !hints.is_empty() {
+                    self.overlays.open = Overlay::LinkHints {
+                        hints,
+                        kind: HintKind::Open,
+                    };
+                }
             }
 
             // After a confirmed search, n/N cycle matches (less/vim
@@ -1295,7 +1326,7 @@ impl<'g> Reader<'g> {
         let tab = &self.tabs[self.active_tab];
         let top = tab.scroll_offset;
         let bottom = top + viewport_height as usize;
-        self.overlays.code_hints = tab
+        let hints: Vec<CodeHint> = tab
             .code_blocks
             .iter()
             .filter(|b| b.line_index < bottom && b.line_index + b.rows > top)
@@ -1317,8 +1348,10 @@ impl<'g> Reader<'g> {
                 }
             })
             .collect();
-        if self.overlays.code_hints.is_empty() {
+        if hints.is_empty() {
             self.flash = Some(("no code blocks on screen".to_string(), Instant::now()));
+        } else {
+            self.overlays.open = Overlay::CodeHints(hints);
         }
     }
 
@@ -1688,52 +1721,41 @@ impl<'g> Reader<'g> {
         doc_area: Rect,
         t: &theme::Theme,
     ) {
-        // Theme picker overlay
-        if self.overlays.theme_picker_open {
-            render::render_theme_picker(
+        match &self.overlays.open {
+            Overlay::None => {}
+            Overlay::ThemePicker => render::render_theme_picker(
                 frame,
                 main_area,
                 THEME_LIST,
                 self.overlays.theme_picker_index,
                 &self.args.theme,
                 t,
-            );
-        }
-
-        // Link-hint overlay
-        if !self.overlays.link_hints.is_empty() {
-            let hints: Vec<(char, String, String)> = self
-                .overlays
-                .link_hints
-                .iter()
-                .map(|h| (h.label, h.caption.clone(), h.url.clone()))
-                .collect();
-            let dash = crate::glyphs::current().dash;
-            let title = match self.overlays.hint_kind {
-                HintKind::Open => {
-                    format!("Follow link {dash} press a letter, Y to copy instead, Esc to cancel")
-                }
-                HintKind::CopyUrl => {
-                    format!("Copy link URL {dash} press a letter, Esc to cancel")
-                }
-            };
-            render::render_link_hints(frame, main_area, &hints, &title, t);
-        }
-
-        // Code-block hint labels, painted on the blocks themselves.
-        if !self.overlays.code_hints.is_empty() {
-            let labels: Vec<(char, u16, u16)> = self
-                .overlays
-                .code_hints
-                .iter()
-                .map(|h| (h.label, h.row, h.col))
-                .collect();
-            render::render_code_hints(frame, doc_area, &labels, t);
-        }
-
-        // Help overlay
-        if self.overlays.help_open {
-            render::render_help(frame, main_area, t);
+            ),
+            Overlay::LinkHints { hints, kind } => {
+                let hints: Vec<(char, String, String)> = hints
+                    .iter()
+                    .map(|h| (h.label, h.caption.clone(), h.url.clone()))
+                    .collect();
+                let dash = crate::glyphs::current().dash;
+                let title = match kind {
+                    HintKind::Open => {
+                        format!(
+                            "Follow link {dash} press a letter, Y to copy instead, Esc to cancel"
+                        )
+                    }
+                    HintKind::CopyUrl => {
+                        format!("Copy link URL {dash} press a letter, Esc to cancel")
+                    }
+                };
+                render::render_link_hints(frame, main_area, &hints, &title, t);
+            }
+            // Code-block hint labels, painted on the blocks themselves.
+            Overlay::CodeHints(hints) => {
+                let labels: Vec<(char, u16, u16)> =
+                    hints.iter().map(|h| (h.label, h.row, h.col)).collect();
+                render::render_code_hints(frame, doc_area, &labels, t);
+            }
+            Overlay::Help => render::render_help(frame, main_area, t),
         }
     }
 
