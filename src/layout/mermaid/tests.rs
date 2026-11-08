@@ -1122,3 +1122,29 @@ fn keyword_matches_a_whole_word_only() {
     assert_eq!(text::keyword("titled", "title"), None);
     assert_eq!(text::keyword("subtitle", "title"), None);
 }
+
+#[test]
+fn pie_slices_that_are_not_positive_numbers_are_dropped() {
+    let pie = "pie title N\n  \"A\" : 10\n  \"B\" : -5\n  \"C\" : NaN\n  \"D\" : inf\n  \"E\" : 0\n  \"F\" : 10\n";
+    for w in [20, 40, 80] {
+        let out = render(pie, w);
+        assert!(out.contains("50.0%"), "width {w}:\n{out}");
+        for name in ["B", "C", "D", "E"] {
+            assert!(
+                !out.lines().any(|l| l.contains(&format!(" {name} "))),
+                "width {w}:\n{out}"
+            );
+        }
+        for line in out.lines() {
+            assert!(
+                line.ends_with('│') || line.ends_with('╮') || line.ends_with('╯'),
+                "width {w}: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_lone_colon_is_not_taken_for_an_empty_keyword() {
+    assert_eq!(split_source(":\nflowchart TD\n  A-->B\n").keyword, ":");
+}

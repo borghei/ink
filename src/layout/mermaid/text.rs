@@ -5,8 +5,6 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-/// Display width of `s` in terminal columns, summed per grapheme cluster
-/// (the unit the canvas places), so measurement and placement agree.
 /// The rest of `line` after the keyword `k`, trimmed, when `line` is that
 /// keyword alone or followed by whitespace: `keyword("title Foo", "title")`
 /// is `Some("Foo")`, `keyword("titled", "title")` is `None`.
@@ -16,6 +14,8 @@ pub fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
         .map(str::trim)
 }
 
+/// Display width of `s` in terminal columns, summed per grapheme cluster
+/// (the unit the canvas places), so measurement and placement agree.
 pub fn width(s: &str) -> usize {
     s.graphemes(true).map(UnicodeWidthStr::width).sum()
 }

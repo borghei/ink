@@ -160,7 +160,11 @@ fn split_source(src: &str) -> Source {
                 None => (k, rest.to_string()),
             };
             // `gitGraph:` and `gitGraph LR:` are valid mermaid.
-            keyword = k.strip_suffix(':').unwrap_or(k).to_string();
+            keyword = match k.strip_suffix(':') {
+                Some(stripped) if !stripped.is_empty() => stripped,
+                _ => k,
+            }
+            .to_string();
             header = rest.trim().to_string();
             continue;
         }
@@ -887,8 +891,12 @@ fn render_pie(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<S
             let parts: Vec<&str> = l.splitn(2, ':').collect();
             if parts.len() == 2 {
                 let label = parts[0].trim().trim_matches('"').to_string();
+                // Mermaid rejects slices that aren't positive; a zero,
+                // negative, NaN or infinite value would skew every percent.
                 if let Ok(val) = parts[1].trim().parse::<f64>() {
-                    slices.push((label, val));
+                    if val > 0.0 && val.is_finite() {
+                        slices.push((label, val));
+                    }
                 }
             }
         }
@@ -919,7 +927,7 @@ fn render_pie(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<S
             } else {
                 0.0
             };
-            let bar_len = ((pct / 100.0) * max_bar as f64) as usize;
+            let bar_len = (((pct / 100.0) * max_bar as f64) as usize).min(max_bar);
             let series = (i % usize::from(canvas::SERIES)) as u8;
             let label = text::truncate(label, label_w);
             let pad = label_w.saturating_sub(text::width(&label));
