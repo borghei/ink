@@ -12,7 +12,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Bold, italic, strikethrough, inline code
 - Links with OSC 8 hyperlink support (Cmd+Click / Ctrl+Click in supported terminals)
 - Syntax-highlighted code blocks using syntect (supports all major programming languages)
-- Tables with auto-sized columns, word wrapping and column alignment (:--, :-:, --:); links, bold, italic and code inside cells
+- Tables with auto-sized columns, word wrapping and column alignment (:--, :-:, --:); links, bold, italic and code inside cells. A table wider than the window keeps each column's longest word and numbers whole and wraps the long columns; one that still cannot fit is shown as Header/value records
 - Blockquotes with nested support and depth-based coloring
 - Ordered and unordered lists with nesting
 - Task lists with checkbox rendering
@@ -34,7 +34,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 
 ### Mermaid Diagrams
 - Renders mermaid code blocks as text art; flowcharts, state, class and ER diagrams use a layered layout (each node drawn once, routed edges, TD/BT/LR/RL); sequence diagrams are drawn with participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, autonumber and loop/alt/opt/par/critical/break/rect frames, and listed message by message when too wide for the terminal; unsupported diagram types show their source in a titled box
-- Supports flowcharts/graphs, state, class and ER diagrams, sequence diagrams, pie charts, Gantt charts, mindmaps
+- Supports flowcharts/graphs, state, class and ER diagrams, sequence diagrams, git graphs (commits top to bottom, a lane per branch, forks/merges/tags/cherry-picks), timelines (periods with their events, grouped by section), user journeys (each task's 1-5 score as a bar and number, with its actors), pie charts, Gantt charts, mindmaps
 - Unknown diagram types get fallback rendering
 
 ### Admonitions
@@ -110,7 +110,7 @@ ink is a feature-rich terminal markdown reader built in Rust. It renders markdow
 - Space/PageDown: page down
 - PageUp: page up
 - G/End: jump to end
-- Home: jump to start
+- Home, gg: jump to start
 - Ctrl+f/Ctrl+b: page down/up
 - Ctrl+d/Ctrl+u: half-page down/up
 - n/N: next/previous heading (cycles search matches after a search)
@@ -164,6 +164,6 @@ preset = "emacs"        # default | vim | emacs
 - Website: https://borghei.github.io/ink/
 - Author: Amin Borghei <borghei.mohammadamin@gmail.com>
 - Crates.io: https://crates.io/crates/ink-md (install with `cargo install ink-md`, Rust 1.90+)
-- Install script (macOS/Linux): `curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh` (picks the glibc or static musl build; pin with INK_VERSION=v0.13.0, target dir INK_INSTALL_DIR)
+- Install script (macOS/Linux): `curl -fsSL https://raw.githubusercontent.com/borghei/ink/main/install.sh | sh` (picks the glibc or static musl build; pin with INK_VERSION=v0.14.0, target dir INK_INSTALL_DIR)
 - Install script (Windows): `irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex` (x64/ARM64, installs to %LOCALAPPDATA%\Programs\ink)
 - Prebuilt binaries: Linux amd64/arm64 (glibc 2.35+), static musl Linux amd64/arm64/armv7 (Alpine, older glibc, Raspberry Pi), macOS amd64/arm64, Windows amd64/arm64; .deb/.rpm and tar.gz/zip archives with man page and completions
