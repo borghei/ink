@@ -20,21 +20,30 @@ pub(super) fn layout_table<'a>(
     lines: &mut Vec<StyledLine>,
 ) {
     let theme = ctx.theme;
-    let max_width = ctx.width;
-    let margin_str = " ".repeat(ctx.margin);
     let (headers, rows) = extract_table_data(node, ctx);
     if headers.is_empty() {
         return;
     }
 
     let num_cols = headers.len();
+    let overhead = num_cols + 1 + num_cols * 2; // borders + padding
+                                                // A top-level table wider than the text column may use the room the
+                                                // reader offers beyond it, centred there; see `WideTables`.
+    let natural = ideal_widths(&headers, &rows).iter().sum::<usize>() + overhead;
+    let (max_width, margin) = match ctx.wide_tables {
+        Some(wide) if ctx.record_headings && natural > ctx.width && wide.width > ctx.width => {
+            let w = natural.min(wide.width);
+            (w, wide.left + (wide.width - w) / 2)
+        }
+        _ => (ctx.width, ctx.margin),
+    };
+    let margin_str = " ".repeat(margin);
     let alignments: Vec<TableAlignment> = match &node.data.borrow().value {
         NodeValue::Table(t) => t.alignments.clone(),
         _ => Vec::new(),
     };
 
     // Check if table fits in max_width
-    let overhead = num_cols + 1 + num_cols * 2; // borders + padding
     let available = max_width.saturating_sub(overhead);
 
     // Borders and padding alone can be wider than a very narrow view.
