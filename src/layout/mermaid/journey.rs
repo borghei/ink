@@ -36,18 +36,6 @@ struct Journey {
 /// The highest score; the bar has one cell per point.
 const MAX_SCORE: i64 = 5;
 
-/// The text after keyword `k`, ignoring case as mermaid does. A bare
-/// keyword with nothing after it (`title`) is `Some("")`; mermaid rejects it,
-/// and the caller skips the line.
-fn keyword<'a>(line: &'a str, k: &str) -> Option<&'a str> {
-    let head = line.get(..k.len())?;
-    if !head.eq_ignore_ascii_case(k) {
-        return None;
-    }
-    let rest = &line[k.len()..];
-    (rest.is_empty() || rest.starts_with(char::is_whitespace)).then(|| rest.trim())
-}
-
 /// Parse a journey body: `title …`, `section …` and `Task name: score:
 /// actor, actor` lines (the actors are optional).
 fn parse(body: &[String]) -> Journey {
@@ -64,7 +52,7 @@ fn parse(body: &[String]) -> Journey {
         if line.is_empty() {
             continue;
         }
-        if let Some(rest) = keyword(line, "title") {
+        if let Some(rest) = text::keyword(line, "title") {
             if !rest.is_empty() {
                 j.title = Some(text::decode_label(rest));
             }
@@ -75,7 +63,7 @@ fn parse(body: &[String]) -> Journey {
             in_description = line.contains('{') && !line.contains('}');
             continue;
         }
-        if let Some(rest) = keyword(line, "section") {
+        if let Some(rest) = text::keyword(line, "section") {
             if !rest.is_empty() {
                 j.sections.push(text::decode_label(rest));
                 section = Some(j.sections.len() - 1);
