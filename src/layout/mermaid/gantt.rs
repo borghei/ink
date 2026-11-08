@@ -8,11 +8,9 @@
 //! milestone — with critical tasks in the warning colour. Work is linear in
 //! the number of tasks.
 
-use super::canvas::Class;
+use super::canvas::{Class, Row};
 use super::text;
 use std::collections::BTreeMap;
-
-type Row = Vec<(String, Class)>;
 
 #[derive(Debug, Clone, PartialEq)]
 struct Task {
@@ -141,11 +139,7 @@ fn parse(title: Option<String>, body: &[String]) -> Chart {
         if line.is_empty() || line.starts_with("%%") {
             continue;
         }
-        let kw = |k: &str| {
-            line.strip_prefix(k)
-                .filter(|r| r.is_empty() || r.starts_with(char::is_whitespace))
-                .map(str::trim)
-        };
+        let kw = |k: &str| text::keyword(line, k);
         if let Some(t) = kw("title") {
             chart.title = Some(text::decode_label(t));
             continue;
