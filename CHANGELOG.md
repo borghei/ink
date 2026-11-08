@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Each `f` starts out following links.** Pressing `Y` in the link hints switched them to copying URLs, and the switch stuck: every later `f` copied instead of following until ink was restarted.
+- **The mouse wheel no longer scrolls the sidebar under the link or code hints.** With hints showing, the wheel over the table of contents scrolled it underneath them; it now goes to the hints, as it already did for help and the theme picker.
+
+### Internal
+- Which popup is open is one value instead of a flag per popup, so the key handling, the wheel and the drawing can't disagree about it.
+
 ## 0.14.0 — 2026-11-08
 
 ### Added
