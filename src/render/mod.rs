@@ -884,6 +884,8 @@ pub fn render_footnote(
 ) {
     let rect = footnote_rect(area, width, lines.len());
     let rows = rect.height.saturating_sub(2) as usize;
+    // A resize can leave the scroll past the end until the next key.
+    let scroll = scroll.min(lines.len().saturating_sub(rows));
     let title = if lines.len() > rows {
         let last = (scroll + rows).min(lines.len());
         format!(" {title}  {}-{last} of {} ", scroll + 1, lines.len())

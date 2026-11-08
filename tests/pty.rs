@@ -1202,6 +1202,27 @@ fn f_labels_footnotes_and_a_label_opens_the_note() {
 }
 
 #[test]
+fn y_then_a_footnote_letter_copies_the_note() {
+    let doc = doc_with_footnotes();
+    let config = osc52_only_config();
+    let (out, m) = run_steps(
+        &[],
+        &[doc.path()],
+        &[("XDG_CONFIG_HOME", config.path().to_str().unwrap())],
+        keys(&[b"f", b"Y", b"a"]),
+    );
+    let after = &out[m[2]..];
+    // "NOTEONE text." as OSC 52 base64.
+    assert!(contains(after, b"\x1b]52;c;Tk9URU9ORSB0ZXh0Lg==\x07"));
+    // The clipboard payload is base64, so the note's text on screen would
+    // mean the popup opened instead.
+    assert!(
+        !String::from_utf8_lossy(after).contains("NOTEONE"),
+        "the note opened"
+    );
+}
+
+#[test]
 fn a_click_on_a_footnote_reference_opens_the_note() {
     let doc = doc_with_footnotes();
     let mut click = mouse(0, 21, 2, true);

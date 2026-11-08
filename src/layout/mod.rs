@@ -228,6 +228,7 @@ pub fn layout_document_with_source<'a>(
         code_blocks: &code_blocks,
         footnotes: &footnotes,
         record_headings: true,
+        in_note: false,
         source,
     };
     layout_node(root, &ctx, &mut lines);
@@ -235,6 +236,7 @@ pub fn layout_document_with_source<'a>(
     let mut footnotes = footnotes.into_inner();
     for f in &mut footnotes {
         sanitize_lines(&mut f.lines);
+        f.name = crate::sanitize::sanitize_text(&f.name).into_owned();
     }
     LayoutResult {
         lines,
@@ -258,6 +260,13 @@ fn sanitize_lines(lines: &mut [StyledLine]) {
             }
             if let Some(url) = span.style.link_url.take() {
                 span.style.link_url = sanitize_url(&url);
+            }
+            // A footnote's name is shown (the popup's title, its hint), so
+            // it is cleaned like text; `FootnoteSpec::name` gets the same.
+            if let Some(name) = &mut span.style.footnote {
+                if let Cow::Owned(clean) = sanitize_text(name) {
+                    *name = clean;
+                }
             }
         }
     }
@@ -287,6 +296,10 @@ struct LayoutContext<'a> {
     // record correct absolute line indices. Nested walks (blockquotes, list
     // items) build into their own buffers, so they don't record headings.
     record_headings: bool,
+    /// Laying out a footnote's text for its popup: a definition met here is
+    /// not recorded again (the document walk records each one once), or a
+    /// note nested in a note would be laid out twice per level.
+    in_note: bool,
     /// The parsed markdown, when the caller has it; see `heading_anchor_text`.
     source: Option<&'a str>,
 }
@@ -398,7 +411,9 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
         NodeValue::FootnoteDefinition(ref fd) => {
             let name = fd.name.clone();
             drop(data);
-            record_footnote(node, &name, ctx);
+            if !ctx.in_note {
+                record_footnote(node, &name, ctx);
+            }
             let label = StyledSpan {
                 text: format!("[^{name}]: "),
                 style: SpanStyle {
@@ -438,7 +453,6 @@ fn layout_node<'a>(node: &'a AstNode<'a>, ctx: &LayoutContext, lines: &mut Vec<S
 
 /// Lay out a footnote definition's blocks again on their own, narrower and
 /// with no margin, so the reader can show the note in a box over the text.
-/// Its references inside are kept, so a note can lead to another.
 fn record_footnote<'a>(node: &'a AstNode<'a>, name: &str, ctx: &LayoutContext) {
     let body_ctx = LayoutContext {
         theme: ctx.theme,
@@ -459,6 +473,7 @@ fn record_footnote<'a>(node: &'a AstNode<'a>, name: &str, ctx: &LayoutContext) {
         footnotes: ctx.footnotes,
         graphics_font: None,
         record_headings: false,
+        in_note: true,
         source: ctx.source,
     };
     let mut body = Vec::new();
@@ -1344,6 +1359,7 @@ fn layout_blockquote<'a>(
         footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
+        in_note: ctx.in_note,
         source: ctx.source,
     };
     let mut inner_lines = Vec::new();
@@ -1573,6 +1589,7 @@ fn layout_list<'a>(
         footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
+        in_note: ctx.in_note,
         source: ctx.source,
     };
 
@@ -1696,6 +1713,7 @@ fn layout_description_list<'a>(
         footnotes: ctx.footnotes,
         graphics_font: ctx.graphics_font,
         record_headings: false,
+        in_note: ctx.in_note,
         source: ctx.source,
     };
     let term_style = SpanStyle {
@@ -2590,6 +2608,7 @@ fn with_test_ctx<R>(f: impl FnOnce(&LayoutContext) -> R) -> R {
         code_blocks: &code_blocks,
         footnotes: &footnotes,
         record_headings: true,
+        in_note: false,
         source: None,
     };
     f(&ctx)
@@ -3068,5 +3087,34 @@ mod footnotes {
     #[test]
     fn a_document_without_footnotes_has_none() {
         assert!(layout("# Just text\n\nno notes\n").footnotes.is_empty());
+    }
+
+    #[test]
+    fn notes_nested_in_notes_are_recorded_once_each_and_quickly() {
+        let mut src = String::from("x[^d0]\n\n");
+        for n in 0..24 {
+            src.push_str(&format!("{}[^d{n}]: n{n}\n\n", " ".repeat(4 * n)));
+        }
+        let start = std::time::Instant::now();
+        let r = layout(&src);
+        assert!(r.footnotes.len() <= 24, "{} notes", r.footnotes.len());
+        let mut names: Vec<_> = r.footnotes.iter().map(|f| f.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), r.footnotes.len(), "a note recorded twice");
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
+    }
+
+    #[test]
+    fn a_footnote_name_is_sanitized_wherever_it_is_shown() {
+        let r = layout("x[^a\u{202E}b]\n\n[^a\u{202E}b]: note\n");
+        for f in &r.footnotes {
+            assert!(!f.name.contains('\u{202E}'), "{:?}", f.name);
+        }
+        for span in r.lines.iter().flat_map(|l| &l.spans) {
+            if let Some(n) = &span.style.footnote {
+                assert!(!n.contains('\u{202E}'), "{n:?}");
+            }
+        }
     }
 }

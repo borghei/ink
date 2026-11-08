@@ -723,6 +723,16 @@ impl<'g> Reader<'g> {
                 self.theme_picker_action(action, terminal, view)?;
                 return Ok(None);
             }
+            // A note a reload took away closes, and the key does what it
+            // would have done without it.
+            Overlay::Footnote { ref name, .. }
+                if !self.tabs[self.active_tab]
+                    .footnotes
+                    .iter()
+                    .any(|f| &f.name == name) =>
+            {
+                self.overlays.open = Overlay::None;
+            }
             Overlay::Footnote { .. } => {
                 self.footnote_action(action);
                 return Ok(None);
@@ -783,6 +793,8 @@ impl<'g> Reader<'g> {
             .height
             .saturating_sub(2) as usize;
         let max_scroll = note.lines.len().saturating_sub(rows);
+        // A resize may have shrunk the note since the last key.
+        *scroll = (*scroll).min(max_scroll);
         let page = rows.max(1);
         match action {
             Action::ScrollDown(n) => *scroll = (*scroll + n as usize).min(max_scroll),
@@ -856,7 +868,21 @@ impl<'g> Reader<'g> {
                     .find(|h| h.label == c)
                     .and_then(|h| h.footnote.clone())
                 {
-                    self.open_footnote(&name);
+                    // `Y` means copy: a footnote's letter then copies its note.
+                    let note = self.tabs[self.active_tab]
+                        .footnotes
+                        .iter()
+                        .find(|f| f.name == name);
+                    match (kind, note) {
+                        (HintKind::CopyUrl, Some(note)) => {
+                            let what = format!("footnote [^{name}]");
+                            self.flash = Some((
+                                copy_text(&note_text(note), self.args.clipboard, &what),
+                                Instant::now(),
+                            ));
+                        }
+                        _ => self.open_footnote(&name),
+                    }
                     return;
                 }
                 if let Some(hint) = hints.iter().find(|h| h.label == c) {
