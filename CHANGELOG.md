@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+- **Wide tables can use the whole window.** The reader keeps text to 120 columns by default, and tables were held to that too, so on a wide terminal a table that needed 150 columns wrapped while 80 columns sat empty. A top-level table now takes the room it needs, up to the window's width, centred, and the text around it keeps its width. An explicit `-w`/`--width`, slides, tables inside lists and quotes, tables that would be shown as records anyway, and `--plain` output are unchanged.
+- **Library API: `layout_document_with_source` takes a `wide_tables: Option<WideTables>`** argument at the end. Pass `None` for the old behaviour.
+
 ### Fixed
 - **The last sections of a document can be current.** Near the end, short last sections can't scroll to the top of the window, and the section at the top was always taken as the one being read. So after `G`, `Y` copied an earlier section (often the whole document) while the last heading was on screen, and jumping to one of the last headings from the table of contents highlighted a different one. At the end of a document the last heading on screen now counts, and a heading you jump to (table of contents, `n`/`N`) stays current until you scroll.
 - **Each `f` starts out following links.** Pressing `Y` in the link hints switched them to copying URLs, and the switch stuck: every later `f` copied instead of following until ink was restarted.
