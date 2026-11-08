@@ -80,7 +80,10 @@ fn parse(body: &[String]) -> Timeline {
             continue;
         }
         if let Some(rest) = keyword(line, "title") {
-            t.title = Some(text::decode_label(rest));
+            // A bare `title` is rejected by mermaid; keep the default.
+            if !rest.is_empty() {
+                t.title = Some(text::decode_label(rest));
+            }
             continue;
         }
         let lower = line.to_ascii_lowercase();
@@ -89,8 +92,10 @@ fn parse(body: &[String]) -> Timeline {
             continue;
         }
         if let Some(rest) = keyword(line, "section") {
-            t.sections.push(text::decode_label(rest));
-            section = Some(t.sections.len() - 1);
+            if !rest.is_empty() {
+                t.sections.push(text::decode_label(rest));
+                section = Some(t.sections.len() - 1);
+            }
             continue;
         }
         let fields = split_fields(line);
@@ -436,5 +441,32 @@ Later
             40,
         );
         assert_eq!(plain(&rows), "2000 ── a\nA\nB\n  2001 ── b\nC");
+    }
+
+    #[test]
+    fn a_bare_title_or_section_line_is_ignored() {
+        let (title, rows) = render(None, &lines("title\nsection\n2001 : a\n"), 40);
+        assert_eq!(title, "timeline");
+        assert_eq!(plain(&rows), "2001 ── a");
+    }
+
+    #[test]
+    fn hostile_input_stays_quick() {
+        let mut big = String::new();
+        for i in 0..20_000 {
+            big.push_str(&format!(
+                "section S{i}\n{i} : an event with a few words in it : two\n: three\n"
+            ));
+        }
+        let start = std::time::Instant::now();
+        let (_, rows) = render(None, &lines(&big), 40);
+        assert!(rows.len() > 60_000);
+        let long = format!("{} : {}\n", "p".repeat(200_000), "e ".repeat(200_000));
+        render(None, &lines(&long), 40);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }
