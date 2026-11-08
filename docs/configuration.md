@@ -83,7 +83,7 @@ The default preset is vim-flavored. Press `?` in the reader for this list, inclu
 | `Alt+↓` `Alt+↑` | Scroll faster |
 | `Space`, `Page Down`, `Ctrl+f`, `Ctrl+d` | Page down |
 | `Page Up`, `Ctrl+b`, `Ctrl+u` | Page up |
-| `Home` | Top |
+| `gg`, `Home` | Top |
 | `G`, `End` | Bottom |
 | `n` `N` | Next, previous heading. After a search, next and previous match. |
 | `/` | Search |
@@ -127,7 +127,7 @@ Action names:
 | `scroll_down_fast`, `scroll_up_fast` | `alt-down`, `alt-up` |
 | `page_down` | `space` `pagedown` `ctrl-f` `ctrl-d` |
 | `page_up` | `pageup` `ctrl-b` `ctrl-u` |
-| `home`, `end` | `home`, `G` `end` |
+| `home`, `end` | `g g` `home`, `G` `end` |
 | `next_heading`, `prev_heading` | `n`, `N` |
 | `search` | `/` |
 | `toggle_toc`, `toc_focus` | `t`, `o` |

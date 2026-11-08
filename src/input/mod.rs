@@ -701,6 +701,17 @@ mod tests {
     }
 
     #[test]
+    fn g_g_goes_to_the_top_and_a_stray_g_passes_the_next_key_through() {
+        init_keymap(None);
+        let g = || Event::Key(press(KeyCode::Char('g'), KeyModifiers::NONE));
+        assert_eq!(map_event(g(), InputMode::Normal), Action::None);
+        assert_eq!(map_event(g(), InputMode::Normal), Action::Home);
+        assert_eq!(map_event(g(), InputMode::Normal), Action::None);
+        let j = Event::Key(press(KeyCode::Char('j'), KeyModifiers::NONE));
+        assert_eq!(map_event(j, InputMode::Normal), Action::ScrollDown(1));
+    }
+
+    #[test]
     fn the_focused_toc_has_its_own_motions() {
         use crate::toc::TocKey as T;
         let none = KeyModifiers::NONE;
