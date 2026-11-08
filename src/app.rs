@@ -1868,7 +1868,7 @@ fn run_inner(
 /// `what` names the thing copied ("84 chars", "code block (bash)") so every
 /// copy path reports itself the same way.
 fn copy_text(text: &str, mode: ClipboardMode, what: &str) -> String {
-    match clipboard::copy(text, mode) {
+    match clipboard::copy(&crate::sanitize::sanitize_copy(text), mode) {
         CopyOutcome::Copied => format!("copied {what}"),
         CopyOutcome::Disabled => "clipboard disabled in config".to_string(),
         CopyOutcome::Empty => "nothing to copy".to_string(),

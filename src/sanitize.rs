@@ -12,9 +12,10 @@ use std::path::{Path, PathBuf};
 
 /// Strip terminal control characters from text destined for the screen.
 ///
-/// Removes ESC, C0 controls (except `\t`), DEL, and C1 controls
-/// (U+0080–U+009F). Newlines are stripped too: layout emits spans that never
-/// span lines, so an embedded `\n` is itself suspect.
+/// Removes ESC, C0 controls (except `\t`), DEL, C1 controls (U+0080–U+009F)
+/// and the bidi override, embedding and isolate controls (see
+/// [`is_bidi_control`]). Newlines are stripped too: layout emits spans that
+/// never span lines, so an embedded `\n` is itself suspect.
 pub fn sanitize_text(s: &str) -> Cow<'_, str> {
     if s.chars().all(is_allowed_char) {
         return Cow::Borrowed(s);
@@ -26,7 +27,28 @@ fn is_allowed_char(c: char) -> bool {
     if c == '\t' {
         return true;
     }
-    !(c.is_control() || ('\u{80}'..='\u{9f}').contains(&c))
+    !(c.is_control() || ('\u{80}'..='\u{9f}').contains(&c) || is_bidi_control(c))
+}
+
+/// The bidi embedding (LRE, RLE), override (LRO, RLO), pop (PDF) and isolate
+/// (LRI, RLI, FSI, PDI) controls. They reorder how the text after them is
+/// displayed, which is how a line can be made to look like something it
+/// isn't ("Trojan Source"). The plain direction marks (LRM, RLM, ALM) and the
+/// zero-width joiners stay: right-to-left scripts and emoji need them, and
+/// they can't reorder anything.
+pub fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Clean text on its way to the clipboard, so what is pasted is what was
+/// shown: terminal controls and bidi controls are removed, as they are on
+/// screen, while line breaks and tabs (code blocks, sections) are kept.
+pub fn sanitize_copy(s: &str) -> Cow<'_, str> {
+    let keep = |c: char| matches!(c, '\n' | '\t') || is_allowed_char(c);
+    if s.chars().all(keep) {
+        return Cow::Borrowed(s);
+    }
+    Cow::Owned(s.chars().filter(|&c| keep(c)).collect())
 }
 
 /// Validate and clean a link destination before it is emitted as an OSC 8
@@ -251,5 +273,27 @@ mod tests {
             let resolved = resolve_local(base, "odd.png?v=2").unwrap();
             assert!(resolved.ends_with("odd.png?v=2"));
         }
+    }
+
+    #[test]
+    fn bidi_overrides_and_isolates_are_stripped_from_the_screen() {
+        let rlo = "echo safe\u{202E}txt.exe\u{202C} \u{2066}x\u{2069}";
+        assert_eq!(sanitize_text(rlo), "echo safetxt.exe x");
+    }
+
+    #[test]
+    fn scripts_and_emoji_keep_their_joiners_and_marks() {
+        // Persian needs ZWNJ, emoji sequences need ZWJ, RTL text uses RLM.
+        for s in ["می\u{200C}خواهم", "👨\u{200D}👩\u{200D}👧", "abc\u{200F}"] {
+            assert_eq!(sanitize_text(s), s);
+            assert_eq!(sanitize_copy(s), s);
+        }
+    }
+
+    #[test]
+    fn copies_keep_lines_and_tabs_and_lose_controls() {
+        let block = "if x:\n\treturn 1\u{1b}[2J\u{202E}\n";
+        assert_eq!(sanitize_copy(block), "if x:\n\treturn 1[2J\n");
+        assert!(matches!(sanitize_copy("plain\ntext"), Cow::Borrowed(_)));
     }
 }

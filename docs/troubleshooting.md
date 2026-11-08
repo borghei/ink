@@ -69,6 +69,7 @@ Markdown treats `\` as an escape character, so `C:\pics\.cache\x.png` loses its 
 ink treats every document as untrusted.
 
 - Control bytes and escape sequences are stripped before anything reaches the terminal.
+- Bidi override and isolate characters are stripped too, so a line can't be made to display in a different order than it reads ("Trojan Source"). What you copy is the text you see.
 - Links only open with `http`, `https` or `mailto`.
 - Remote images are off unless you pass `--remote-images`. Private, loopback and cloud-metadata addresses stay blocked even then.
 - Local images, absolute paths included, are only ever shown as pixels. The bytes must decode as an image and are never printed as text, so a hostile document can't use an image tag to put a file's contents on screen.
