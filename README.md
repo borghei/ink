@@ -58,7 +58,7 @@ cargo install ink-md
 irm https://raw.githubusercontent.com/borghei/ink/main/install.ps1 | iex
 ```
 
-Scoop, conda, mise, `.deb`, `.rpm`, prebuilt binaries and source builds are covered in the [install guide](https://github.com/borghei/ink/blob/main/docs/install.md).
+Scoop, conda, mise, Nix, `.deb`, `.rpm`, prebuilt binaries and source builds are covered in the [install guide](https://github.com/borghei/ink/blob/main/docs/install.md).
 
 ## Quick start
 

@@ -9,6 +9,7 @@ ink is a single binary with no runtime dependencies. Pick whichever route you al
 - [Scoop](#scoop)
 - [Conda and Pixi](#conda-and-pixi)
 - [mise](#mise)
+- [Nix](#nix)
 - [.deb and .rpm packages](#deb-and-rpm-packages)
 - [Prebuilt binaries](#prebuilt-binaries)
 - [From source](#from-source)
@@ -81,6 +82,33 @@ pixi global install ink-md
 ```bash
 mise use -g cargo:ink-md    # through crates.io
 mise use -g ubi:borghei/ink # straight from GitHub releases
+```
+
+## Nix
+
+```bash
+nix run github:borghei/ink -- README.md   # try it without installing
+nix profile add github:borghei/ink        # install it
+```
+
+In a flake (NixOS, Home Manager), add the input:
+
+```nix
+inputs.ink = {
+  url = "github:borghei/ink";
+  inputs.nixpkgs.follows = "nixpkgs";
+};
+```
+
+Then use either the package or the overlay:
+
+```nix
+# package
+home.packages = [ ink.packages.${pkgs.stdenv.hostPlatform.system}.default ];
+
+# overlay
+nixpkgs.overlays = [ ink.overlays.default ];
+home.packages = [ pkgs.ink-md ];
 ```
 
 ## .deb and .rpm packages
