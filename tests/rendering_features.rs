@@ -506,7 +506,16 @@ fn display_math_gets_its_own_indented_lines() {
     let out =
         render("The formula\n$$\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\nsolves it.\n");
     assert!(
-        out.contains("  The formula\n\n      x = (-b ± √(b² - 4ac))/2a\n\n  solves it.\n"),
+        out.contains(concat!(
+            "  The formula\n",
+            "\n",
+            "                  _________\n",
+            "           -b ± ╲╱ b² - 4ac\n",
+            "      x = ──────────────────\n",
+            "                  2a\n",
+            "\n",
+            "  solves it.\n"
+        )),
         "{out}"
     );
 }
@@ -519,7 +528,7 @@ fn display_matrix_and_math_fence() {
         "{out}"
     );
     let out = render("```math\n\\sum_{i=1}^{n} i\n```\n");
-    assert!(out.contains("      ∑ᵢ₌₁ⁿ i\n"), "{out}");
+    assert!(out.contains("       n\n       ∑ i\n      i=1\n"), "{out}");
     assert!(!out.contains("─ math ─"), "not a code box: {out}");
 }
 

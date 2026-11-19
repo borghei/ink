@@ -91,13 +91,16 @@ Box-drawing characters by default, plain ASCII with `--ascii`.
 
 ## Math and emoji
 
-Inline `$...$`, block `$$...$$` and ` ```math ` blocks render as Unicode text. `$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$` reads:
+Inline `$...$`, block `$$...$$` and ` ```math ` blocks render as Unicode text. Inline, `$x = \frac{-b \pm \sqrt{b^2-4ac}}{2a}$` reads `x = (-b ± √(b² - 4ac))/2a`. In display math the fraction stacks and the root is drawn:
 
 ```
-x = (-b ± √(b² - 4ac))/2a
+            _________
+     -b ± ╲╱ b² - 4ac
+x = ──────────────────
+            2a
 ```
 
-Greek letters, operators, `\mathbb{R}` (ℝ), superscripts, subscripts, fractions and roots are covered. Matrices and the `cases` and `aligned` environments draw across several lines with brackets. Anything ink doesn't know is shown as written.
+Greek letters, operators, `\mathbb{R}` (ℝ), `\mathbf{F}` (𝐅), superscripts, subscripts, fractions and roots are covered. In display math, `\sum`, `\prod`, `\lim`, `\max` and friends take their limits above and below, `\binom` stacks in tall parentheses (`C(n,k)` inline), and `\underbrace` / `\overbrace` draw a brace with their label. Matrices and the `cases` and `aligned` environments draw across several lines with brackets, cells lined up on their fraction bars. Anything ink doesn't know is shown as written.
 
 A lone `$` in prose stays a dollar sign, so `costs $5 and $10` is safe. With `--ascii` you get the LaTeX source.
 

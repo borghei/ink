@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+- **Display math is laid out in two dimensions.** In `$$…$$` and ```` ```math ```` blocks, `\frac` stacks its numerator over a `─` bar over its denominator, `\sqrt` of more than one token is drawn as a radical (`╲╱`) with a bar over the radicand, `\sum`, `\prod`, `\lim`, `\max` and the other big operators take their limits above and below, `\binom` stacks in tall parentheses, and `\underbrace` / `\overbrace` draw a brace with their label. Cells of `aligned`, `cases` and matrices line up on their fraction bars. Inline math, scripts and `\tfrac` stay on one line; `\binom` inline reads `C(n,k)`.
+- **`\mathbf`, `\boldsymbol` and `\bm` use mathematical bold letters** (`\mathbf{F}` → 𝐅) instead of dropping the bold.
+- **`\partial` and `\nabla` bind to their operand:** `\partial N` reads `∂N`, not `∂ N`.
+
 ### Fixed
 - **Multi-line `$$ … $$` blocks whose lines start with `+`, `-` or `*` render as math.** Such lines were read as list items, so the formula broke into a bullet list and `\!` lost its backslash. A `$$` block spanning several lines is now treated as a block, as GitHub does; inside code blocks it is left alone.
 
