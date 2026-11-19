@@ -21,7 +21,7 @@ pub fn render_plain(source: &str, args: &Args) -> Result<String> {
 pub fn render_plain_with_color(source: &str, args: &Args, color: bool) -> Result<String> {
     // Frontmatter is stripped, or with `--frontmatter` turned into a block
     // the layout draws as a metadata box.
-    let content = frontmatter::prepare(source, args.frontmatter);
+    let content = parser::display_math::fence(&frontmatter::prepare(source, args.frontmatter));
 
     // Pre-process wikilinks
     let content = crate::wikilink::process_wikilinks(&content);

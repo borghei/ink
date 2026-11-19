@@ -7,8 +7,13 @@
 //!   like, where a code point exists.
 //! - `x^2` / `a_{ij}` use Unicode super/subscripts when every character has
 //!   one, else `^(…)` / `_(…)` (`^x` / `_x` for a single character).
-//! - `\frac{a}{b}` → `a/b`, a side in parentheses unless it is one token;
-//!   `\sqrt{x}` → `√x` / `√(x+1)`, `\sqrt[n]{x}` → `ⁿ√x`.
+//! - `\frac{a}{b}`: in display math stacked over a `─` bar; inline (and in
+//!   scripts, roots, accents) `a/b`, a side in parentheses unless it is one
+//!   token. `\sqrt{x}` → `√x` / `√(x+1)`, `\sqrt[n]{x}` → `ⁿ√x`.
+//! - Display math sets the limits of `\sum`, `\prod`, `\lim`, `\max`, … above
+//!   and below the operator; `\binom` stacks in tall parentheses (`C(n,k)`
+//!   inline); `\underbrace` / `\overbrace` draw a brace with their label.
+//! - `\mathbf{…}`, `\boldsymbol`, `\bm` → mathematical bold letters (𝐅).
 //! - `\text{…}`, `\mathrm{…}` and friends → plain text; `\left`/`\right`,
 //!   sizing and colour commands dropped; `\, \; \quad` → spaces, `\!` → "".
 //! - `matrix`/`pmatrix`/`bmatrix`/`Bmatrix`/`vmatrix`/`Vmatrix`/`array`,
@@ -217,7 +222,9 @@ impl Block {
 }
 
 struct Renderer {
-    inline: bool,
+    /// Lay out on one line: inline math, and inside scripts, roots and
+    /// accents of display math (see [`Renderer::linear`]).
+    inline: Cell<bool>,
     /// Set when a recursive entry passed [`MAX_DEPTH`]: every level then
     /// returns at once and [`Renderer::top`] shows the source instead.
     capped: Cell<bool>,
@@ -362,9 +369,17 @@ impl Cursor {
 impl Renderer {
     fn new(inline: bool) -> Self {
         Renderer {
-            inline,
+            inline: Cell::new(inline),
             capped: Cell::new(false),
         }
+    }
+
+    /// Run `f` with one-line layout: no stacked fractions or limits.
+    fn linear<T>(&self, f: impl FnOnce() -> T) -> T {
+        let was = self.inline.replace(true);
+        let out = f();
+        self.inline.set(was);
+        out
     }
 
     /// Marks the render as too deep; every level unwinds from here.
@@ -391,7 +406,7 @@ impl Renderer {
         if rows.len() == 1 && rows[0].len() == 1 {
             return self.render(&rows[0][0], 0);
         }
-        if self.inline {
+        if self.inline.get() {
             let lines: Vec<String> = rows
                 .iter()
                 .map(|cells| {
@@ -449,7 +464,7 @@ impl Renderer {
                 }
                 '^' | '_' => {
                     cur.i += 1;
-                    let arg = self.arg(cur, depth).flatten();
+                    let arg = self.linear(|| self.arg(cur, depth)).flatten();
                     let arg: String = arg.chars().filter(|c| !c.is_whitespace()).collect();
                     out.push_str(&script(&arg, c == '^'));
                 }
@@ -537,17 +552,47 @@ impl Renderer {
                 }
             }
             n if is_dropped(n) => {}
+            "frac" | "dfrac" | "cfrac" if !self.inline.get() => {
+                let a = self.arg(cur, depth);
+                let b = self.arg(cur, depth);
+                out.append(fraction(a, b));
+            }
             "frac" | "dfrac" | "tfrac" | "cfrac" => {
-                let a = self.arg(cur, depth).flatten();
-                let b = self.arg(cur, depth).flatten();
+                let a = self.linear(|| self.arg(cur, depth)).flatten();
+                let b = self.linear(|| self.arg(cur, depth)).flatten();
                 out.push_str(&format!("{}/{}", operand(&a), operand(&b)));
+            }
+            "binom" | "dbinom" if !self.inline.get() => {
+                let n = self.arg(cur, depth);
+                let k = self.arg(cur, depth);
+                out.append(binomial(n, k));
+            }
+            "binom" | "dbinom" | "tbinom" => {
+                let n = self.linear(|| self.arg(cur, depth)).flatten();
+                let k = self.linear(|| self.arg(cur, depth)).flatten();
+                out.push_str(&format!("C({},{})", n.trim(), k.trim()));
+            }
+            "underbrace" | "overbrace" => {
+                let under = name == "underbrace";
+                if self.inline.get() {
+                    let a = self.arg(cur, depth).flatten();
+                    let label = self.label(cur, depth, if under { '_' } else { '^' });
+                    let label = label.map(|l| script(&l, !under)).unwrap_or_default();
+                    out.push_str(&format!("{}{label}", operand(&a)));
+                } else {
+                    let a = self.arg(cur, depth);
+                    let label = self.label(cur, depth, if under { '_' } else { '^' });
+                    out.append(braced(a, label, under));
+                }
             }
             "sqrt" => {
                 cur.skip_ws();
                 let index = if cur.peek() == Some('[') {
                     cur.i += 1;
                     // Rendered in place up to its `]`: one pass, depth-capped.
-                    let n = self.seq(cur, depth + 1, Close::Bracket).flatten();
+                    let n = self
+                        .linear(|| self.seq(cur, depth + 1, Close::Bracket))
+                        .flatten();
                     let n: String = n.chars().filter(|c| !c.is_whitespace()).collect();
                     match scripts::to_superscript(&n) {
                         Some(s) => s,
@@ -557,7 +602,18 @@ impl Renderer {
                 } else {
                     String::new()
                 };
-                let x = self.arg(cur, depth).flatten();
+                if !self.inline.get() {
+                    let x = self.arg(cur, depth);
+                    // A single token reads fine as `√x`; anything longer
+                    // gets a drawn radical with a bar over it.
+                    if x.rows.len() > 1 || !is_token(&x.flatten()) {
+                        out.append(radical(x, &index));
+                        return;
+                    }
+                    out.push_str(&format!("{index}√{}", x.flatten()));
+                    return;
+                }
+                let x = self.linear(|| self.arg(cur, depth)).flatten();
                 let x = if is_token(&x) { x } else { format!("({x})") };
                 out.push_str(&format!("{index}√{x}"));
             }
@@ -565,13 +621,23 @@ impl Renderer {
             | "textup" | "emph" | "mbox" | "hbox" => {
                 out.push_str(&cur.raw_arg());
             }
-            "mathrm" | "mathit" | "mathbf" | "mathsf" | "mathtt" | "mathnormal" | "boldsymbol"
-            | "bm" | "operatorname" => {
+            "mathbf" | "boldsymbol" | "bm" => {
+                let a = self.arg(cur, depth);
+                out.append(Block {
+                    rows: a
+                        .rows
+                        .iter()
+                        .map(|r| r.chars().map(|c| bold(c).unwrap_or(c)).collect())
+                        .collect(),
+                    base: a.base,
+                });
+            }
+            "mathrm" | "mathit" | "mathsf" | "mathtt" | "mathnormal" | "operatorname" => {
                 let a = self.arg(cur, depth);
                 out.append(a);
             }
             "mathbb" | "Bbb" | "mathcal" | "mathscr" | "mathfrak" => {
-                let a = self.arg(cur, depth).flatten();
+                let a = self.linear(|| self.arg(cur, depth)).flatten();
                 let map: fn(char) -> Option<char> = match name.as_str() {
                     "mathbb" | "Bbb" => double_struck,
                     "mathfrak" => fraktur,
@@ -581,12 +647,12 @@ impl Renderer {
             }
             "hat" | "widehat" | "check" | "breve" | "acute" | "grave" | "vec" | "dot" | "ddot"
             | "tilde" | "widetilde" | "bar" | "overline" | "underline" | "overrightarrow" => {
-                let a = self.arg(cur, depth).flatten();
+                let a = self.linear(|| self.arg(cur, depth)).flatten();
                 out.push_str(&accent(&name, &a));
             }
             "not" => {
                 cur.skip_ws();
-                let next = self.arg(cur, depth).flatten();
+                let next = self.linear(|| self.arg(cur, depth)).flatten();
                 out.push_str(&match next.as_str() {
                     "=" => "≠".to_string(),
                     "∈" => "∉".to_string(),
@@ -596,7 +662,7 @@ impl Renderer {
                 });
             }
             "pmod" => {
-                let a = self.arg(cur, depth).flatten();
+                let a = self.linear(|| self.arg(cur, depth)).flatten();
                 out.push_str(&format!(" (mod {a})"));
             }
             "bmod" | "mod" => out.push_str(" mod "),
@@ -621,21 +687,99 @@ impl Renderer {
                 out.append(block);
             }
             _ => {
-                if let Some(sym) = symbol(&name) {
-                    out.push_str(sym);
-                } else if is_function(&name) {
-                    out.push_str(&name);
+                let named = symbol(&name).or(is_function(&name).then_some(name.as_str()));
+                if let Some(text) = named {
+                    // `\partial x`, `\nabla f`: the space only ends the
+                    // command name; the operator binds to its operand.
+                    if matches!(name.as_str(), "partial" | "nabla") {
+                        let start = cur.i;
+                        cur.skip_ws();
+                        let operand = match cur.peek() {
+                            Some('\\') => {
+                                let (next, _) = command_name(&cur.s, cur.i + 1);
+                                symbol(&next).is_some_and(|s| s.starts_with(char::is_alphabetic))
+                                    || next.starts_with("math")
+                                    || matches!(next.as_str(), "boldsymbol" | "bm")
+                            }
+                            Some(c) => c.is_alphanumeric(),
+                            None => false,
+                        };
+                        if !operand {
+                            cur.i = start;
+                        }
+                    }
+                    match self.limits(cur, depth, &name, text) {
+                        // TeX's thin space after an operator: `\lim_{x}\frac`
+                        // would otherwise run into the fraction bar.
+                        Some(block) => {
+                            out.append(block);
+                            if cur.peek().is_some_and(|c| !c.is_whitespace()) {
+                                out.push_str(" ");
+                            }
+                        }
+                        None => out.push_str(text),
+                    }
                 } else {
                     // Unknown: kept as written, brace arguments included.
                     out.push_str(&format!("\\{name}"));
                     while cur.peek() == Some('{') {
                         cur.i += 1;
-                        let g = self.group(cur, depth).flatten();
+                        let g = self.linear(|| self.group(cur, depth)).flatten();
                         out.push_str(&format!("{{{g}}}"));
                     }
                 }
             }
         }
+    }
+
+    /// Display math: the `_` / `^` limits after a big operator or `\lim`
+    /// stacked below and above it. `None` (cursor untouched) inline, for
+    /// other commands, with `\nolimits`, or when there are no limits.
+    fn limits(&self, cur: &mut Cursor, depth: usize, name: &str, op: &str) -> Option<Block> {
+        if self.inline.get() || !takes_limits(name) {
+            return None;
+        }
+        let start = cur.i;
+        let (mut sup, mut sub) = (None, None);
+        loop {
+            // Whitespace after the last limit stays for `seq` to see.
+            let before = cur.i;
+            cur.skip_ws();
+            match cur.peek() {
+                Some(c @ ('^' | '_')) => {
+                    cur.i += 1;
+                    let a = self.linear(|| self.arg(cur, depth)).flatten();
+                    let a: String = a.chars().filter(|c| !c.is_whitespace()).collect();
+                    *(if c == '^' { &mut sup } else { &mut sub }) = Some(Block::text(a));
+                }
+                Some('\\') if command_name(&cur.s, cur.i + 1).0 == "limits" => {
+                    cur.i = command_name(&cur.s, cur.i + 1).1;
+                }
+                _ => {
+                    cur.i = before;
+                    break;
+                }
+            }
+        }
+        if sup.is_none() && sub.is_none() {
+            cur.i = start;
+            return None;
+        }
+        Some(stack(sup, Block::text(op), sub))
+    }
+
+    /// The `_…` / `^…` label after `\underbrace{…}` / `\overbrace{…}`, if
+    /// the next token is `mark`; the cursor is untouched otherwise.
+    fn label(&self, cur: &mut Cursor, depth: usize, mark: char) -> Option<String> {
+        let start = cur.i;
+        cur.skip_ws();
+        if cur.peek() != Some(mark) {
+            cur.i = start;
+            return None;
+        }
+        cur.i += 1;
+        let a = self.linear(|| self.arg(cur, depth)).flatten();
+        Some(a.chars().filter(|c| !c.is_whitespace()).collect())
     }
 
     /// `\begin{env}` … `\end{env}`; the `\begin{env}` was just consumed.
@@ -656,7 +800,7 @@ impl Renderer {
         }
         let body = end_of_environment(cur);
         let rows = split_top(&body);
-        if self.inline {
+        if self.inline.get() {
             let (l, r) = match env {
                 "pmatrix" => ("(", ")"),
                 "bmatrix" => ("[", "]"),
@@ -683,11 +827,13 @@ impl Renderer {
     }
 
     /// Lay out rows of cells for display: columns padded by the
-    /// environment's alignment, brackets drawn around matrices and cases.
+    /// environment's alignment, cells aligned on their baselines, brackets
+    /// drawn around matrices and cases. Rows taller than one line (a stacked
+    /// fraction in a cell) are separated by a blank line.
     fn grid(&self, env: &str, rows: &[Vec<String>], depth: usize) -> Block {
-        let cells: Vec<Vec<String>> = rows
+        let cells: Vec<Vec<Block>> = rows
             .iter()
-            .map(|r| r.iter().map(|c| self.render(c, depth).flatten()).collect())
+            .map(|r| r.iter().map(|c| self.render(c, depth)).collect())
             .collect();
         let ncols = cells.iter().map(|r| r.len()).max().unwrap_or(0);
         let mut widths = vec![0usize; ncols];
@@ -732,40 +878,60 @@ impl Renderer {
         } else {
             (Box::new(|_| Align::Center), "  ")
         };
-        let mut lines: Vec<String> = cells
-            .iter()
-            .map(|r| {
-                let mut line = String::new();
-                for (j, w) in widths.iter().enumerate() {
-                    let c = r.get(j).map(String::as_str).unwrap_or("");
-                    // An empty aligned cell (`&= b` with nothing before) adds
-                    // no gap.
-                    if j > 0 && !(aligned && c.is_empty()) {
+        let tall = cells.iter().flatten().any(|c| c.rows.len() > 1);
+        let blank = Block::text("");
+        let mut lines: Vec<String> = Vec::new();
+        for (ri, r) in cells.iter().enumerate() {
+            if tall && ri > 0 {
+                lines.push(String::new());
+            }
+            let above = r.iter().map(|c| c.base).max().unwrap_or(0);
+            let below = r
+                .iter()
+                .map(|c| c.rows.len().saturating_sub(c.base))
+                .max()
+                .unwrap_or(1)
+                .max(1);
+            let mut row_lines = vec![String::new(); above + below];
+            for (j, w) in widths.iter().enumerate() {
+                let c = r.get(j).unwrap_or(&blank);
+                // An empty aligned cell (`&= b` with nothing before) adds
+                // no gap.
+                let gap_here = j > 0 && !(aligned && c.is_empty());
+                let cw = c.width();
+                let free = w.saturating_sub(cw);
+                let (l, rt) = match align_of(j) {
+                    Align::Left => (0, free),
+                    Align::Right => (free, 0),
+                    Align::Center => (free / 2, free - free / 2),
+                };
+                let top = above - c.base;
+                for (k, line) in row_lines.iter_mut().enumerate() {
+                    if gap_here {
                         line.push_str(gap);
                     }
-                    let free = w.saturating_sub(c.width());
-                    let (l, rt) = match align_of(j) {
-                        Align::Left => (0, free),
-                        Align::Right => (free, 0),
-                        Align::Center => (free / 2, free - free / 2),
-                    };
+                    let text = k
+                        .checked_sub(top)
+                        .and_then(|i| c.rows.get(i))
+                        .map_or("", String::as_str);
                     line.push_str(&" ".repeat(l));
-                    line.push_str(c);
-                    line.push_str(&" ".repeat(rt));
+                    line.push_str(text);
+                    line.push_str(&" ".repeat(rt + cw.saturating_sub(text.width())));
                 }
-                line
-            })
-            .collect();
+            }
+            lines.extend(row_lines);
+        }
         if aligned {
             // Columns with no content anywhere (`&=` at a line start) leave
             // leading blanks: remove the common indent.
             let indent = lines
                 .iter()
+                .filter(|l| !l.trim().is_empty())
                 .map(|l| l.len() - l.trim_start_matches(' ').len())
                 .min()
                 .unwrap_or(0);
             for l in &mut lines {
-                l.drain(..indent);
+                l.drain(..indent.min(l.len()));
             }
         }
         if lines.is_empty() {
@@ -773,7 +939,7 @@ impl Renderer {
         }
         let n = lines.len();
         let brackets = match env {
-            "pmatrix" => Some((["(", "⎛", "⎜", "⎝"], [")", "⎞", "⎟", "⎠"])),
+            "pmatrix" => Some((PARENS.0, PARENS.1)),
             "bmatrix" => Some((["[", "⎡", "⎢", "⎣"], ["]", "⎤", "⎥", "⎦"])),
             "Bmatrix" => Some((["{", "⎧", "⎪", "⎩"], ["}", "⎫", "⎪", "⎭"])),
             "vmatrix" => Some((["|", "│", "│", "│"], ["|", "│", "│", "│"])),
@@ -781,42 +947,10 @@ impl Renderer {
             "cases" => Some((["{", "⎧", "⎪", "⎩"], ["", "", "", ""])),
             _ => None,
         };
-        let w = lines.iter().map(|l| l.width()).max().unwrap_or(0);
         let rows = match brackets {
             None => lines,
             Some((left, right)) => {
-                let brace = env == "cases" || env == "Bmatrix";
-                lines
-                    .iter()
-                    .enumerate()
-                    .map(|(k, l)| {
-                        let piece = |set: [&'static str; 4]| -> &'static str {
-                            if n == 1 {
-                                set[0]
-                            } else if k == 0 {
-                                set[1]
-                            } else if k == n - 1 {
-                                set[3]
-                            } else if brace && k == (n - 1) / 2 {
-                                // The brace's middle point.
-                                match set[1] {
-                                    "⎧" => "⎨",
-                                    "⎫" => "⎬",
-                                    other => other,
-                                }
-                            } else {
-                                set[2]
-                            }
-                        };
-                        let pad = " ".repeat(w.saturating_sub(l.width()));
-                        let r = piece(right);
-                        if r.is_empty() {
-                            format!("{} {l}", piece(left))
-                        } else {
-                            format!("{} {l}{pad} {r}", piece(left))
-                        }
-                    })
-                    .collect()
+                bracketed(&lines, left, right, env == "cases" || env == "Bmatrix")
             }
         };
         Block {
@@ -824,6 +958,201 @@ impl Renderer {
             rows,
         }
     }
+}
+
+/// Bracket pieces, left and right: one-line, top, middle, bottom.
+type Pieces = [&'static str; 4];
+
+const PARENS: (Pieces, Pieces) = (["(", "⎛", "⎜", "⎝"], [")", "⎞", "⎟", "⎠"]);
+
+/// `lines` between brackets as tall as they are; a brace gets its middle
+/// point. An empty right side draws nothing (`cases`).
+fn bracketed(lines: &[String], left: Pieces, right: Pieces, brace: bool) -> Vec<String> {
+    let n = lines.len();
+    let w = lines.iter().map(|l| l.width()).max().unwrap_or(0);
+    lines
+        .iter()
+        .enumerate()
+        .map(|(k, l)| {
+            let piece = |set: Pieces| -> &'static str {
+                if n == 1 {
+                    set[0]
+                } else if k == 0 {
+                    set[1]
+                } else if k == n - 1 {
+                    set[3]
+                } else if brace && k == (n - 1) / 2 {
+                    // The brace's middle point.
+                    match set[1] {
+                        "⎧" => "⎨",
+                        "⎫" => "⎬",
+                        other => other,
+                    }
+                } else {
+                    set[2]
+                }
+            };
+            let pad = " ".repeat(w.saturating_sub(l.width()));
+            let r = piece(right);
+            if r.is_empty() {
+                format!("{} {l}", piece(left))
+            } else {
+                format!("{} {l}{pad} {r}", piece(left))
+            }
+        })
+        .collect()
+}
+
+/// `block`'s rows centred in `w` columns, padded to the full width so a
+/// following space is seen (`Block::ends_with_space`).
+fn centred(block: &Block, w: usize) -> Vec<String> {
+    let pad = " ".repeat(w.saturating_sub(block.width()) / 2);
+    block
+        .rows
+        .iter()
+        .map(|r| {
+            let right = w.saturating_sub(pad.len() + r.width());
+            format!("{pad}{r}{}", " ".repeat(right))
+        })
+        .collect()
+}
+
+/// `top`, `mid` and `bottom` centred over one another; the baseline is
+/// `mid`'s.
+fn stack(top: Option<Block>, mid: Block, bottom: Option<Block>) -> Block {
+    let w = [top.as_ref(), Some(&mid), bottom.as_ref()]
+        .into_iter()
+        .flatten()
+        .map(Block::width)
+        .max()
+        .unwrap_or(0);
+    let mut rows = top.map(|b| centred(&b, w)).unwrap_or_default();
+    let base = rows.len() + mid.base;
+    rows.extend(centred(&mid, w));
+    if let Some(b) = bottom {
+        rows.extend(centred(&b, w));
+    }
+    Block { rows, base }
+}
+
+/// A display fraction: numerator over a `─` bar one column wider than
+/// either side on each end, over the denominator; the bar is the baseline.
+fn fraction(num: Block, den: Block) -> Block {
+    let w = num.width().max(den.width()) + 2;
+    stack(Some(num), Block::text("─".repeat(w)), Some(den))
+}
+
+/// A display root: `╲╱` rising along the radicand's rows to a `_` bar over
+/// it, the index (already superscript) before the foot. The radicand keeps
+/// its baseline; the bar adds a row on top.
+///
+/// ```text
+///    ______        ____
+/// ³╲╱ x + 1       ╱  a
+///                ╱  ───
+///              ╲╱    b
+/// ```
+fn radical(body: Block, index: &str) -> Block {
+    let h = body.rows.len();
+    let w = body.width();
+    let lead = " ".repeat(index.width());
+    // Gutter: the foot `╲` in column 0, then one `╱` per row, rising.
+    let gutter = h + 1;
+    let mut rows = vec![format!("{lead}{}{}", " ".repeat(gutter), "_".repeat(w + 1))];
+    for (i, r) in body.rows.iter().enumerate() {
+        let slash = h - i; // column of this row's `╱`
+        let mut g: Vec<char> = vec![' '; gutter];
+        g[slash] = '╱';
+        let prefix = if i == h - 1 {
+            g[0] = '╲';
+            index
+        } else {
+            lead.as_str()
+        };
+        rows.push(format!("{prefix}{} {r}", g.into_iter().collect::<String>()));
+    }
+    Block {
+        rows,
+        base: body.base + 1,
+    }
+}
+
+/// A display binomial: `n` over `k` in parentheses as tall as both.
+fn binomial(n: Block, k: Block) -> Block {
+    let w = n.width().max(k.width());
+    let mut lines = centred(&n, w);
+    lines.extend(centred(&k, w));
+    let base = (lines.len() - 1) / 2;
+    Block {
+        rows: bracketed(&lines, PARENS.0, PARENS.1, false),
+        base,
+    }
+}
+
+/// `\underbrace` / `\overbrace` in display: the brace drawn under (over)
+/// `body` with its tip at the middle, the label beyond it.
+fn braced(body: Block, label: Option<String>, under: bool) -> Block {
+    let w = body.width();
+    let (l, tip, r) = if under {
+        ('╰', '┬', '╯')
+    } else {
+        ('╭', '┴', '╮')
+    };
+    let line: String = (0..w)
+        .map(|i| match i {
+            0 => l,
+            _ if i == w - 1 => r,
+            _ if i == w / 2 => tip,
+            _ => '─',
+        })
+        .collect();
+    let line = Block::text(line);
+    let label = label.map(Block::text);
+    if under {
+        stack(None, body, Some(stack(None, line, label)))
+    } else {
+        stack(Some(stack(label, line, None)), body, None)
+    }
+}
+
+/// Operators whose display-math limits go above and below them.
+fn takes_limits(name: &str) -> bool {
+    matches!(
+        name,
+        "sum"
+            | "prod"
+            | "coprod"
+            | "bigcup"
+            | "bigcap"
+            | "bigsqcup"
+            | "bigvee"
+            | "bigwedge"
+            | "bigodot"
+            | "bigoplus"
+            | "bigotimes"
+            | "biguplus"
+            | "lim"
+            | "liminf"
+            | "limsup"
+            | "max"
+            | "min"
+            | "sup"
+            | "inf"
+            | "det"
+            | "gcd"
+            | "Pr"
+    )
+}
+
+/// Mathematical bold (`\mathbf`): A–Z, a–z and 0–9 have code points.
+fn bold(c: char) -> Option<char> {
+    let (start, first) = match c {
+        'A'..='Z' => (0x1D400, 'A'),
+        'a'..='z' => (0x1D41A, 'a'),
+        '0'..='9' => (0x1D7CE, '0'),
+        _ => return None,
+    };
+    char::from_u32(start + (c as u32 - first as u32))
 }
 
 /// Everything up to the `\end{…}` that closes the environment just opened
@@ -1354,7 +1683,7 @@ mod tests {
         assert_eq!(inline(r"\frac{1}{x+1}"), "1/(x+1)");
         assert_eq!(inline(r"\frac{(a+b)}{(c)}"), "(a+b)/(c)");
         assert_eq!(inline(r"\frac12"), "1/2");
-        assert_eq!(inline(r"\frac{\partial f}{\partial x}"), "(∂ f)/(∂ x)");
+        assert_eq!(inline(r"\frac{\partial f}{\partial x}"), "∂f/∂x");
         assert_eq!(inline(r"\frac{\partial{f}}{\partial{x}}"), "∂f/∂x");
     }
 
@@ -1370,7 +1699,7 @@ mod tests {
     #[test]
     fn unknown_commands_are_kept() {
         assert_eq!(inline(r"\foo x"), r"\foo x");
-        assert_eq!(inline(r"\binom{n}{k}"), r"\binom{n}{k}");
+        assert_eq!(inline(r"\foo{n}{k}"), r"\foo{n}{k}");
         assert_eq!(inline(r"\unknown{a^2}"), r"\unknown{a²}");
     }
 
@@ -1528,6 +1857,69 @@ mod tests {
         assert_eq!(display(r"a &= b \\ cc &= d"), [" a = b", "cc = d"]);
     }
 
+    #[test]
+    fn display_fractions_stack() {
+        assert_eq!(
+            display(r"x = \frac{a+b}{2}"),
+            ["     a+b", "x = ─────", "      2"]
+        );
+        // Nested: the inner fraction stacks too.
+        assert_eq!(
+            display(r"\frac{\frac{1}{2}}{3}"),
+            ["  1", " ───", "  2", "─────", "  3"]
+        );
+        // Inline, `\tfrac`, and inside a script: one line.
+        assert_eq!(inline(r"x = \frac{a+b}{2}"), "x = (a+b)/2");
+        assert_eq!(display(r"\tfrac{1}{2}"), ["1/2"]);
+        assert_eq!(display(r"e^{\frac{a}{b}}"), ["e^(a/b)"]);
+    }
+
+    #[test]
+    fn differential_operators_bind_to_their_operand() {
+        assert_eq!(inline(r"\partial N + \partial \sigma"), "∂N + ∂σ");
+        assert_eq!(inline(r"\nabla \mathbf{E}"), "∇𝐄");
+        // Before another operator the space stays.
+        assert_eq!(inline(r"\partial \nabla"), "∂ ∇");
+    }
+
+    #[test]
+    fn display_limits_above_and_below() {
+        assert_eq!(display(r"\sum_{i=1}^{n} i"), [" n", " ∑ i", "i=1"]);
+        assert_eq!(
+            display(r"\lim_{x\to 0}\frac{1}{x}"),
+            ["     1", "lim ───", "x→0  x"]
+        );
+        // `\nolimits`, integrals and inline math keep scripts at the side.
+        assert_eq!(display(r"\sum\nolimits_i x_i"), ["∑ᵢ xᵢ"]);
+        assert_eq!(display(r"\int_0^1 x"), ["∫₀¹ x"]);
+        assert_eq!(inline(r"\sum_{i=1}^{n} i"), "∑ᵢ₌₁ⁿ i");
+    }
+
+    #[test]
+    fn binomials_and_braces() {
+        assert_eq!(display(r"\binom{n}{k}"), ["⎛ n ⎞", "⎝ k ⎠"]);
+        assert_eq!(inline(r"\binom{n}{k}"), "C(n,k)");
+        assert_eq!(display(r"\underbrace{a+b}_{n}"), ["a+b", "╰┬╯", " n"]);
+        assert_eq!(display(r"\overbrace{a+b}^{2}"), [" 2", "╭┴╮", "a+b"]);
+        assert_eq!(inline(r"\underbrace{a+b}_{n}"), "(a+b)ₙ");
+    }
+
+    #[test]
+    fn bold_letters() {
+        assert_eq!(inline(r"\mathbf{F} = m\mathbf{a}"), "𝐅 = m𝐚");
+        assert_eq!(inline(r"\boldsymbol{x_1}"), "𝐱₁");
+        // No bold code point: kept.
+        assert_eq!(inline(r"\mathbf{\nabla}"), "∇");
+    }
+
+    #[test]
+    fn aligned_cells_align_on_the_fraction_bar() {
+        assert_eq!(
+            display(r"\begin{aligned} a &= \frac{1}{2} \\ b &= c \end{aligned}"),
+            ["     1", "a = ───", "     2", "", "b = c"]
+        );
+    }
+
     /// Runs `f` on a 1 MB stack, as a worker thread would, and fails if it
     /// overflows or is far slower than linear work should be. The bound is
     /// loose on purpose: these inputs take ~0.1 s in a local debug build and
@@ -1574,6 +1966,19 @@ mod tests {
                 assert!(!a.is_empty() && !b.is_empty());
             });
         }
+    }
+
+    #[test]
+    fn display_roots_are_drawn() {
+        assert_eq!(display(r"\sqrt{x+1}"), ["  ____", "╲╱ x+1"]);
+        assert_eq!(display(r"\sqrt[3]{x+1}"), ["   ____", "³╲╱ x+1"]);
+        assert_eq!(
+            display(r"\sqrt{\frac{a}{b}}"),
+            ["    ____", "   ╱  a", "  ╱  ───", "╲╱    b"]
+        );
+        // One token, and inline: `√` on one line.
+        assert_eq!(display(r"\sqrt{2} + \sqrt{\pi}"), ["√2 + √π"]);
+        assert_eq!(inline(r"\sqrt{x+1}"), "√(x+1)");
     }
 
     #[test]

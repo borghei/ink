@@ -2844,7 +2844,8 @@ fn build_tab(
     };
     // Frontmatter is stripped, or (with --frontmatter) swapped for a fenced
     // block the layout draws as a metadata box.
-    let stripped = frontmatter::prepare(&source, args.frontmatter);
+    let stripped =
+        crate::parser::display_math::fence(&frontmatter::prepare(&source, args.frontmatter));
 
     // Pre-process wikilinks before parsing
     let content = crate::wikilink::process_wikilinks(&stripped);

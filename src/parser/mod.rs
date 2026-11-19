@@ -1,3 +1,4 @@
+pub mod display_math;
 pub mod frontmatter;
 pub mod line_range;
 
