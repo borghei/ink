@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **Multi-line `$$ … $$` blocks whose lines start with `+`, `-` or `*` render as math.** Such lines were read as list items, so the formula broke into a bullet list and `\!` lost its backslash. A `$$` block spanning several lines is now treated as a block, as GitHub does; inside code blocks it is left alone.
+
 ## 0.15.0 — 2026-11-08
 
 ### Added

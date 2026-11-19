@@ -506,7 +506,7 @@ fn display_math_gets_its_own_indented_lines() {
     let out =
         render("The formula\n$$\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n$$\nsolves it.\n");
     assert!(
-        out.contains("  The formula\n      x = (-b ± √(b² - 4ac))/2a\n  solves it.\n"),
+        out.contains("  The formula\n\n      x = (-b ± √(b² - 4ac))/2a\n\n  solves it.\n"),
         "{out}"
     );
 }
@@ -558,4 +558,38 @@ fn display_math_wider_than_the_view_is_broken_not_clipped() {
     for line in out.lines() {
         assert!(line.width() <= 40, "{line:?}");
     }
+}
+
+// ── Multi-line `$$` display math ──
+
+const SWAN_EQ: &str = "$$\n\\frac{\\partial N}{\\partial t}\n+ \\nabla_{\\boldsymbol{x}}\\!\\cdot\\!\\left[(\\boldsymbol{c}_g+\\boldsymbol{U})N\\right]\n+ \\frac{\\partial(c_\\sigma N)}{\\partial\\sigma}\n= \\frac{S_{\\mathrm{tot}}}{\\sigma}.\n$$\n";
+
+#[test]
+fn multiline_display_math_with_plus_lines_is_one_block() {
+    let out = render(SWAN_EQ);
+    assert!(
+        !out.contains('•') && !out.contains("- "),
+        "list bullets: {out}"
+    );
+    assert!(!out.contains('!'), "`\\!` not honoured: {out}");
+    assert!(
+        out.contains('∂') && out.contains('σ'),
+        "not rendered as math: {out}"
+    );
+}
+
+#[test]
+fn display_math_prepass_keeps_line_count_and_skips_code() {
+    use ink_md::parser::display_math::fence;
+    let fenced = fence(SWAN_EQ);
+    assert!(fenced.starts_with("```math\n") && fenced.ends_with("\n```\n"));
+    assert_eq!(fenced.lines().count(), SWAN_EQ.lines().count());
+    let same_line = "$$ a\n+ b\nc $$\n";
+    assert_eq!(fence(same_line).lines().count(), 3);
+    let in_code = "~~~\n$$\n+ a\n$$\n~~~\n```\n$$\nb\n$$\n```\n";
+    assert_eq!(fence(in_code), in_code);
+    let unclosed = "$$\n+ a\n\ntext\n";
+    assert_eq!(fence(unclosed), unclosed);
+    let indented = "    $$\n    a\n    $$\n";
+    assert_eq!(fence(indented), indented);
 }
