@@ -309,11 +309,12 @@ struct LayoutContext<'a> {
     wide_tables: Option<WideTables>,
 }
 
-/// Room for a table wider than the text column. The reader keeps prose to a
-/// readable width, but a table that needs more columns than that can use the
-/// whole window: it is laid out against `width` columns instead, centred in
-/// them, starting no further left than column `left`. Only top-level tables
-/// do; one inside a list or quote keeps the width of what holds it.
+/// Room for a table or diagram wider than the text column. The reader keeps
+/// prose to a readable width, but a table or mermaid diagram that needs more
+/// columns than that can use the whole window: it is laid out against
+/// `width` columns instead, centred in them, starting no further left than
+/// column `left`. Only top-level ones do; one inside a list or quote keeps
+/// the width of what holds it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WideTables {
     pub width: usize,
@@ -1120,8 +1121,33 @@ fn layout_code_block(info: &str, literal: &str, ctx: &LayoutContext, lines: &mut
         return;
     }
 
-    // Mermaid diagrams get special rendering
+    // Mermaid diagrams get special rendering. Like a table, a top-level
+    // diagram that needs more than the text column may use the whole window
+    // (see `WideTables`), centred there: a sequence diagram that would
+    // otherwise be listed message by message gets drawn.
     if lang == "mermaid" {
+        if let Some(wide) = ctx
+            .wide_tables
+            .filter(|w| ctx.record_headings && w.width > ctx.width)
+        {
+            let mut drawn =
+                mermaid::render_mermaid_in(literal, ctx.theme, wide.width, 0, ctx.width);
+            let need = drawn.iter().map(StyledLine::width).max().unwrap_or(0);
+            if need > ctx.width {
+                let margin = wide.left + wide.width.saturating_sub(need) / 2;
+                for line in &mut drawn {
+                    line.spans.insert(
+                        0,
+                        StyledSpan {
+                            text: " ".repeat(margin),
+                            style: SpanStyle::default(),
+                        },
+                    );
+                }
+                lines.extend(drawn);
+                return;
+            }
+        }
         let mermaid_lines = mermaid::render_mermaid(literal, ctx.theme, ctx.width, ctx.margin);
         lines.extend(mermaid_lines);
         return;

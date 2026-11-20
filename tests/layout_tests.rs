@@ -628,3 +628,72 @@ fn a_table_too_wide_even_for_the_window_is_stacked_in_the_text_column() {
         indent(record)
     );
 }
+
+// ── Diagrams wider than the text column ──
+
+/// Six participants whose names can't wrap (one word each, as CJK names
+/// are): drawn, they need about 150 columns, more than the 120-column text
+/// column.
+fn wide_sequence() -> String {
+    let mut s = String::from("```mermaid\nsequenceDiagram\n");
+    for p in ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"] {
+        s.push_str(&format!("    participant {p} as {p}ServiceHandler\n"));
+    }
+    for (a, b) in [
+        ("Alpha", "Foxtrot"),
+        ("Foxtrot", "Charlie"),
+        ("Bravo", "Echo"),
+    ] {
+        s.push_str(&format!("    {a}->>{b}: request\n"));
+    }
+    s + "```\n"
+}
+
+#[test]
+fn a_diagram_wider_than_the_text_is_drawn_in_the_window_centred() {
+    use unicode_width::UnicodeWidthStr;
+    let out = layout_wide(&wide_sequence(), true);
+    let frame = out.iter().find(|l| l.contains('╭')).unwrap();
+    let w = frame.trim().width();
+    assert!(w > 120 && w <= 196, "{w}: {frame}");
+    assert_eq!(indent(frame), 2 + (196 - w) / 2, "{frame}");
+    // Drawn, not listed: participant boxes and lifelines.
+    assert!(out.iter().any(|l| l.contains('┌')), "{out:#?}");
+}
+
+#[test]
+fn without_the_room_a_wide_diagram_is_listed_in_the_text_column() {
+    let out = layout_wide(&wide_sequence(), false);
+    let frame = out.iter().find(|l| l.contains('╭')).unwrap();
+    assert_eq!(indent(frame), 40);
+    assert!(!out.iter().any(|l| l.contains('┌')), "{out:#?}");
+}
+
+#[test]
+fn a_diagram_that_fits_the_text_column_stays_in_it() {
+    let out = layout_wide("```mermaid\nsequenceDiagram\n    A->>B: hi\n```\n", true);
+    let frame = out.iter().find(|l| l.contains('╭')).unwrap();
+    assert_eq!(indent(frame), 40);
+}
+
+#[test]
+fn a_long_subgraph_legend_does_not_widen_a_diagram_that_fits() {
+    use unicode_width::UnicodeWidthStr;
+    // The graph is a narrow vertical chain; only the legend listing the
+    // subgraph's members is long. It wraps to the text column, as it does
+    // without the room, so the diagram stays there.
+    let mut src = String::from("```mermaid\nflowchart TD\n    subgraph G[a group]\n");
+    for i in 0..12 {
+        src.push_str(&format!("        N{i}[member node number {i}]\n"));
+    }
+    for i in 0..11 {
+        src.push_str(&format!("        N{i} --> N{}\n", i + 1));
+    }
+    src.push_str("    end\n```\n");
+    let out = layout_wide(&src, true);
+    let frame = out.iter().find(|l| l.contains('╭')).unwrap();
+    assert_eq!(indent(frame), 40, "{frame}");
+    for line in &out {
+        assert!(line.width() <= 160, "{line}");
+    }
+}

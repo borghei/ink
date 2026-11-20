@@ -38,7 +38,28 @@ use unicode_width::UnicodeWidthStr;
 
 /// Parse and render a mermaid diagram as styled terminal text.
 pub fn render_mermaid(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
-    render_mermaid_with(source, theme, width, margin, crate::glyphs::current().ascii)
+    render_mermaid_in(source, theme, width, margin, width)
+}
+
+/// [`render_mermaid`] for a diagram given more room than the text column:
+/// it is drawn in `width` columns, but the notes below it (a subgraph's
+/// members) still wrap to the `text_width` columns of the text column, or
+/// to the drawing when that is wider, so a long note cannot widen it.
+pub fn render_mermaid_in(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+    text_width: usize,
+) -> Vec<StyledLine> {
+    render_mermaid_inner(
+        source,
+        theme,
+        width,
+        margin,
+        text_width,
+        crate::glyphs::current().ascii,
+    )
 }
 
 /// [`render_mermaid`] with the glyph set given explicitly (`ascii`: draw with
@@ -51,7 +72,18 @@ pub fn render_mermaid_with(
     margin: usize,
     ascii: bool,
 ) -> Vec<StyledLine> {
-    let mut lines = render_diagram(source, theme, width, margin);
+    render_mermaid_inner(source, theme, width, margin, width, ascii)
+}
+
+fn render_mermaid_inner(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+    text_width: usize,
+    ascii: bool,
+) -> Vec<StyledLine> {
+    let mut lines = render_diagram(source, theme, width, margin, text_width);
     // The diagram renderers draw with box and arrow characters; in ASCII
     // mode translate them once here rather than in every renderer. (Each
     // stand-in has the same width, except the note icon, which ends a line.)
@@ -208,7 +240,13 @@ const UNSUPPORTED: &[&str] = &[
     "treemap-beta",
 ];
 
-fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> Vec<StyledLine> {
+fn render_diagram(
+    source: &str,
+    theme: &Theme,
+    width: usize,
+    margin: usize,
+    text_width: usize,
+) -> Vec<StyledLine> {
     let cleaned = text::clean_source(source);
     let src = split_source(&cleaned);
     let diagram_color = &theme.colors.heading2;
@@ -234,7 +272,7 @@ fn render_diagram(source: &str, theme: &Theme, width: usize, margin: usize) -> V
     };
 
     if let Some((g, title)) = parse_graph(&src) {
-        return render_graph(&g, &title, theme, width, margin);
+        return render_graph(&g, &title, theme, width, margin, text_width);
     }
     let mut lines = match src.keyword.as_str() {
         "sequenceDiagram" => {
@@ -447,20 +485,35 @@ fn render_graph(
     theme: &Theme,
     width: usize,
     margin: usize,
+    text_width: usize,
 ) -> Vec<StyledLine> {
+    // Notes wrap to the text column, or to the drawing when it is wider;
+    // wrapped here, the frame (which wraps at `width`) keeps them as they are.
+    let wrap = |notes: &[String], at: usize| -> Vec<String> {
+        let at = at.min(width.saturating_sub(4)).max(4);
+        notes.iter().flat_map(|n| text::wrap(n, at)).collect()
+    };
+    let text_room = text_width.saturating_sub(4);
     if g.nodes.is_empty() {
-        let mut lines = framed(title, &[], &g.notes, theme, width, margin);
+        let mut lines = framed(title, &[], &wrap(&g.notes, text_room), theme, width, margin);
         lines.push(StyledLine::empty());
         return lines;
     }
     if let Some(drawn) = lay_out(g, width) {
+        let drawn_w = drawn
+            .rows
+            .iter()
+            .map(|r| r.iter().map(|(t, _)| text::width(t)).sum::<usize>())
+            .max()
+            .unwrap_or(0);
         let mut notes = drawn.notes;
         notes.extend(g.notes.iter().cloned());
+        let notes = wrap(&notes, text_room.max(drawn_w));
         let mut lines = framed(title, &drawn.rows, &notes, theme, width, margin);
         lines.push(StyledLine::empty());
         return lines;
     }
-    let mut lines = edge_list(g, title, theme, width, margin);
+    let mut lines = edge_list(g, &wrap(&g.notes, text_room), title, theme, width, margin);
     lines.push(StyledLine::empty());
     lines
 }
@@ -491,6 +544,7 @@ fn lay_out(g: &Graph, width: usize) -> Option<engine::Drawn> {
 /// The last-resort form: every node with its outgoing edges, one per line.
 fn edge_list(
     g: &Graph,
+    notes: &[String],
     title: &str,
     theme: &Theme,
     width: usize,
@@ -587,7 +641,7 @@ fn edge_list(
             );
         }
     }
-    framed_impl(title, &out, &g.notes, theme, width, margin, false)
+    framed_impl(title, &out, notes, theme, width, margin, false)
 }
 
 /// [`framed`] with the rows left-aligned (text, not a drawing).
