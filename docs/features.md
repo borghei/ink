@@ -83,11 +83,11 @@ Blank or garbled images? See [Troubleshooting](troubleshooting.md#images).
 | Timeline | Periods in order with their events branching beside them, grouped under their sections. When a period's name is too long for a column, its events hang below it |
 | User journey | One row per task under its section: the 1–5 score as a bar and a number, coloured from bad to good, then who was involved. On a narrow terminal the actors are listed once at the end |
 | Git graph | Commits top to bottom with one lane per branch, as `git log --graph` draws them: forks, merges, cherry-picks, tags and commit types. A lane is reused once its branch is done. When the lanes leave no room for labels, the history is listed event by event |
-| Sequence | Participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, `autonumber`, and `loop`, `alt`, `opt`, `par`, `critical`, `break` and `rect` blocks as frames. A diagram too wide for the terminal is listed message by message |
+| Sequence | Participant boxes over lifelines, solid and dotted arrows, self-messages, notes, activations, `autonumber`, and `loop`, `alt`, `opt`, `par`, `critical`, `break` and `rect` blocks as frames. A diagram too wide for the window is listed message by message |
 | Pie | A compact text form |
 | Anything else | The source, in a titled box |
 
-Box-drawing characters by default, plain ASCII with `--ascii`.
+Box-drawing characters by default, plain ASCII with `--ascii`. Like a wide table, a diagram that needs more than the 120-column text column may use the whole window, centred.
 
 ## Math and emoji
 

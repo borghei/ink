@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- **Wide mermaid diagrams can use the whole window**, as wide tables already could. A sequence diagram with many participants or long names needed more than the 120-column text column, so on a wide terminal it was listed message by message while the rest of the window sat empty. A top-level diagram that needs more room now takes it, up to the window's width, centred. Diagrams that fit the text column, an explicit `-w`/`--width`, slides, diagrams inside lists and quotes, and `--plain` output are unchanged.
+
 ## 0.15.0 — 2026-11-08
 
 ### Added
